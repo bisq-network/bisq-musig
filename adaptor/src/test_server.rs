@@ -12,6 +12,11 @@ mod test_server {
     use std::env;
     use std::str::FromStr;
 
+    /// Tests that the order of secret keys matters in MuSig2 key aggregation.
+    /// This verifies that:
+    /// 1. Aggregation succeeds when secret keys are provided in the same order as their public keys
+    /// 2. Aggregation fails when secret keys are provided in a different order
+    /// 3. The aggregated public key matches the public key derived from correctly ordered secret keys
     #[test]
     fn test_order_seckeys() {
         let seckeys = [
@@ -19,21 +24,27 @@ mod test_server {
             Scalar::from_slice(&[0x22; 32]).unwrap(),
         ];
 
-        let pubkeys = [seckeys[0].base_point_mul(), seckeys[1].base_point_mul()];
+        let pubkeys: [Point; 2] = [
+            seckeys[0].base_point_mul(),
+            seckeys[1].base_point_mul()
+        ];
 
         let key_agg_ctx = KeyAggContext::new(pubkeys).unwrap();
         let aggregated_pubkey: Point = key_agg_ctx.aggregated_pubkey();
 
         let agg_sec1: Scalar = key_agg_ctx
             .aggregated_seckey([seckeys[0], seckeys[1]])
-            .unwrap();
+            .expect("Aggregation with correct order should succeed");
+        
+        let agg_sec2: Result<Scalar, _> = key_agg_ctx.aggregated_seckey([seckeys[1], seckeys[0]]);
+        assert!(agg_sec2.is_err(), "Aggregation with wrong order should fail");
 
-        let agg_sec2: Scalar = key_agg_ctx
-            .aggregated_seckey([seckeys[1], seckeys[0]])
-            .unwrap();
-        assert_eq!(aggregated_pubkey, agg_sec1.base_point_mul());
-        assert_ne!(agg_sec1, agg_sec2);
-        assert_ne!(aggregated_pubkey, agg_sec2.base_point_mul());
+        assert_eq!(
+            aggregated_pubkey,
+            agg_sec1.base_point_mul(),
+            "Aggregated public key should match public key derived from correctly ordered secret keys"
+        );
+
         println!("Done.");
     }
     /**

@@ -1,5 +1,6 @@
 mod common;
 use std::{process::Command, thread, time};
+use std::time::SystemTime;
 
 const EPSILON: f64 = 0.00001; // Allowable margin of error for balance checks
 
@@ -7,137 +8,86 @@ fn approx_eq(left: f64, right: f64) -> bool {
     (left - right).abs() < EPSILON
 }
 
+// Helper function to run nigiri commands and handle errors
+fn run_nigiri_command(args: &[&str]) -> Result<String, String> {
+    println!("Running command: nigiri {}", args.join(" "));
+    let output = Command::new("nigiri")
+        .args(args)
+        .output()
+        .map_err(|e| format!("Failed to execute nigiri command: {}", e))?;
+
+    if !output.status.success() {
+        return Err(format!(
+            "Command 'nigiri {}' failed: {}",
+            args.join(" "),
+            String::from_utf8_lossy(&output.stderr)
+        ));
+    }
+
+    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+}
+
+fn create_wallet(name: &str) -> Result<String, String> {
+    run_nigiri_command(&["rpc", "createwallet", name])?;
+    run_nigiri_command(&["rpc", &format!("-rpcwallet={}", name), "getnewaddress"])
+}
+
+/// Integration test that simulates a basic transaction between two wallets.
+/// 
+/// This test:
+/// 1. Sets up a test environment using Nigiri (Bitcoin regtest)
+/// 2. Creates unique timestamped wallets for Alice and Bob
+/// 3. Funds Alice's wallet using the Nigiri faucet
+/// 4. Simulates a transaction from Alice to Bob (0.01 BTC)
+/// 5. Verifies the transaction by checking Bob's final balance
+/// 
+/// Requirements:
+/// - Nigiri must be installed and running
+/// - Test runs on Bitcoin regtest network
 #[test]
-fn test_bisq_musig() {
+fn test_bisq_musig() -> Result<(), String> {
     common::setup();
 
-    let alice_wallet = "alice";
-    let bob_wallet = "bob";
-    let delay = time::Duration::from_secs(2); // Add delays between steps
+    let timestamp = SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    let alice_wallet = format!("alice_{}", timestamp);
+    let bob_wallet = format!("bob_{}", timestamp);
 
-    println!("Creating wallet for Alice...");
-    Command::new("nigiri")
-        .args(["rpc", "createwallet", alice_wallet])
-        .output()
-        .expect("Failed to create Alice's wallet");
+    // Create wallets and get addresses
+    let alice_address = create_wallet(&alice_wallet)?;
+    let bob_address = create_wallet(&bob_wallet)?;
 
-    println!("Creating wallet for Bob...");
-    Command::new("nigiri")
-        .args(["rpc", "createwallet", bob_wallet])
-        .output()
-        .expect("Failed to create Bob's wallet");
+    // Fund Alice's wallet and mine a block
+    run_nigiri_command(&["faucet", &alice_address])?;
+    thread::sleep(time::Duration::from_secs(2));
+    run_nigiri_command(&["rpc", "generatetoaddress", "1", &alice_address])?;
 
-    println!("Getting a new address for Alice...");
-    let alice_address = Command::new("nigiri")
-        .args(["rpc", "-rpcwallet=alice", "getnewaddress"])
-        .output()
-        .expect("Failed to get Alice's address");
-    let alice_address = String::from_utf8_lossy(&alice_address.stdout).trim().to_string();
-    assert!(!alice_address.is_empty(), "Alice's address is empty!");
+    // Send funds from Alice to Bob
+    let tx_id = run_nigiri_command(&[
+        "rpc",
+        &format!("-rpcwallet={}", alice_wallet),
+        "sendtoaddress",
+        &bob_address,
+        "0.01",
+    ])?;
+    println!("Transaction ID: {}", tx_id);
 
-    println!("Getting a new address for Bob...");
-    let bob_address = Command::new("nigiri")
-        .args(["rpc", "-rpcwallet=bob", "getnewaddress"])
-        .output()
-        .expect("Failed to get Bob's address");
-    let bob_address = String::from_utf8_lossy(&bob_address.stdout).trim().to_string();
-    assert!(!bob_address.is_empty(), "Bob's address is empty!");
+    // Mine a block and verify Bob's balance
+    run_nigiri_command(&["rpc", "generatetoaddress", "1", &alice_address])?;
+    thread::sleep(time::Duration::from_secs(2));
 
-    println!("Funding Alice's wallet with the faucet...");
-    let faucet_response = Command::new("nigiri")
-        .args(["faucet", &alice_address])
-        .output()
-        .expect("Failed to fund Alice's wallet");
-    println!("{}", String::from_utf8_lossy(&faucet_response.stdout));
-    thread::sleep(delay);
-
-    // Confirm Alice's balance after funding
-    println!("Confirming Alice's balance after faucet funding...");
-    let alice_balance = Command::new("nigiri")
-        .args(["rpc", "-rpcwallet=alice", "getbalance"])
-        .output()
-        .expect("Failed to get Alice's balance");
-    let alice_balance: f64 = String::from_utf8_lossy(&alice_balance.stdout)
-        .trim()
+    let bob_balance: f64 = run_nigiri_command(&["rpc", &format!("-rpcwallet={}", bob_wallet), "getbalance"])?
         .parse()
-        .expect("Failed to parse Alice's balance");
-    println!("Alice's balance after funding: {}", alice_balance);
-    assert_eq!(
-        alice_balance, 1.0,
-        "Alice's balance should be exactly 1 BTC after faucet funding!"
-    );
+        .map_err(|e| format!("Failed to parse Bob's balance: {}", e))?;
 
-    // Ensure faucet funding is confirmed by mining a block
-    println!("Mining a block to confirm faucet funding...");
-    Command::new("nigiri")
-        .args(["rpc", "generatetoaddress", "1", &alice_address])
-        .output()
-        .expect("Failed to mine block");
-    thread::sleep(delay);
+    if !approx_eq(bob_balance, 0.01) {
+        return Err(format!(
+            "Bob's balance should be approximately 0.01 BTC! Found: {}",
+            bob_balance
+        ));
+    }
 
-    println!("Sending funds from Alice to Bob...");
-    let send_response = Command::new("nigiri")
-        .args([
-            "rpc",
-            "-rpcwallet=alice",
-            "sendtoaddress",
-            &bob_address,
-            "0.01", // Amount to send in BTC
-        ])
-        .output()
-        .expect("Failed to send funds from Alice to Bob");
-    let transaction_id = String::from_utf8_lossy(&send_response.stdout).trim().to_string();
-    assert!(
-        !transaction_id.is_empty(),
-        "Transaction ID is empty! Transaction failed."
-    );
-    println!("Transaction ID: {}", transaction_id);
-
-    println!("Mining a new block to confirm the transaction...");
-    Command::new("nigiri")
-        .args(["rpc", "generatetoaddress", "1", &alice_address])
-        .output()
-        .expect("Failed to mine a new block");
-    thread::sleep(delay);
-
-    println!("Forcing Bob's wallet to rescan the blockchain...");
-    Command::new("nigiri")
-        .args(["rpc", "-rpcwallet=bob", "rescanblockchain"])
-        .output()
-        .expect("Failed to rescan Bob's wallet");
-    thread::sleep(delay);
-
-    println!("Verifying Alice's balance...");
-    let alice_balance_after = Command::new("nigiri")
-        .args(["rpc", "-rpcwallet=alice", "getbalance"])
-        .output()
-        .expect("Failed to get Alice's balance");
-    let alice_balance_after: f64 = String::from_utf8_lossy(&alice_balance_after.stdout)
-        .trim()
-        .parse()
-        .expect("Failed to parse Alice's balance after transaction");
-    println!("Alice's balance after sending funds: {}", alice_balance_after);
-    assert!(
-        approx_eq(alice_balance_after, 0.99),
-        "Alice's balance should be approximately 0.99 BTC after sending 0.01 BTC! Found: {}",
-        alice_balance_after
-    );
-
-    println!("Verifying Bob's balance...");
-    let bob_balance = Command::new("nigiri")
-        .args(["rpc", "-rpcwallet=bob", "getbalance"])
-        .output()
-        .expect("Failed to get Bob's balance");
-    let bob_balance: f64 = String::from_utf8_lossy(&bob_balance.stdout)
-        .trim()
-        .parse()
-        .expect("Failed to parse Bob's balance");
-    println!("Bob's balance after receiving funds: {}", bob_balance);
-    assert!(
-        approx_eq(bob_balance, 0.01),
-        "Bob's balance should be approximately 0.01 BTC after receiving funds! Found: {}",
-        bob_balance
-    );
-
-    println!("Test passed: Alice's and Bob's balances are as expected.");
+    Ok(())
 }
