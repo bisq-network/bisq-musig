@@ -1,29 +1,7 @@
 syntax = "proto3";
-package helloworld;
+package musigrpc;
 
-service Greeter {
-  rpc SayHello (HelloRequest) returns (HelloReply);
-
-  rpc SubscribeClock (ClockRequest) returns (stream TickEvent);
-}
-
-message HelloRequest {
-  string name = 1;
-}
-
-message HelloReply {
-  string message = 1;
-}
-
-message ClockRequest {
-  uint32 tickPeriodMillis = 1;
-}
-
-message TickEvent {
-  uint64 currentTimeMillis = 1;
-}
-
-service MuSig {
+service Musig {
   rpc InitTrade (PubKeySharesRequest) returns (PubKeySharesResponse);
 
   rpc GetNonceShares (NonceSharesRequest) returns (NonceSharesMessage);
@@ -61,11 +39,11 @@ message NonceSharesRequest {
   string tradeId = 1;
   bytes buyerOutputPeersPubKeyShare = 2;
   bytes sellerOutputPeersPubKeyShare = 3;
-  double depositTxFeeRate = 4;
-  double preparedTxFeeRate = 5;
-  uint64 tradeAmount = 6;
-  uint64 buyersSecurityDeposit = 7;
-  uint64 sellersSecurityDeposit = 8;
+  uint64 depositTxFeeRate = 4;       // sats per kwu
+  uint64 preparedTxFeeRate = 5;      // sats per kwu
+  uint64 tradeAmount = 6;            // sats
+  uint64 buyersSecurityDeposit = 7;  // sats
+  uint64 sellersSecurityDeposit = 8; // sats
 }
 
 message NonceSharesMessage {
@@ -83,7 +61,7 @@ message NonceSharesMessage {
 
 message ReceiverAddressAndAmount {
   string address = 1;
-  uint64 amount = 2;
+  uint64 amount = 2; // sats
 }
 
 message PartialSignaturesRequest {
