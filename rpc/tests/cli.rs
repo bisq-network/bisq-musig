@@ -7,6 +7,24 @@ use tokio_util::task::AbortOnDropHandle;
 use tonic::transport::{self, Server};
 use tonic::transport::server::TcpIncoming;
 
+const EXPECTED_WALLET_BALANCE_RESPONSE: &[u8] = br#"{
+  "immature": 0,
+  "trustedPending": 0,
+  "untrustedPending": 0,
+  "confirmed": 0
+}
+"#;
+const EXPECTED_NEW_ADDRESS_RESPONSE_1: &[u8] = br#"{
+  "address": "bcrt1pkar3gerekw8f9gef9vn9xz0qypytgacp9wa5saelpksdgct33qdqan7c89",
+  "derivationPath": "m/86'/1'/0'/0/0"
+}
+"#;
+const EXPECTED_NEW_ADDRESS_RESPONSE_2: &[u8] = br#"{
+  "address": "bcrt1pv537m7m6w0gdrcdn3mqqdpgrk3j400yrdrjwf5c9whyl2f8f4p6q9dn3l9",
+  "derivationPath": "m/86'/1'/0'/0/1"
+}
+"#;
+
 #[test]
 fn test_cli_usage() {
     let output = exec_cli([]);
@@ -31,8 +49,7 @@ async fn test_cli_wallet_balance() {
     let output = task::spawn_blocking(move || exec_cli_with_port(port, ["wallet-balance"]))
         .await.unwrap();
     assert!(output.status.success());
-    assert!(output.stdout.contains_subslice(b"WalletBalanceResponse"));
-    assert!(output.stdout.contains_subslice(b"confirmed: 0"));
+    assert_eq!(output.stdout, EXPECTED_WALLET_BALANCE_RESPONSE);
     assert!(output.stderr.is_empty());
 }
 
@@ -44,17 +61,13 @@ async fn test_cli_new_address() {
     let output = task::spawn_blocking(move || exec_cli_with_port(port, ["new-address"]))
         .await.unwrap();
     assert!(output.status.success());
-    assert!(output.stdout.contains_subslice(b"NewAddressResponse"));
-    assert!(output.stdout.contains_subslice(b"address: \"bcrt1pkar3gerekw8f9gef9vn9xz0qypytgacp9wa5saelpksdgct33qdqan7c89\""));
-    assert!(output.stdout.contains_subslice(b"derivation_path: \"m/86'/1'/0'/0/0\""));
+    assert_eq!(output.stdout, EXPECTED_NEW_ADDRESS_RESPONSE_1);
     assert!(output.stderr.is_empty());
 
     let output = task::spawn_blocking(move || exec_cli_with_port(port, ["new-address"]))
         .await.unwrap();
     assert!(output.status.success());
-    assert!(output.stdout.contains_subslice(b"NewAddressResponse"));
-    assert!(output.stdout.contains_subslice(b"address: \"bcrt1pv537m7m6w0gdrcdn3mqqdpgrk3j400yrdrjwf5c9whyl2f8f4p6q9dn3l9\""));
-    assert!(output.stdout.contains_subslice(b"derivation_path: \"m/86'/1'/0'/0/1\""));
+    assert_eq!(output.stdout, EXPECTED_NEW_ADDRESS_RESPONSE_2);
     assert!(output.stderr.is_empty());
 }
 

@@ -1,4 +1,5 @@
 use bdk_wallet::bitcoin::hashes::{Hash as _, sha256d};
+use bdk_wallet::serde_json;
 use clap::{Parser, Subcommand};
 use futures::StreamExt as _;
 use rpc::pb::walletrpc::{ConfRequest, ListUnspentRequest, NewAddressRequest, WalletBalanceRequest};
@@ -39,17 +40,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Commands::WalletBalance => {
             let response = client.wallet_balance(Request::new(WalletBalanceRequest {})).await?;
             drop(client);
-            println!("{response:#?}");
+            println!("{}", serde_json::to_string_pretty(&response.into_inner())?);
         }
         Commands::NewAddress => {
             let response = client.new_address(Request::new(NewAddressRequest {})).await?;
             drop(client);
-            println!("{response:#?}");
+            println!("{}", serde_json::to_string_pretty(&response.into_inner())?);
         }
         Commands::ListUnspent => {
             let response = client.list_unspent(Request::new(ListUnspentRequest {})).await?;
             drop(client);
-            println!("{response:?}");
+            println!("{}", serde_json::to_string_pretty(&response.into_inner())?);
         }
         Commands::NotifyConfidence { tx_id } => {
             let tx_id = tx_id.parse::<sha256d::Hash>()?.as_byte_array().to_vec();
@@ -57,7 +58,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             drop(client);
             let mut stream = response.into_inner();
             while let Some(event_result) = stream.next().await {
-                println!("{:?}", event_result?);
+                println!("{}", serde_json::to_string_pretty(&event_result?)?);
             }
         }
     }
