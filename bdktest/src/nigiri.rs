@@ -2,10 +2,10 @@
 
 // External crates
 use std::process::Output;
-use std::{collections::HashMap, process::Command, str::FromStr, thread, time};
-
-use crate::{TestWallet, DESCRIPTOR_PRIVATE_EXTERNAL, DESCRIPTOR_PRIVATE_INTERNAL, STOP_GAP};
-use bdk_core::bitcoin::Address;
+use std::{collections::HashMap, env, process::Command, str::FromStr, thread, time};
+use std::error::Error;
+use crate::{build_and_merge_tx, generate_part_tx, transfer_sig_and_broadcast, ConnectedWallet, DepositTx, ProtocolRole, TestWallet, DESCRIPTOR_PRIVATE_EXTERNAL, DESCRIPTOR_PRIVATE_INTERNAL, STOP_GAP};
+use bdk_core::bitcoin::{Address, Txid};
 use bdk_core::{
     bitcoin::{
         secp256k1::XOnlyPublicKey,
@@ -13,11 +13,22 @@ use bdk_core::{
     },
     spk_client::{FullScanRequestBuilder, SyncRequestBuilder},
 };
+use bdk_core::bitcoin::key::{Keypair, Secp256k1};
+use bdk_electrum::{electrum_client, BdkElectrumClient};
 use bdk_esplora::esplora_client::Builder;
 use bdk_esplora::{esplora_client, EsploraExt};
-use bdk_wallet::miniscript::{translate_hash_fail, Translator};
+use bdk_wallet::miniscript::{translate_hash_fail, Descriptor, DescriptorPublicKey, Miniscript, Tap, ToPublicKey, TranslatePk, Translator};
 use bdk_wallet::rusqlite::Connection;
-use bdk_wallet::{KeychainKind, PersistedWallet, Wallet};
+use bdk_wallet::{bitcoin, serde_json, KeychainKind, PersistedWallet, Wallet};
+use bdk_wallet::bitcoin::bip32::Xpriv;
+use bdk_wallet::bitcoin::Network::Bitcoin;
+use bdk_wallet::bitcoin::{KnownHrp, WitnessVersion};
+use bdk_wallet::bitcoin::key::TapTweak;
+use bdk_wallet::miniscript::descriptor::DescriptorType;
+use bdk_wallet::miniscript::policy::Concrete;
+use bdk_wallet::template::{Bip86, DescriptorTemplate};
+use dotenv::dotenv;
+use rand::RngCore;
 
 /** run p3 as library
 using security by identical generation
