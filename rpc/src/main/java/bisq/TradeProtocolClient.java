@@ -1,6 +1,7 @@
 package bisq;
 
 import com.google.common.collect.ImmutableMap;
+import com.google.protobuf.ByteString;
 import io.grpc.Grpc;
 import io.grpc.InsecureChannelCredentials;
 import musigrpc.MusigGrpc;
@@ -119,18 +120,18 @@ public class TradeProtocolClient {
         // BUYER_AS_TAKER
         var buyerDepositPsbt = stub.signDepositTx(DepositTxSignatureRequest.newBuilder()
                 .setTradeId(buyerTradeId)
-                .setPeersPartialSignatures(sellerPartialSignaturesMessage) //TODO is clearSwapTxInputPartialSignature here needed as well?
+                .setPeersPartialSignatures(sellerPartialSignaturesMessage)
                 .build());
         System.out.println("Got reply: " + buyerDepositPsbt);
 
         // *** BUYER BROADCASTS DEPOSIT TX ***
         var depositTxConfirmationIter = stub.publishDepositTx(PublishDepositTxRequest.newBuilder()
-                .setTradeId(buyerTradeId)
+                .setTradeId(buyerTradeId) // TODO is .setDepositPsbt(buyerDepositPsbt) missing?
                 .build());
         depositTxConfirmationIter.forEachRemaining(reply -> System.out.println("Got reply: " + reply));
         // ***********************************
 
-        // Buyer sends Message E to seller.
+        // Buyer sends Message E to seller, signalling fiat paid.
 
         // SELLER_AS_MAKER
         var swapTxSignatureResponse = stub.signSwapTx(SwapTxSignatureRequest.newBuilder()
@@ -141,7 +142,7 @@ public class TradeProtocolClient {
         System.out.println("Got reply: " + swapTxSignatureResponse);
 
         if (closureType == ClosureType.COOPERATIVE) {
-            // Seller sends Message F to buyer.
+            // Seller sends Message F with swapTxSignatureResponse to buyer.
 
             // *** BUYER CLOSES TRADE ***
             var buyersCloseTradeResponse = stub.closeTrade(CloseTradeRequest.newBuilder()
@@ -151,7 +152,7 @@ public class TradeProtocolClient {
             System.out.println("Got reply: " + buyersCloseTradeResponse);
             // **************************
 
-            // Buyer sends Message G to seller.
+            // Buyer sends Message G with buyersCloseTradeResponse to seller.
 
             // *** SELLER CLOSES TRADE ***
             var sellersCloseTradeResponse = stub.closeTrade(CloseTradeRequest.newBuilder()
@@ -166,6 +167,7 @@ public class TradeProtocolClient {
             // Seller never gets expected Message G from buyer -- gives up waiting.
 
             // *** SELLER FORCE-CLOSES TRADE ***
+            //TODO isn't here the swap Tx needed to pass?
             var sellersCloseTradeResponse = stub.closeTrade(CloseTradeRequest.newBuilder()
                     .setTradeId(sellerTradeId)
                     .build());
@@ -175,9 +177,11 @@ public class TradeProtocolClient {
             // Buyer never got Message F from seller -- picks up Swap Tx from bitcoin network instead.
 
             // *** BUYER CLOSES TRADE ***
+            //TODO should be swapTxFromNetwork, not from swapTxSignatureResponse, right?
+            ByteString swapTx = swapTxSignatureResponse.getSwapTx();
             var buyersCloseTradeResponse = stub.closeTrade(CloseTradeRequest.newBuilder()
                     .setTradeId(buyerTradeId)
-                    .setSwapTx(swapTxSignatureResponse.getSwapTx())
+                    .setSwapTx(swapTx)
                     .build());
             System.out.println("Got reply: " + buyersCloseTradeResponse);
             // **************************
