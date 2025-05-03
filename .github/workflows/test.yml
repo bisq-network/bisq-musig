@@ -1,0 +1,104 @@
+name: Tests
+
+on:
+  pull_request:
+  push:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+      
+      - name: Cache dependencies
+        uses: actions/cache@v3
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          
+      - name: Install Docker
+        run: |
+          # Remove any old Docker installations
+          sudo apt-get remove -y docker docker-engine docker.io containerd runc || true
+          # Add Docker's official GPG key
+          sudo apt-get update
+          sudo apt-get install -y ca-certificates curl gnupg
+          sudo install -m 0755 -d /etc/apt/keyrings
+          curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo gpg --dearmor -o /etc/apt/keyrings/docker.gpg
+          sudo chmod a+r /etc/apt/keyrings/docker.gpg
+          # Add the repository to Apt sources
+          echo \
+            "deb [arch="$(dpkg --print-architecture)" signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu \
+            "$(. /etc/os-release && echo "$VERSION_CODENAME")" stable" | \
+            sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
+          sudo apt-get update
+          # Install Docker packages
+          sudo apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+          sudo systemctl start docker
+          sudo usermod -aG docker $USER
+          
+      - name: Install Nigiri
+        run: |
+          curl https://getnigiri.vulpem.com | bash
+          
+      - name: Start Nigiri
+        run: |
+          nigiri start
+          
+      - name: Run protocol tests
+        run: |
+          cd protocol
+          cargo test --package protocol --lib tests -- --test-threads=1 --nocapture
+          
+      - name: Run adaptor tests
+        run: |
+          cd adaptor
+          cargo test test_bisq_musig -- --nocapture
+          
+      - name: Stop Nigiri
+        if: always()
+        run: nigiri stop
+
+      - name: Install protoc
+        run: |
+          PROTOC_VERSION="24.4"
+          PROTOC_ZIP="protoc-${PROTOC_VERSION}-linux-x86_64.zip"
+          curl -OL "https://github.com/protocolbuffers/protobuf/releases/download/v${PROTOC_VERSION}/${PROTOC_ZIP}"
+          sudo unzip -o "${PROTOC_ZIP}" -d /usr/local bin/protoc
+          sudo unzip -o "${PROTOC_ZIP}" -d /usr/local 'include/*'
+          rm -f "${PROTOC_ZIP}"
+          protoc --version
+
+      - name: Install Bitcoin Core
+        run: |
+          BITCOIN_VERSION="25.1"
+          BITCOIN_URL="https://bitcoincore.org/bin/bitcoin-core-${BITCOIN_VERSION}/bitcoin-${BITCOIN_VERSION}-x86_64-linux-gnu.tar.gz"
+          wget $BITCOIN_URL
+          tar xzf bitcoin-${BITCOIN_VERSION}-x86_64-linux-gnu.tar.gz
+          sudo install -m 0755 -o root -g root -t /usr/local/bin bitcoin-${BITCOIN_VERSION}/bin/*
+          rm -rf bitcoin-${BITCOIN_VERSION}*
+
+      - name: Setup bitcoind regtest
+        run: |
+          mkdir -p .localnet/bitcoind
+          bitcoind -regtest -prune=0 -txindex=1 -blockfilterindex=1 -server -datadir=.localnet/bitcoind -daemon
+          sleep 5  # Wait for bitcoind to start
+
+      - name: Run RPC tests
+        run: |
+          cd rpc
+          cargo test -- --nocapture
+
+      - name: Stop bitcoind
+        if: always()
+        run: |
+          bitcoin-cli -regtest -datadir=.localnet/bitcoind stop 
