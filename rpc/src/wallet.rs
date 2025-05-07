@@ -1,3 +1,5 @@
+#![cfg_attr(feature = "unimock", expect(clippy::ignored_unit_patterns, reason = "macro-generated code"))]
+
 use bdk_bitcoind_rpc::Emitter;
 use bdk_bitcoind_rpc::bitcoincore_rpc::{Auth, Client, RpcApi as _};
 use bdk_wallet::{AddressInfo, Balance, KeychainKind, LocalOutput, Wallet};
@@ -21,6 +23,7 @@ const EXTERNAL_DESCRIPTOR: &str = "tr(tprv8ZgxMBicQKsPdrjwWCyXqqJ4YqcyG4DmKtjjsR
 const INTERNAL_DESCRIPTOR: &str = "tr(tprv8ZgxMBicQKsPdrjwWCyXqqJ4YqcyG4DmKtjjsRt29v1PtD3r3PuFJAj\
     WytzcvSTKnZAGAkPSmnrdnuHWxCAwy3i1iPhrtKAfXRH7dVCNGp6/86'/1'/0'/1/*)#e3rjrmea";
 
+#[cfg_attr(feature = "unimock", unimock::unimock(api = WalletServiceMock))]
 #[tonic::async_trait]
 pub trait WalletService {
     /// # Errors
