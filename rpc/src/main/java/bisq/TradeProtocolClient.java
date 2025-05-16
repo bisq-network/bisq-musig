@@ -1,6 +1,7 @@
 package bisq;
 
 import com.google.common.collect.ImmutableMap;
+import com.google.protobuf.ByteString;
 import io.grpc.Grpc;
 import io.grpc.InsecureChannelCredentials;
 import musigrpc.MusigGrpc;
@@ -47,95 +48,101 @@ public class TradeProtocolClient {
         String buyerTradeId = "buyer-trade-" + tradeNum;
         String sellerTradeId = "seller-trade-" + tradeNum;
 
-        var buyerPubKeyShareResponse = stub.initTrade(PubKeySharesRequest.newBuilder()
+        // BUYER_AS_TAKER
+        var buyerPubKeySharesResponse = stub.initTrade(PubKeySharesRequest.newBuilder()
                 .setTradeId(buyerTradeId)
                 .setMyRole(Role.BUYER_AS_TAKER)
                 .build());
-        System.out.println("Got reply: " + buyerPubKeyShareResponse);
+        System.out.println("Got reply: " + buyerPubKeySharesResponse);
 
-        // Buyer sends Message A to seller.
+        // Buyer sends Message A with buyerPubKeySharesResponse to seller.
 
-        var sellerPubKeyShareResponse = stub.initTrade(PubKeySharesRequest.newBuilder()
+        // SELLER_AS_MAKER
+        var sellerPubKeySharesResponse = stub.initTrade(PubKeySharesRequest.newBuilder()
                 .setTradeId(sellerTradeId)
                 .setMyRole(Role.SELLER_AS_MAKER)
                 .build());
-        System.out.println("Got reply: " + sellerPubKeyShareResponse);
+        System.out.println("Got reply: " + sellerPubKeySharesResponse);
 
-        var sellerNonceShareMessage = stub.getNonceShares(NonceSharesRequest.newBuilder()
+        var sellerNonceSharesMessage = stub.getNonceShares(NonceSharesRequest.newBuilder()
                 .setTradeId(sellerTradeId)
-                .setBuyerOutputPeersPubKeyShare(buyerPubKeyShareResponse.getBuyerOutputPubKeyShare())
-                .setSellerOutputPeersPubKeyShare(buyerPubKeyShareResponse.getSellerOutputPubKeyShare())
+                .setBuyerOutputPeersPubKeyShare(buyerPubKeySharesResponse.getBuyerOutputPubKeyShare())
+                .setSellerOutputPeersPubKeyShare(buyerPubKeySharesResponse.getSellerOutputPubKeyShare())
                 .setDepositTxFeeRate(50_000)  // 12.5 sats per vbyte
                 .setPreparedTxFeeRate(40_000) // 10.0 sats per vbyte
                 .setTradeAmount(200_000)
                 .setBuyersSecurityDeposit(30_000)
                 .setSellersSecurityDeposit(30_000)
                 .build());
-        System.out.println("Got reply: " + sellerNonceShareMessage);
+        System.out.println("Got reply: " + sellerNonceSharesMessage);
 
-        // Seller sends Message B to buyer.
+        // Seller sends Message B with sellerPubKeySharesResponse and sellerNonceSharesMessage to buyer.
 
-        var buyerNonceShareMessage = stub.getNonceShares(NonceSharesRequest.newBuilder()
+        // BUYER_AS_TAKER
+        var buyerNonceSharesMessage = stub.getNonceShares(NonceSharesRequest.newBuilder()
                 .setTradeId(buyerTradeId)
-                .setBuyerOutputPeersPubKeyShare(sellerPubKeyShareResponse.getBuyerOutputPubKeyShare())
-                .setSellerOutputPeersPubKeyShare(sellerPubKeyShareResponse.getSellerOutputPubKeyShare())
+                .setBuyerOutputPeersPubKeyShare(sellerPubKeySharesResponse.getBuyerOutputPubKeyShare())
+                .setSellerOutputPeersPubKeyShare(sellerPubKeySharesResponse.getSellerOutputPubKeyShare())
                 .setDepositTxFeeRate(50_000)  // 12.5 sats per vbyte
                 .setPreparedTxFeeRate(40_000) // 10.0 sats per vbyte
                 .setTradeAmount(200_000)
                 .setBuyersSecurityDeposit(30_000)
                 .setSellersSecurityDeposit(30_000)
                 .build());
-        System.out.println("Got reply: " + buyerNonceShareMessage);
+        System.out.println("Got reply: " + buyerNonceSharesMessage);
 
-        var buyerPartialSignatureMessage = stub.getPartialSignatures(PartialSignaturesRequest.newBuilder()
+        var buyerPartialSignaturesMessage = stub.getPartialSignatures(PartialSignaturesRequest.newBuilder()
                 .setTradeId(buyerTradeId)
-                .setPeersNonceShares(sellerNonceShareMessage)
+                .setPeersNonceShares(sellerNonceSharesMessage)
                 .addAllReceivers(mockReceivers())
                 .build());
-        System.out.println("Got reply: " + buyerPartialSignatureMessage);
+        System.out.println("Got reply: " + buyerPartialSignaturesMessage);
 
-        // Buyer sends Message C to seller.
+        // Buyer sends Message C with buyerNonceSharesMessage and buyerPartialSignaturesMessage to seller.
 
-        var sellerPartialSignatureMessage = stub.getPartialSignatures(PartialSignaturesRequest.newBuilder()
+        // SELLER_AS_MAKER
+        var sellerPartialSignaturesMessage = stub.getPartialSignatures(PartialSignaturesRequest.newBuilder()
                 .setTradeId(sellerTradeId)
-                .setPeersNonceShares(buyerNonceShareMessage)
+                .setPeersNonceShares(buyerNonceSharesMessage)
                 .addAllReceivers(mockReceivers())
                 .build());
-        System.out.println("Got reply: " + sellerPartialSignatureMessage);
+        System.out.println("Got reply: " + sellerPartialSignaturesMessage);
 
         var sellerDepositPsbt = stub.signDepositTx(DepositTxSignatureRequest.newBuilder()
                 .setTradeId(sellerTradeId)
                 // REDACT buyer's swapTxInputPartialSignature:
-                .setPeersPartialSignatures(buyerPartialSignatureMessage.toBuilder().clearSwapTxInputPartialSignature())
+                .setPeersPartialSignatures(buyerPartialSignaturesMessage.toBuilder().clearSwapTxInputPartialSignature())
                 .build());
         System.out.println("Got reply: " + sellerDepositPsbt);
 
-        // Seller sends Message D to buyer.
+        // Seller sends Message D with sellerPartialSignaturesMessage to buyer.
 
+        // BUYER_AS_TAKER
         var buyerDepositPsbt = stub.signDepositTx(DepositTxSignatureRequest.newBuilder()
                 .setTradeId(buyerTradeId)
-                .setPeersPartialSignatures(sellerPartialSignatureMessage)
+                .setPeersPartialSignatures(sellerPartialSignaturesMessage)
                 .build());
         System.out.println("Got reply: " + buyerDepositPsbt);
 
         // *** BUYER BROADCASTS DEPOSIT TX ***
         var depositTxConfirmationIter = stub.publishDepositTx(PublishDepositTxRequest.newBuilder()
-                .setTradeId(buyerTradeId)
+                .setTradeId(buyerTradeId) // TODO is .setDepositPsbt(buyerDepositPsbt) missing?
                 .build());
         depositTxConfirmationIter.forEachRemaining(reply -> System.out.println("Got reply: " + reply));
         // ***********************************
 
-        // Buyer sends Message E to seller.
+        // Buyer sends Message E to seller, signalling fiat paid.
 
+        // SELLER_AS_MAKER
         var swapTxSignatureResponse = stub.signSwapTx(SwapTxSignatureRequest.newBuilder()
                 .setTradeId(sellerTradeId)
                 // NOW send the redacted buyer's swapTxInputPartialSignature:
-                .setSwapTxInputPeersPartialSignature(buyerPartialSignatureMessage.getSwapTxInputPartialSignature())
+                .setSwapTxInputPeersPartialSignature(buyerPartialSignaturesMessage.getSwapTxInputPartialSignature())
                 .build());
         System.out.println("Got reply: " + swapTxSignatureResponse);
 
         if (closureType == ClosureType.COOPERATIVE) {
-            // Seller sends Message F to buyer.
+            // Seller sends Message F with swapTxSignatureResponse to buyer.
 
             // *** BUYER CLOSES TRADE ***
             var buyersCloseTradeResponse = stub.closeTrade(CloseTradeRequest.newBuilder()
@@ -145,7 +152,7 @@ public class TradeProtocolClient {
             System.out.println("Got reply: " + buyersCloseTradeResponse);
             // **************************
 
-            // Buyer sends Message G to seller.
+            // Buyer sends Message G with buyersCloseTradeResponse to seller.
 
             // *** SELLER CLOSES TRADE ***
             var sellersCloseTradeResponse = stub.closeTrade(CloseTradeRequest.newBuilder()
@@ -160,6 +167,7 @@ public class TradeProtocolClient {
             // Seller never gets expected Message G from buyer -- gives up waiting.
 
             // *** SELLER FORCE-CLOSES TRADE ***
+            //TODO isn't here the swap Tx needed to pass?
             var sellersCloseTradeResponse = stub.closeTrade(CloseTradeRequest.newBuilder()
                     .setTradeId(sellerTradeId)
                     .build());
@@ -169,9 +177,11 @@ public class TradeProtocolClient {
             // Buyer never got Message F from seller -- picks up Swap Tx from bitcoin network instead.
 
             // *** BUYER CLOSES TRADE ***
+            //TODO should be swapTxFromNetwork, not from swapTxSignatureResponse, right?
+            ByteString swapTx = swapTxSignatureResponse.getSwapTx();
             var buyersCloseTradeResponse = stub.closeTrade(CloseTradeRequest.newBuilder()
                     .setTradeId(buyerTradeId)
-                    .setSwapTx(swapTxSignatureResponse.getSwapTx())
+                    .setSwapTx(swapTx)
                     .build());
             System.out.println("Got reply: " + buyersCloseTradeResponse);
             // **************************
