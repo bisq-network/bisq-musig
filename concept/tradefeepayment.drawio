@@ -1,0 +1,86 @@
+<mxfile host="Electron" agent="Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) draw.io/27.0.5 Chrome/134.0.6998.205 Electron/35.3.0 Safari/537.36" version="27.0.5">
+  <diagram id="23iRSUPoRavnBvh4doch" name="Page-1">
+    <mxGraphModel dx="1523" dy="418" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="827" pageHeight="1169" math="0" shadow="0">
+      <root>
+        <mxCell id="0" />
+        <mxCell id="1" parent="0" />
+        <mxCell id="QoEpu0lZctptPt5Us8xi-1" value="Traders Funds" style="swimlane;fontStyle=0;childLayout=stackLayout;horizontal=1;startSize=30;horizontalStack=0;resizeParent=1;resizeParentMax=0;resizeLast=0;collapsible=1;marginBottom=0;whiteSpace=wrap;html=1;" parent="1" vertex="1">
+          <mxGeometry x="-10" y="360" width="140" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="QoEpu0lZctptPt5Us8xi-2" value="Output 0" style="text;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;spacingLeft=4;spacingRight=4;overflow=hidden;points=[[0,0.5],[1,0.5]];portConstraint=eastwest;rotatable=0;whiteSpace=wrap;html=1;" parent="QoEpu0lZctptPt5Us8xi-1" vertex="1">
+          <mxGeometry y="30" width="140" height="30" as="geometry" />
+        </mxCell>
+        <mxCell id="QoEpu0lZctptPt5Us8xi-9" style="rounded=0;orthogonalLoop=1;jettySize=auto;html=1;" parent="1" source="QoEpu0lZctptPt5Us8xi-5" target="QoEpu0lZctptPt5Us8xi-1" edge="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="QoEpu0lZctptPt5Us8xi-5" value="ChannelTx" style="swimlane;fontStyle=0;childLayout=stackLayout;horizontal=1;startSize=30;horizontalStack=0;resizeParent=1;resizeParentMax=0;resizeLast=0;collapsible=1;marginBottom=0;whiteSpace=wrap;html=1;" parent="1" vertex="1">
+          <mxGeometry x="164" y="210" width="160" height="270" as="geometry" />
+        </mxCell>
+        <mxCell id="69QWRgk2T1_iA0vhkOeC-1" value="&lt;b&gt;Output 0 - key spend&amp;nbsp;&lt;/b&gt;&lt;div&gt;provable unspendable&lt;/div&gt;" style="text;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;spacingLeft=4;spacingRight=4;overflow=hidden;points=[[0,0.5],[1,0.5]];portConstraint=eastwest;rotatable=0;whiteSpace=wrap;html=1;" vertex="1" parent="QoEpu0lZctptPt5Us8xi-5">
+          <mxGeometry y="30" width="160" height="40" as="geometry" />
+        </mxCell>
+        <mxCell id="QoEpu0lZctptPt5Us8xi-6" value="&lt;b&gt;Output 0 - script spend 1&lt;/b&gt;&lt;div&gt;&lt;span style=&quot;background-color: transparent; color: light-dark(rgb(0, 0, 0), rgb(255, 255, 255));&quot;&gt;&amp;lt;Pubkey T&amp;gt; (Trader)&lt;/span&gt;&lt;/div&gt;&lt;div&gt;OP_CHECKSIG&lt;/div&gt;&lt;div&gt;&amp;lt;Pubkey B&amp;gt; (BM)&lt;/div&gt;&lt;div&gt;OP_CHECKSIGVERIFY&lt;/div&gt;" style="text;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;spacingLeft=4;spacingRight=4;overflow=hidden;points=[[0,0.5],[1,0.5]];portConstraint=eastwest;rotatable=0;whiteSpace=wrap;html=1;" parent="QoEpu0lZctptPt5Us8xi-5" vertex="1">
+          <mxGeometry y="70" width="160" height="100" as="geometry" />
+        </mxCell>
+        <mxCell id="Q_AP1fNf9fPvJ9VrVZ_o-1" value="&lt;b&gt;Output 0 - script spend 2&lt;/b&gt;&lt;div&gt;&amp;lt;relative time t&lt;sub&gt;1&lt;/sub&gt;&amp;gt;&lt;/div&gt;&lt;div&gt;OP_CSV&lt;/div&gt;&lt;div&gt;OP_DROP&lt;/div&gt;&lt;div&gt;&amp;lt;Trader Pubkey&amp;gt;&lt;/div&gt;&lt;div&gt;OP_CHECKSIG&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;" style="text;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;spacingLeft=4;spacingRight=4;overflow=hidden;points=[[0,0.5],[1,0.5]];portConstraint=eastwest;rotatable=0;whiteSpace=wrap;html=1;" parent="QoEpu0lZctptPt5Us8xi-5" vertex="1">
+          <mxGeometry y="170" width="160" height="100" as="geometry" />
+        </mxCell>
+        <mxCell id="QoEpu0lZctptPt5Us8xi-10" value="RedirectTx" style="swimlane;fontStyle=0;childLayout=stackLayout;horizontal=1;startSize=30;horizontalStack=0;resizeParent=1;resizeParentMax=0;resizeLast=0;collapsible=1;marginBottom=0;whiteSpace=wrap;html=1;" parent="1" vertex="1">
+          <mxGeometry x="390" y="160" width="140" height="90" as="geometry" />
+        </mxCell>
+        <mxCell id="QoEpu0lZctptPt5Us8xi-11" value="Output 0..n: to BMs" style="text;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;spacingLeft=4;spacingRight=4;overflow=hidden;points=[[0,0.5],[1,0.5]];portConstraint=eastwest;rotatable=0;whiteSpace=wrap;html=1;" parent="QoEpu0lZctptPt5Us8xi-10" vertex="1">
+          <mxGeometry y="30" width="140" height="30" as="geometry" />
+        </mxCell>
+        <mxCell id="QoEpu0lZctptPt5Us8xi-12" value="Output n+1: Anchor output for BM" style="text;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;spacingLeft=4;spacingRight=4;overflow=hidden;points=[[0,0.5],[1,0.5]];portConstraint=eastwest;rotatable=0;whiteSpace=wrap;html=1;" parent="QoEpu0lZctptPt5Us8xi-10" vertex="1">
+          <mxGeometry y="60" width="140" height="30" as="geometry" />
+        </mxCell>
+        <mxCell id="QoEpu0lZctptPt5Us8xi-14" style="rounded=0;orthogonalLoop=1;jettySize=auto;html=1;entryX=1;entryY=0.5;entryDx=0;entryDy=0;" parent="1" source="QoEpu0lZctptPt5Us8xi-10" target="QoEpu0lZctptPt5Us8xi-6" edge="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="QoEpu0lZctptPt5Us8xi-19" style="edgeStyle=none;shape=connector;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=default;align=center;verticalAlign=middle;fontFamily=Helvetica;fontSize=11;fontColor=default;labelBackgroundColor=default;endArrow=classic;" parent="1" source="Q_AP1fNf9fPvJ9VrVZ_o-2" target="QoEpu0lZctptPt5Us8xi-5" edge="1">
+          <mxGeometry relative="1" as="geometry">
+            <mxPoint x="290" y="280" as="targetPoint" />
+            <mxPoint x="397.52380952380963" y="360" as="sourcePoint" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="Q_AP1fNf9fPvJ9VrVZ_o-2" value="ChannelState1Tx" style="swimlane;fontStyle=0;childLayout=stackLayout;horizontal=1;startSize=30;horizontalStack=0;resizeParent=1;resizeParentMax=0;resizeLast=0;collapsible=1;marginBottom=0;whiteSpace=wrap;html=1;" parent="1" vertex="1">
+          <mxGeometry x="400" y="320" width="190" height="140" as="geometry" />
+        </mxCell>
+        <mxCell id="Q_AP1fNf9fPvJ9VrVZ_o-3" value="Output 0: Traders change&lt;div&gt;(amount: initial amount - trade fee)&lt;/div&gt;" style="text;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;spacingLeft=4;spacingRight=4;overflow=hidden;points=[[0,0.5],[1,0.5]];portConstraint=eastwest;rotatable=0;whiteSpace=wrap;html=1;" parent="Q_AP1fNf9fPvJ9VrVZ_o-2" vertex="1">
+          <mxGeometry y="30" width="190" height="50" as="geometry" />
+        </mxCell>
+        <mxCell id="Q_AP1fNf9fPvJ9VrVZ_o-4" value="Output 1: (amount: trade fee)&lt;div&gt;key spend to PubKey C (BM payment)&lt;/div&gt;" style="text;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;spacingLeft=4;spacingRight=4;overflow=hidden;points=[[0,0.5],[1,0.5]];portConstraint=eastwest;rotatable=0;whiteSpace=wrap;html=1;" parent="Q_AP1fNf9fPvJ9VrVZ_o-2" vertex="1">
+          <mxGeometry y="80" width="190" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="FIGwZFJVNrLS457Xv5qL-7" style="rounded=0;orthogonalLoop=1;jettySize=auto;html=1;entryX=0.655;entryY=1.008;entryDx=0;entryDy=0;entryPerimeter=0;" parent="1" target="Q_AP1fNf9fPvJ9VrVZ_o-1" edge="1">
+          <mxGeometry relative="1" as="geometry">
+            <mxPoint x="310" y="507.7227722772277" as="sourcePoint" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="FIGwZFJVNrLS457Xv5qL-8" style="edgeStyle=none;shape=connector;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;entryX=0.367;entryY=1.029;entryDx=0;entryDy=0;entryPerimeter=0;strokeColor=default;align=center;verticalAlign=middle;fontFamily=Helvetica;fontSize=11;fontColor=default;labelBackgroundColor=default;endArrow=classic;" parent="1" target="Q_AP1fNf9fPvJ9VrVZ_o-1" edge="1">
+          <mxGeometry relative="1" as="geometry">
+            <mxPoint x="221.10944935418092" y="570" as="sourcePoint" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="69QWRgk2T1_iA0vhkOeC-2" value="ChannelState3Tx" style="swimlane;fontStyle=0;childLayout=stackLayout;horizontal=1;startSize=30;horizontalStack=0;resizeParent=1;resizeParentMax=0;resizeLast=0;collapsible=1;marginBottom=0;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+          <mxGeometry x="90" y="570" width="190" height="140" as="geometry" />
+        </mxCell>
+        <mxCell id="69QWRgk2T1_iA0vhkOeC-3" value="Output 0: Traders change&lt;div&gt;(amount: initial amount - 3x trade fee)&lt;/div&gt;" style="text;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;spacingLeft=4;spacingRight=4;overflow=hidden;points=[[0,0.5],[1,0.5]];portConstraint=eastwest;rotatable=0;whiteSpace=wrap;html=1;" vertex="1" parent="69QWRgk2T1_iA0vhkOeC-2">
+          <mxGeometry y="30" width="190" height="50" as="geometry" />
+        </mxCell>
+        <mxCell id="69QWRgk2T1_iA0vhkOeC-4" value="Output 1: (amount: 3x trade fee)&lt;div&gt;key spend to PubKey C (BM payment)&lt;/div&gt;" style="text;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;spacingLeft=4;spacingRight=4;overflow=hidden;points=[[0,0.5],[1,0.5]];portConstraint=eastwest;rotatable=0;whiteSpace=wrap;html=1;" vertex="1" parent="69QWRgk2T1_iA0vhkOeC-2">
+          <mxGeometry y="80" width="190" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="69QWRgk2T1_iA0vhkOeC-5" value="ChannelState2Tx" style="swimlane;fontStyle=0;childLayout=stackLayout;horizontal=1;startSize=30;horizontalStack=0;resizeParent=1;resizeParentMax=0;resizeLast=0;collapsible=1;marginBottom=0;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+          <mxGeometry x="319" y="500" width="190" height="140" as="geometry" />
+        </mxCell>
+        <mxCell id="69QWRgk2T1_iA0vhkOeC-6" value="Output 0: Traders change&lt;div&gt;(amount: initial amount - 2x trade fee)&lt;/div&gt;" style="text;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;spacingLeft=4;spacingRight=4;overflow=hidden;points=[[0,0.5],[1,0.5]];portConstraint=eastwest;rotatable=0;whiteSpace=wrap;html=1;" vertex="1" parent="69QWRgk2T1_iA0vhkOeC-5">
+          <mxGeometry y="30" width="190" height="50" as="geometry" />
+        </mxCell>
+        <mxCell id="69QWRgk2T1_iA0vhkOeC-7" value="Output 1: (amount: 2x trade fee)&lt;div&gt;key spend to PubKey C (BM payment)&lt;/div&gt;" style="text;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;spacingLeft=4;spacingRight=4;overflow=hidden;points=[[0,0.5],[1,0.5]];portConstraint=eastwest;rotatable=0;whiteSpace=wrap;html=1;" vertex="1" parent="69QWRgk2T1_iA0vhkOeC-5">
+          <mxGeometry y="80" width="190" height="60" as="geometry" />
+        </mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>
