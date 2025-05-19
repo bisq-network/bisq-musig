@@ -12,11 +12,14 @@ service Musig {
 
   rpc PublishDepositTx (PublishDepositTxRequest) returns (stream TxConfirmationStatus);
 
+  rpc SubscribeTxConfirmationStatus (SubscribeTxConfirmationStatusRequest) returns (stream TxConfirmationStatus);
+
   rpc SignSwapTx (SwapTxSignatureRequest) returns (SwapTxSignatureResponse);
 
   rpc CloseTrade (CloseTradeRequest) returns (CloseTradeResponse);
 }
 
+// TODO: Same as 'trade.TradeRole' from Bisq2 protos (minus 'UNSPECIFIED' variant, which should probably be added):
 enum Role {
   SELLER_AS_MAKER = 0;
   SELLER_AS_TAKER = 1;
@@ -87,6 +90,11 @@ message DepositPsbt {
 }
 
 message PublishDepositTxRequest {
+  string tradeId = 1;
+  DepositPsbt depositPsbt = 2;
+}
+
+message SubscribeTxConfirmationStatusRequest {
   string tradeId = 1;
   DepositPsbt depositPsbt = 2;
 }
