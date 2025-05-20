@@ -15,7 +15,7 @@ use tokio::time::{self, Duration, MissedTickBehavior};
 
 use crate::observable::ObservableHashMap;
 
-const COOKIE_FILE_PATH: &str = ".localnet/bitcoind/regtest/.cookie";
+const LOCALNET_COOKIE_FILE_PATH: &str = ".localnet/bitcoind/regtest/.cookie";
 //noinspection SpellCheckingInspection
 const EXTERNAL_DESCRIPTOR: &str = "tr(tprv8ZgxMBicQKsPdrjwWCyXqqJ4YqcyG4DmKtjjsRt29v1PtD3r3PuFJAj\
     WytzcvSTKnZAGAkPSmnrdnuHWxCAwy3i1iPhrtKAfXRH7dVCNGp6/86'/1'/0'/0/*)#g9xn7wf9";
@@ -52,11 +52,21 @@ pub struct WalletServiceImpl {
     // TODO: Consider using async locks here, as wallet operations have nontrivial cost:
     wallet: RwLock<Wallet>,
     tx_confidence_map: Mutex<ObservableHashMap<Txid, TxConfidence>>,
+
+    // Make the following RPC parameters configurable for testing:
+    rpc_auth: Auth,
+    poll_period: Duration,
 }
 
 impl WalletServiceImpl {
-    // TODO: Make wallet setup configurable.
     pub fn new() -> Self {
+        Self::create_with_rpc_params(
+            Auth::CookieFile(LOCALNET_COOKIE_FILE_PATH.into()),
+            Duration::from_secs(1))
+    }
+
+    // TODO: Make wallet setup properly configurable, not just the RPC authentication method and polling period.
+    pub fn create_with_rpc_params(rpc_auth: Auth, poll_period: Duration) -> Self {
         let wallet = Wallet::create(EXTERNAL_DESCRIPTOR, INTERNAL_DESCRIPTOR)
             .network(Network::Regtest)
             .create_wallet_no_persist()
@@ -65,7 +75,7 @@ impl WalletServiceImpl {
         let mut tx_confidence_map = ObservableHashMap::new();
         tx_confidence_map.sync(tx_confidence_entries(&wallet));
 
-        Self { wallet: RwLock::new(wallet), tx_confidence_map: Mutex::new(tx_confidence_map) }
+        Self { wallet: RwLock::new(wallet), tx_confidence_map: Mutex::new(tx_confidence_map), rpc_auth, poll_period }
     }
 
     fn sync_tx_confidence_map(&self) {
@@ -94,7 +104,7 @@ impl WalletService for WalletServiceImpl {
     async fn connect(&self) -> Result<Never> {
         let rpc_client: Client = task::block_in_place(|| Client::new(
             "https://127.0.0.1:18443",
-            Auth::CookieFile(COOKIE_FILE_PATH.into()),
+            self.rpc_auth.clone(),
         ))?;
 
         let blockchain_info = task::block_in_place(|| rpc_client.get_blockchain_info())?;
@@ -123,7 +133,7 @@ impl WalletService for WalletServiceImpl {
         println!("Wallet balance after syncing: {}", self.balance().total());
 
         println!("Polling for further blocks and mempool txs...");
-        let mut interval = time::interval(Duration::from_secs(1));
+        let mut interval = time::interval(self.poll_period);
         interval.set_missed_tick_behavior(MissedTickBehavior::Delay);
         interval.tick().await;
         loop {
@@ -162,13 +172,13 @@ impl WalletService for WalletServiceImpl {
     }
 }
 
-#[derive(Clone, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct TxConfidence {
     pub wallet_tx: WalletTx,
     pub num_confirmations: u32,
 }
 
-#[derive(Clone, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct WalletTx {
     pub txid: Txid,
     pub tx: Arc<Transaction>,
