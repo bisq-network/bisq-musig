@@ -13,7 +13,6 @@ use std::sync::Arc;
 use std::time::Duration;
 use futures::stream::{self, BoxStream, StreamExt as _};
 use tokio::task::{self, JoinHandle};
-use tokio_util::task::AbortOnDropHandle;
 use tonic::transport::{self, Server};
 use tonic::transport::server::TcpIncoming;
 use unimock::{MockFn as _, Unimock, matching};
@@ -99,7 +98,7 @@ fn test_cli_no_connection() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn test_cli_wallet_balance() {
     let mut port = 50052;
-    let _guard = AbortOnDropHandle::new(spawn_wallet_grpc_service(&mut port, WalletServiceImpl::new()));
+    spawn_wallet_grpc_service(&mut port, WalletServiceImpl::new());
 
     task::spawn_blocking(move || assert_cli_with_port(port, ["wallet-balance"]))
         .await.unwrap()
@@ -111,7 +110,7 @@ async fn test_cli_wallet_balance() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn test_cli_new_address() {
     let mut port = 50052;
-    let _guard = AbortOnDropHandle::new(spawn_wallet_grpc_service(&mut port, WalletServiceImpl::new()));
+    spawn_wallet_grpc_service(&mut port, WalletServiceImpl::new());
 
     task::spawn_blocking(move || assert_cli_with_port(port, ["new-address"]))
         .await.unwrap()
@@ -133,7 +132,7 @@ async fn test_cli_list_unspent() {
     let mock_wallet_service = Unimock::new(clause).no_verify_in_drop();
 
     let mut port = 50052;
-    let _guard = AbortOnDropHandle::new(spawn_wallet_grpc_service(&mut port, mock_wallet_service));
+    spawn_wallet_grpc_service(&mut port, mock_wallet_service);
 
     task::spawn_blocking(move || assert_cli_with_port(port, ["list-unspent"]))
         .await.unwrap()
@@ -151,7 +150,7 @@ async fn test_cli_notify_confidence() {
     let mock_wallet_service = Unimock::new(clause).no_verify_in_drop();
 
     let mut port = 50052;
-    let _guard = AbortOnDropHandle::new(spawn_wallet_grpc_service(&mut port, mock_wallet_service));
+    spawn_wallet_grpc_service(&mut port, mock_wallet_service);
 
     task::spawn_blocking(move || assert_cli_with_port(port, ["notify-confidence",
         "37b560334094515cfdaa0146bfd4ce19e940064c505082031858b0aba3218990"]))

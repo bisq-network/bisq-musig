@@ -13,14 +13,13 @@ use serde::Deserialize;
 use tokio::sync::{OnceCell, Semaphore, SemaphorePermit};
 use tokio::time::{self, Duration};
 use tokio::task;
-use tokio_util::task::AbortOnDropHandle;
 
 const BITCOIND_RPC_URL: &str = "http://localhost:18443";
 const BITCOIND_POLLING_PERIOD: Duration = Duration::from_millis(100);
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn test_wallet_service_mine_single_tx() {
-    let (wallet_service, _guard, _permit) = start_wallet_service_with_nigiri_permit().await;
+    let (wallet_service, _permit) = start_wallet_service_with_nigiri_permit().await;
     let balance1 = wallet_service.balance();
 
     // Send 0.01 BTC from bitcoind to a fresh wallet address and wait for wallet to sync.
@@ -73,19 +72,19 @@ fn mine(block_num: u64, to_address: Option<&Address>) -> Vec<BlockHash> {
     }))
 }
 
-async fn start_wallet_service_with_nigiri_permit() -> (Arc<impl WalletService>, AbortOnDropHandle<impl Sized>, NigiriPermit) {
+async fn start_wallet_service_with_nigiri_permit() -> (Arc<impl WalletService>, NigiriPermit) {
     let permit = start_nigiri_with_permit().await.unwrap();
 
     let wallet_service = Arc::new(WalletServiceImpl::create_with_rpc_params(
         nigiri_rpc_auth(), BITCOIND_POLLING_PERIOD));
     assert_eq!(wallet_service.balance(), Balance::default());
 
-    let guard = AbortOnDropHandle::new(wallet_service.clone().spawn_connection());
+    wallet_service.clone().spawn_connection();
     // Wait for RPC sync...
     // FIXME: A bit hacky -- should add logic to the service to notify when the wallet is synced.
     time::sleep(Duration::from_secs(1)).await;
 
-    (wallet_service, guard, permit)
+    (wallet_service, permit)
 }
 
 fn nigiri_rpc_auth() -> Auth { Auth::UserPass("admin1".into(), "123".into()) }

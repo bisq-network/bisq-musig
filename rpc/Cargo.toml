@@ -30,7 +30,6 @@ anyhow = "1.0.98"
 assert_cmd = "2.0.17"
 const_format = "0.2.34"
 predicates = "3.1.3"
-tokio-util = { version = "0.7.15", features = ["rt"] }
 
 [lints.clippy]
 pedantic = "warn"
