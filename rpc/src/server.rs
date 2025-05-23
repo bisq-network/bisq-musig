@@ -9,7 +9,8 @@ use crate::pb::convert::TryProtoInto;
 use crate::pb::musigrpc::{CloseTradeRequest, CloseTradeResponse, DepositPsbt,
     DepositTxSignatureRequest, NonceSharesMessage, NonceSharesRequest, PartialSignaturesMessage,
     PartialSignaturesRequest, PubKeySharesRequest, PubKeySharesResponse, PublishDepositTxRequest,
-    SwapTxSignatureRequest, SwapTxSignatureResponse, TxConfirmationStatus};
+    SubscribeTxConfirmationStatusRequest, SwapTxSignatureRequest, SwapTxSignatureResponse,
+    TxConfirmationStatus};
 use crate::pb::musigrpc::musig_server;
 use crate::pb::walletrpc::{ConfEvent, ConfRequest, ListUnspentRequest, ListUnspentResponse,
     NewAddressRequest, NewAddressResponse, WalletBalanceRequest, WalletBalanceResponse};
@@ -125,6 +126,21 @@ impl musig_server::Musig for MusigImpl {
         })
     }
 
+    type SubscribeTxConfirmationStatusStream = BoxStream<'static, Result<TxConfirmationStatus>>;
+
+    async fn subscribe_tx_confirmation_status(&self, request: Request<SubscribeTxConfirmationStatusRequest>)
+                                              -> Result<Response<Self::SubscribeTxConfirmationStatusStream>> {
+        handle_request(request, move |_request, _trade_model| {
+            let confirmation_event = TxConfirmationStatus {
+                tx: b"signed_deposit_tx".into(),
+                current_block_height: 900_001,
+                num_confirmations: 1,
+            };
+
+            Ok(stream::iter(iter::once(Ok(confirmation_event))).boxed())
+        })
+    }
+
     async fn sign_swap_tx(&self, request: Request<SwapTxSignatureRequest>) -> Result<Response<SwapTxSignatureResponse>> {
         handle_request(request, move |request, trade_model| {
             trade_model.set_swap_tx_input_peers_partial_signature(request.swap_tx_input_peers_partial_signature.try_proto_into()?);
@@ -229,6 +245,7 @@ impl_musig_req!(PartialSignaturesRequest);
 impl_musig_req!(NonceSharesRequest);
 impl_musig_req!(DepositTxSignatureRequest);
 impl_musig_req!(PublishDepositTxRequest);
+impl_musig_req!(SubscribeTxConfirmationStatusRequest);
 impl_musig_req!(SwapTxSignatureRequest);
 impl_musig_req!(CloseTradeRequest);
 

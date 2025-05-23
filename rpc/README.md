@@ -70,3 +70,31 @@ mvn install exec:java
 ```sh
 mvn exec:java -Pwallet
 ```
+
+### Integration tests using Nigiri
+
+Some of the integration tests require [Nigiri](https://github.com/vulpemventures/nigiri) to run, which is a command-line
+interface managing a selection of `docker-compose` containers providing a local regtest network. A custom datadir
+relative to the root of the `rpc` crate is assumed, with currently only the `bitcoin` component being used by the tests,
+though later `electrs` will be likely also be used to test and develop an Electrum wallet backend.
+
+To start Nigiri with the project-local datadir, run:
+
+```sh
+nigiri --datadir "$PWD/.nigiri" start
+```
+
+This will also fetch and install the containers and their configuration in `$PWD/.nigiri` if run for the first time. The
+Rust integration and unit tests may be run by:
+
+```sh
+cargo test
+```
+
+as usual, which will automatically start Nigiri (with the `--ci` flag to exclude Esplora) if it isn't running already.
+
+It continues to run after the tests finish, so to stop Nigiri, subsequently run:
+
+```sh
+nigiri --datadir "$PWD/.nigiri" stop
+```

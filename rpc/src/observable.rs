@@ -21,6 +21,7 @@ impl<T> Observable<T> {
 
     fn try_into_unobserved(mut self) -> Result<T, StillObservedError<T>> {
         self.senders.retain(|s| !s.is_closed());
+        shrink_amortized(&mut self.senders);
         if self.senders.is_empty() { Ok(self.value) } else { Err(StillObservedError(self)) }
     }
 }
@@ -43,12 +44,19 @@ impl<T: Clone + PartialEq> Observable<T> {
         } else {
             self.senders.retain(|s| s.send(new_value.clone()).is_ok());
         }
+        shrink_amortized(&mut self.senders);
         old_value
     }
 }
 
 impl<T: Clone + Default + PartialEq> Observable<T> {
     pub fn take(&mut self) -> T { self.replace(T::default()) }
+}
+
+fn shrink_amortized<T>(vec: &mut Vec<T>) {
+    if vec.len() < vec.capacity() / 4 {
+        vec.shrink_to(vec.len() * 2);
+    }
 }
 
 pub struct ObservableHashMap<K, V> {

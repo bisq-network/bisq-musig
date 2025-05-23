@@ -94,7 +94,7 @@ public class TradeProtocolClient {
                 .build());
         System.out.println("Got reply: " + buyerPartialSignatureMessage);
 
-        // Buyer sends Message C to seller.
+        // Buyer sends Message C to seller. (Buyer's swapTxInputPartialSignature is withheld from it.)
 
         var sellerPartialSignatureMessage = stub.getPartialSignatures(PartialSignaturesRequest.newBuilder()
                 .setTradeId(sellerTradeId)
@@ -105,10 +105,15 @@ public class TradeProtocolClient {
 
         var sellerDepositPsbt = stub.signDepositTx(DepositTxSignatureRequest.newBuilder()
                 .setTradeId(sellerTradeId)
-                // REDACT buyer's swapTxInputPartialSignature:
+                // REDACT buyer's swapTxInputPartialSignature (as not yet known by seller):
                 .setPeersPartialSignatures(buyerPartialSignatureMessage.toBuilder().clearSwapTxInputPartialSignature())
                 .build());
         System.out.println("Got reply: " + sellerDepositPsbt);
+
+        // Seller subscribes to be notified of Deposit Tx confirmation:
+        var sellerDepositTxConfirmationIter = stub.subscribeTxConfirmationStatus(SubscribeTxConfirmationStatusRequest.newBuilder()
+                .setTradeId(sellerTradeId)
+                .build());
 
         // Seller sends Message D to buyer.
 
@@ -119,20 +124,29 @@ public class TradeProtocolClient {
         System.out.println("Got reply: " + buyerDepositPsbt);
 
         // *** BUYER BROADCASTS DEPOSIT TX ***
-        var depositTxConfirmationIter = stub.publishDepositTx(PublishDepositTxRequest.newBuilder()
+        var buyerDepositTxConfirmationIter = stub.publishDepositTx(PublishDepositTxRequest.newBuilder()
                 .setTradeId(buyerTradeId)
                 .build());
-        depositTxConfirmationIter.forEachRemaining(reply -> System.out.println("Got reply: " + reply));
         // ***********************************
 
-        // Buyer sends Message E to seller.
+        // DELAY: Both traders await Deposit Tx confirmation:
+        buyerDepositTxConfirmationIter.forEachRemaining(reply -> System.out.println("Got reply: " + reply));
+        sellerDepositTxConfirmationIter.forEachRemaining(reply -> System.out.println("Got reply: " + reply));
 
+        // DELAY: Buyer makes fiat payment.
+
+        // Buyer sends Message E to seller. (Includes previously withheld buyer's swapTxInputPartialSignature.)
+
+        // (Seller should compute Swap Tx signature immediately upon receipt of Message E, instead of waiting until the
+        // end of the trade, to make sure that there's no problem with it and raise a dispute ASAP otherwise.)
         var swapTxSignatureResponse = stub.signSwapTx(SwapTxSignatureRequest.newBuilder()
                 .setTradeId(sellerTradeId)
                 // NOW send the redacted buyer's swapTxInputPartialSignature:
                 .setSwapTxInputPeersPartialSignature(buyerPartialSignatureMessage.getSwapTxInputPartialSignature())
                 .build());
         System.out.println("Got reply: " + swapTxSignatureResponse);
+
+        // DELAY: Seller checks buyer's fiat payment.
 
         if (closureType == ClosureType.COOPERATIVE) {
             // Seller sends Message F to buyer.

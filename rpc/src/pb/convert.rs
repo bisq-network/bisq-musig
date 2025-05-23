@@ -17,6 +17,23 @@ use crate::protocol::{ExchangedNonces, ExchangedSigs, ProtocolErrorKind, Redirec
 use crate::storage::{ByRef, ByVal};
 use crate::wallet::TxConfidence;
 
+pub(crate) mod hex {
+    use serde_with::SerializeAs;
+    use serde_with::formats::Lowercase;
+    use serde_with::hex::Hex;
+    use serde::Serializer;
+
+    pub struct ByteReversedHex;
+
+    impl<T: AsRef<[u8]>> SerializeAs<T> for ByteReversedHex {
+        fn serialize_as<S: Serializer>(source: &T, serializer: S) -> Result<S::Ok, S::Error> {
+            let mut source = source.as_ref().to_owned();
+            source.reverse();
+            Hex::<Lowercase>::serialize_as(&source, serializer)
+        }
+    }
+}
+
 pub trait TryProtoInto<T> {
     /// # Errors
     /// Will return `Err` if conversion from proto fails
