@@ -698,7 +698,9 @@ dependencies = [
  "bdk_wallet",
  "dotenv",
  "musig2",
+ "once_cell",
  "rand 0.9.0",
+ "regtest-env",
 ]
 
 [[package]]
@@ -804,6 +806,10 @@ name = "regex-syntax"
 version = "0.8.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2b15c43186be67a4fd63bee50d0303afffcef381492ebe2c5d87f324e1b8815c"
+
+[[package]]
+name = "regtest-env"
+version = "0.1.0"
 
 [[package]]
 name = "ring"

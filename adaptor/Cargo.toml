@@ -11,3 +11,6 @@ secp = { version = "0.4.1", features = ["rand"] }
 bdk = "0.29.0"
 anyhow = "1.0.93"
 dotenv = "0.15.0"
+
+[dev-dependencies]
+regtest-env = { path = "../regtest-env" }
