@@ -151,6 +151,7 @@ public class TradeProtocolClient {
         // ***********************************
 
         // DELAY: Both traders await Deposit Tx confirmation:
+        System.out.println("Awaiting Deposit Tx confirmation...\n");
         buyerDepositTxConfirmationIter.forEachRemaining(reply -> System.out.println("Got reply: " + reply));
         sellerDepositTxConfirmationIter.forEachRemaining(reply -> System.out.println("Got reply: " + reply));
 
@@ -241,6 +242,7 @@ public class TradeProtocolClient {
         // ***********************************
 
         // DELAY: Both traders await Deposit Tx confirmation:
+        System.out.println("Awaiting Deposit Tx confirmation...\n");
         buyerDepositTxConfirmationIter.forEachRemaining(reply -> System.out.println("Got reply: " + reply));
         sellerDepositTxConfirmationIter.forEachRemaining(reply -> System.out.println("Got reply: " + reply));
 

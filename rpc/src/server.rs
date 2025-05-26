@@ -1,8 +1,8 @@
 use bdk_wallet::bitcoin::{Amount, FeeRate};
-use futures::stream::{self, BoxStream, StreamExt as _};
-use std::iter;
+use futures::stream::{self, BoxStream, Stream, StreamExt as _};
 use std::marker::{Send, Sync};
 use std::sync::Arc;
+use tokio::time::{self, Duration};
 use tonic::{Request, Response, Result, Status};
 
 use crate::pb::convert::TryProtoInto;
@@ -116,13 +116,7 @@ impl musig_server::Musig for MusigImpl {
         handle_request(request, move |_request, _trade_model| {
             // TODO: *** BROADCAST DEPOSIT TX ***
 
-            let confirmation_event = TxConfirmationStatus {
-                tx: b"signed_deposit_tx".into(),
-                current_block_height: 900_001,
-                num_confirmations: 1,
-            };
-
-            Ok(stream::iter(iter::once(Ok(confirmation_event))).boxed())
+            Ok(mock_tx_confirmation_status_stream().boxed())
         })
     }
 
@@ -131,13 +125,7 @@ impl musig_server::Musig for MusigImpl {
     async fn subscribe_tx_confirmation_status(&self, request: Request<SubscribeTxConfirmationStatusRequest>)
                                               -> Result<Response<Self::SubscribeTxConfirmationStatusStream>> {
         handle_request(request, move |_request, _trade_model| {
-            let confirmation_event = TxConfirmationStatus {
-                tx: b"signed_deposit_tx".into(),
-                current_block_height: 900_001,
-                num_confirmations: 1,
-            };
-
-            Ok(stream::iter(iter::once(Ok(confirmation_event))).boxed())
+            Ok(mock_tx_confirmation_status_stream().boxed())
         })
     }
 
@@ -178,6 +166,18 @@ impl musig_server::Musig for MusigImpl {
             Ok(CloseTradeResponse { peer_output_prv_key_share: my_prv_key_share.serialize().into() })
         })
     }
+}
+
+fn mock_tx_confirmation_status_stream() -> impl Stream<Item=Result<TxConfirmationStatus>> {
+    let confirmation_event = TxConfirmationStatus {
+        tx: b"signed_deposit_tx".into(),
+        current_block_height: 900_001,
+        num_confirmations: 1,
+    };
+    stream::once(async {
+        time::sleep(Duration::from_secs(5)).await;
+        Ok(confirmation_event)
+    })
 }
 
 pub struct WalletImpl {
