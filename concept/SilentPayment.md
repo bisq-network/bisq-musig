@@ -31,7 +31,9 @@ P &=& B + hash(b \cdot A) \cdot G \\
 &=& p \cdot G
 \end{eqnarray}$
 
-so the secret key $p$ is $p=b + hash(b \cdot A)$.
+so the secret key $p$ is $p=b + hash(b \cdot A)$. Bob knows $b$, because that's his private key and
+he learns $A$ by scanning the blockchain and extracting from each transaction the pubkeys and testing if
+he can generate a matching $P$.
 
 ## silent payment and MuSig2 / FROST
 
@@ -59,7 +61,19 @@ can also be used as a proof of payment:
 Each participant would provide a DLEQ for their input and their partial ECDH share
 The proofs can be verified and the shares aggregated,
 which allows the verify to produce the expected output for Bob (i.e., hashing the
-shared secret with counter k and verifying the generated output exists in the transaction)
+shared secret with counter k and verifying the generated output exists in the transaction).
+
+In detail
+
+$\hspace{100pt} \begin{eqnarray}
+e &:=& hash(k \cdot G || k \cdot B) \\
+s &:=& k + e \cdot a \\
+werw \\
+s \cdot G &=& (k + e \cdot a) \cdot G \\
+&=& k \cdot G + e \cdot A \\
+s \cdot B &=& (k+e\cdot a)\cdot B \\
+&=&k \cdot B + e \cdot C
+\end{eqnarray}$
 
 ## state of implementation
 
