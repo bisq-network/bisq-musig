@@ -98,6 +98,18 @@ to resolve the fund with the BM.
 However, if the BM is not responsive, the trader can only use up the channel
 capacity for further trade fees.
 
+### double spend
+
+Since the second trader does not have the historical data of the ChannelStateTxs
+he has no way to see if the first trader does a double spend or not.
+Only the BM can check the correctness of the ChannelStateTxs and therefore make sure
+the first trader is not double spending. If the BM is not online, this can lead
+to double spends not detected immediately. They will be detected later on when the
+BM comes online, at which point he can send the funds to the DAO using the `RedirectTx`.
+The potential gain for someone to do this is low, as he gets only access to the fees and
+the risk of being penalized is not calculatable. (Unless for some reason he knows that the
+BM will not come online anymore.)
+
 ### proof of silent payment
 
 The second trader needs to make sure that the channel-opening transaction is correct
@@ -109,7 +121,7 @@ and is actually on the chain. He verifies:
   He does not get the address $S$ from the other trader, instead that payment address must
   come from the DAO.
 
-The first trader needs to proof to the second trader, that the used Public key $B$ is
+The first trader needs to proof to the second trader that the used Public key $B$ is
 actually a silent payment address of the BM (derived from $S$). The BM needs to publish his silent payment address $S$
 to the public.
 According to [BIP-352](https://github.com/bitcoin/bips/blob/master/bip-0352.mediawiki), see also [this explainer](SilentPayment.md), the address
