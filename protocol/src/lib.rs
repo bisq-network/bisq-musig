@@ -6,29 +6,41 @@ use bdk_electrum::bdk_core::bitcoin::{TapSighashType, Witness};
 use bdk_wallet::bitcoin::key::TapTweak;
 use musig2::secp::{Point, Scalar};
 use musig2::KeyAggContext;
+use once_cell::sync::OnceCell;
+use regtest_env;
 mod protocol_musig_adaptor;
-mod nigiri;
+mod wallet_test_utils;
 
 #[cfg(test)]
 mod tests {
-    use crate::nigiri;
+    use super::*;
+    use crate::wallet_test_utils;
     use crate::protocol_musig_adaptor::{BMPContext, BMPProtocol, ProtocolRole};
     use bdk_electrum::bdk_core::bitcoin::Amount;
+    
+    static TEST_SETUP: OnceCell<()> = OnceCell::new();
+    
+    pub(crate) fn ensure_test_setup() {
+        TEST_SETUP.get_or_init(|| {
+            regtest_env::setup();
+        });
+    }
 
     #[test]
     fn test_musig() -> anyhow::Result<()> {
+        ensure_test_setup();
         initial_tx_creation()?;
         Ok(())
     }
+
     pub fn initial_tx_creation() -> anyhow::Result<(BMPProtocol, BMPProtocol)> {
         println!("running...");
-        nigiri::check_start();
-        let mut alice_funds = nigiri::funded_wallet();
+        let mut alice_funds = wallet_test_utils::funded_wallet();
         //TestWallet::new()?;
 
-        let bob_funds = nigiri::funded_wallet();
+        let bob_funds = wallet_test_utils::funded_wallet();
         //TestWallet::new()?;
-        nigiri::fund_wallet(&mut alice_funds);
+        wallet_test_utils::fund_wallet(&mut alice_funds);
         let seller_amount = &Amount::from_btc(1.4)?;
         let buyer_amount = &Amount::from_btc(0.2)?;
 
@@ -38,7 +50,7 @@ mod tests {
         let mut alice = BMPProtocol::new(alice_context)?;
         let bob_context = BMPContext::new(bob_funds, ProtocolRole::Buyer, seller_amount.clone(), buyer_amount.clone())?;
         let mut bob = BMPProtocol::new(bob_context)?;
-        nigiri::tiktok();
+        wallet_test_utils::tiktok();
 
         // Round 1--------
         let alice_response = alice.round1()?;
@@ -73,12 +85,13 @@ mod tests {
         bob.round5(alice_r4)?;
 
         // done -----------------------------
-        crate::nigiri::tiktok();
+        wallet_test_utils::tiktok();
         Ok((alice, bob))
     }
 
     #[test]
     fn test_swap() -> anyhow::Result<()> {
+        ensure_test_setup();
         // create all transaction and Broadcast DepositTx already
         let (alice, bob) = initial_tx_creation()?;
         dbg!(&alice.swap_tx.tx);
@@ -86,30 +99,32 @@ mod tests {
 
         // alice broadcats SwapTx
         dbg!(alice.swap_tx.broadcast(alice.ctx));
-        nigiri::tiktok();
+        wallet_test_utils::tiktok();
         Ok(())
     }
 
     #[test]
     fn test_warning() -> anyhow::Result<()> {
+        ensure_test_setup();
         // create all transaction and Broadcast DepositTx already
         let (alice, _bob) = initial_tx_creation()?;
         dbg!(&alice.warning_tx_me.tx);
         // alice broadcats WarningTx
         dbg!(alice.warning_tx_me.broadcast(&alice.ctx));
-        nigiri::tiktok();
+        wallet_test_utils::tiktok();
         Ok(())
     }
 
     #[test]
     fn test_claim() -> anyhow::Result<()> {
+        ensure_test_setup();
         // create all transaction and Broadcast DepositTx already
         let (alice, _bob) = initial_tx_creation()?;
         // dbg!(&alice.warning_tx_me.tx);
         // alice broadcats WarningTx
         alice.warning_tx_me.broadcast(&alice.ctx);
-        nigiri::tiktok();
-        nigiri::tiktok(); // we have set time-delay t2 to 2 Blocks
+        wallet_test_utils::tiktok();
+        wallet_test_utils::tiktok(); // we have set time-delay t2 to 2 Blocks
         dbg!(&alice.claim_tx_me.tx);
 
         // according to BIP-68 min time to wait is 512sec
@@ -123,17 +138,18 @@ mod tests {
 
         let tx = alice.claim_tx_me.broadcast(alice.ctx)?;
         dbg!(tx);
-        nigiri::tiktok();
+        wallet_test_utils::tiktok();
         Ok(())
     }
 
     #[test]
     fn test_claim_too_early() -> anyhow::Result<()> {
+        ensure_test_setup();
         // create all transaction and Broadcast DepositTx already
         let (alice, _bob) = initial_tx_creation()?;
         alice.warning_tx_me.broadcast(&alice.ctx);
-        // nigiri::tiktok();
-        nigiri::tiktok(); // we have set time-delay t2 to 2 Blocks
+        // wallet_test_utils::tiktok();
+        wallet_test_utils::tiktok(); // we have set time-delay t2 to 2 Blocks
 
         let rtx = alice.claim_tx_me.broadcast(alice.ctx);
         match rtx {
@@ -147,23 +163,24 @@ mod tests {
                 }
             }
         }
-        nigiri::tiktok();
+        wallet_test_utils::tiktok();
         Ok(())
     }
 
     #[test]
     fn test_redirect() -> anyhow::Result<()> {
+        ensure_test_setup();
         // create all transaction and Broadcast DepositTx already
         let (alice, bob) = initial_tx_creation()?;
         // dbg!(&alice.warning_tx_me.tx);
         // alice broadcats WarningTx
         let bob_warn_id = bob.warning_tx_me.broadcast(&bob.ctx);
-        nigiri::tiktok();
+        wallet_test_utils::tiktok();
         dbg!(bob_warn_id);
 
         let tx = alice.redirect_tx_me.broadcast(alice.ctx);
         dbg!(tx);
-        nigiri::tiktok();
+        wallet_test_utils::tiktok();
         Ok(())
     }
 }
@@ -171,6 +188,7 @@ mod tests {
 //noinspection ALL
 #[test]
 fn test_q_tik() -> anyhow::Result<()> {
+    crate::tests::ensure_test_setup();
     // create all transaction and Broadcast DepositTx already
     let (alice, bob) = crate::tests::initial_tx_creation()?;
     // test!(alice.swap_tx.)
@@ -250,6 +268,6 @@ fn test_q_tik() -> anyhow::Result<()> {
 
     let txid = alice.ctx.funds.client.transaction_broadcast(&tx)?;
     dbg!(txid);
-    nigiri::tiktok();
+    wallet_test_utils::tiktok();
     Ok(())
 }

@@ -1,4 +1,4 @@
-mod common;
+use regtest_env::setup;
 use std::{process::Command, thread, time};
 use std::time::SystemTime;
 
@@ -46,7 +46,7 @@ fn create_wallet(name: &str) -> Result<String, String> {
 /// - Test runs on Bitcoin regtest network
 #[test]
 fn test_bisq_musig() -> Result<(), String> {
-    common::setup();
+    setup();
 
     let timestamp = SystemTime::now()
         .duration_since(SystemTime::UNIX_EPOCH)
