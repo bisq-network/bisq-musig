@@ -4,6 +4,7 @@ use std::marker::{Send, Sync};
 use std::sync::Arc;
 use tokio::time::{self, Duration};
 use tonic::{Request, Response, Result, Status};
+use tracing::{debug, instrument};
 
 use crate::pb::convert::TryProtoInto;
 use crate::pb::musigrpc::{CloseTradeRequest, CloseTradeResponse, DepositPsbt,
@@ -34,8 +35,9 @@ pub struct MusigImpl {}
 //  bigger and less symmetrical.)
 #[tonic::async_trait]
 impl musig_server::Musig for MusigImpl {
+    #[instrument(skip_all)]
     async fn init_trade(&self, request: Request<PubKeySharesRequest>) -> Result<Response<PubKeySharesResponse>> {
-        println!("Got a request: {request:?}");
+        debug!("Got a request: {request:?}");
 
         let request = request.into_inner();
         let mut trade_model = TradeModel::new(request.trade_id, request.my_role.try_proto_into()?);
@@ -52,6 +54,7 @@ impl musig_server::Musig for MusigImpl {
         Ok(Response::new(response))
     }
 
+    #[instrument(skip_all)]
     async fn get_nonce_shares(&self, request: Request<NonceSharesRequest>) -> Result<Response<NonceSharesMessage>> {
         handle_request(request, move |request, trade_model| {
             trade_model.set_peer_key_shares(
@@ -80,6 +83,7 @@ impl musig_server::Musig for MusigImpl {
         })
     }
 
+    #[instrument(skip_all)]
     async fn get_partial_signatures(&self, request: Request<PartialSignaturesRequest>) -> Result<Response<PartialSignaturesMessage>> {
         handle_request(request, move |request, trade_model| {
             let peer_nonce_shares = request.peers_nonce_shares
@@ -99,6 +103,7 @@ impl musig_server::Musig for MusigImpl {
         })
     }
 
+    #[instrument(skip_all)]
     async fn sign_deposit_tx(&self, request: Request<DepositTxSignatureRequest>) -> Result<Response<DepositPsbt>> {
         handle_request(request, move |request, trade_model| {
             let peers_partial_signatures = request.peers_partial_signatures
@@ -112,6 +117,7 @@ impl musig_server::Musig for MusigImpl {
 
     type PublishDepositTxStream = BoxStream<'static, Result<TxConfirmationStatus>>;
 
+    #[instrument(skip_all)]
     async fn publish_deposit_tx(&self, request: Request<PublishDepositTxRequest>) -> Result<Response<Self::PublishDepositTxStream>> {
         handle_request(request, move |_request, _trade_model| {
             // TODO: *** BROADCAST DEPOSIT TX ***
@@ -122,6 +128,7 @@ impl musig_server::Musig for MusigImpl {
 
     type SubscribeTxConfirmationStatusStream = BoxStream<'static, Result<TxConfirmationStatus>>;
 
+    #[instrument(skip_all)]
     async fn subscribe_tx_confirmation_status(&self, request: Request<SubscribeTxConfirmationStatusRequest>)
                                               -> Result<Response<Self::SubscribeTxConfirmationStatusStream>> {
         handle_request(request, move |_request, _trade_model| {
@@ -129,6 +136,7 @@ impl musig_server::Musig for MusigImpl {
         })
     }
 
+    #[instrument(skip_all)]
     async fn sign_swap_tx(&self, request: Request<SwapTxSignatureRequest>) -> Result<Response<SwapTxSignatureResponse>> {
         handle_request(request, move |request, trade_model| {
             trade_model.set_swap_tx_input_peers_partial_signature(request.swap_tx_input_peers_partial_signature.try_proto_into()?);
@@ -145,6 +153,7 @@ impl musig_server::Musig for MusigImpl {
         })
     }
 
+    #[instrument(skip_all)]
     async fn close_trade(&self, request: Request<CloseTradeRequest>) -> Result<Response<CloseTradeResponse>> {
         handle_request(request, move |request, trade_model| {
             if let Some(peer_prv_key_share) = request.my_output_peers_prv_key_share.try_proto_into()? {
@@ -186,16 +195,18 @@ pub struct WalletImpl {
 
 #[tonic::async_trait]
 impl wallet_server::Wallet for WalletImpl {
+    #[instrument(skip_all)]
     async fn wallet_balance(&self, request: Request<WalletBalanceRequest>) -> Result<Response<WalletBalanceResponse>> {
-        println!("Got a request: {request:?}");
+        debug!("Got a request: {request:?}");
 
         let balance = self.wallet_service.balance().into();
 
         Ok(Response::new(balance))
     }
 
+    #[instrument(skip_all)]
     async fn new_address(&self, request: Request<NewAddressRequest>) -> Result<Response<NewAddressResponse>> {
-        println!("Got a request: {request:?}");
+        debug!("Got a request: {request:?}");
 
         let address = self.wallet_service.reveal_next_address();
 
@@ -205,8 +216,9 @@ impl wallet_server::Wallet for WalletImpl {
         }))
     }
 
+    #[instrument(skip_all)]
     async fn list_unspent(&self, request: Request<ListUnspentRequest>) -> Result<Response<ListUnspentResponse>> {
-        println!("Got a request: {request:?}");
+        debug!("Got a request: {request:?}");
 
         let utxos: Vec<_> = self.wallet_service.list_unspent().into_iter()
             .map(Into::into)
@@ -217,8 +229,9 @@ impl wallet_server::Wallet for WalletImpl {
 
     type RegisterConfidenceNtfnStream = BoxStream<'static, Result<ConfEvent>>;
 
+    #[instrument(skip_all)]
     async fn register_confidence_ntfn(&self, request: Request<ConfRequest>) -> Result<Response<Self::RegisterConfidenceNtfnStream>> {
-        println!("Got a request: {request:?}");
+        debug!("Got a request: {request:?}");
 
         let txid = request.into_inner().tx_id.try_proto_into()?;
         let conf_events = self.wallet_service.get_tx_confidence_stream(txid)
@@ -252,7 +265,7 @@ impl_musig_req!(CloseTradeRequest);
 fn handle_request<Req, Res, F>(request: Request<Req>, handler: F) -> Result<Response<Res>>
     where Req: MusigRequest,
           F: FnOnce(Req, &mut TradeModel) -> Result<Res> {
-    println!("Got a request: {request:?}");
+    debug!("Got a request: {request:?}");
 
     let request = request.into_inner();
     let trade_model = TRADE_MODELS.get_trade_model(request.trade_id())
