@@ -187,7 +187,7 @@ fn mock_tx_confirmation_status_stream(trade_id: String) -> impl Stream<Item=Resu
     stream::once(async {
         time::sleep(Duration::from_secs(5)).await;
         Ok(confirmation_event)
-    }).on_drop(move || debug!("Deposit tx status confirmation stream has been dropped for trade ID: {trade_id}"))
+    }).on_drop(move || debug!(trade_id, "Deposit tx status confirmation stream has been dropped."))
 }
 
 pub struct WalletImpl {

@@ -108,18 +108,19 @@ impl WalletService for WalletServiceImpl {
         ))?;
 
         let blockchain_info = task::block_in_place(|| rpc_client.get_blockchain_info())?;
-        info!("Connected to Bitcoin Core RPC.\n  Chain: {}\n  Latest block: {} at height {}",
-            blockchain_info.chain, blockchain_info.best_block_hash, blockchain_info.blocks);
+        info!(chain = %blockchain_info.chain, best_block_hash = %blockchain_info.best_block_hash,
+            blocks = blockchain_info.blocks, "Connected to Bitcoin Core RPC.");
 
         let wallet_tip: CheckPoint = self.wallet.read().unwrap().latest_checkpoint();
         let start_height = wallet_tip.height();
-        info!("Current wallet tip is: {} at height {}", wallet_tip.hash(), start_height);
+        info!(start_hash = %wallet_tip.hash(), start_height, "Fetched latest wallet checkpoint.");
 
         let mut emitter = Emitter::new(&rpc_client, wallet_tip, start_height);
         while let Some(block) = task::block_in_place(|| emitter.next_block())? {
-            debug!("New block {} at height {}.", block.block_hash(), block.block_height());
+            let height = block.block_height();
+            debug!(hash = %block.block_hash(), height, "New block.");
             self.wallet.write().unwrap()
-                .apply_block_connected_to(&block.block, block.block_height(), block.connected_to())?;
+                .apply_block_connected_to(&block.block, height, block.connected_to())?;
         }
 
         debug!("Syncing mempool...");
@@ -129,7 +130,7 @@ impl WalletService for WalletServiceImpl {
         debug!("Syncing tx confidence map with wallet.");
         self.sync_tx_confidence_map();
 
-        info!("Wallet balance after syncing: {}", self.balance().total());
+        info!(wallet_balance_total = %self.balance().total(), "Finished initial sync.");
 
         info!("Polling for further blocks and mempool txs...");
         let mut interval = time::interval(self.poll_period);
@@ -139,9 +140,10 @@ impl WalletService for WalletServiceImpl {
             interval.tick().await;
 
             while let Some(block) = task::block_in_place(|| emitter.next_block())? {
-                debug!("New block {} at height {}.", block.block_hash(), block.block_height());
+                let height = block.block_height();
+                debug!(hash = %block.block_hash(), height, "New block.");
                 self.wallet.write().unwrap()
-                    .apply_block_connected_to(&block.block, block.block_height(), block.connected_to())?;
+                    .apply_block_connected_to(&block.block, height, block.connected_to())?;
             }
 
             let mempool_emissions = task::block_in_place(|| emitter.mempool())?;
@@ -166,7 +168,7 @@ impl WalletService for WalletServiceImpl {
 
     fn get_tx_confidence_stream(&self, txid: Txid) -> BoxStream<'static, Option<TxConfidence>> {
         self.tx_confidence_map.lock().unwrap().observe(txid)
-            .on_drop(move || debug!("Confidence stream has been dropped for txid: {txid}"))
+            .on_drop(move || debug!(%txid, "Confidence stream has been dropped."))
             .boxed()
     }
 }
