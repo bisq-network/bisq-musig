@@ -5,14 +5,14 @@ use bdk_bitcoind_rpc::bitcoincore_rpc::{Auth, Client, RpcApi as _};
 use bdk_wallet::{AddressInfo, Balance, KeychainKind, LocalOutput, Wallet};
 use bdk_wallet::bitcoin::{Network, Transaction, Txid};
 use bdk_wallet::chain::{CheckPoint, ChainPosition, ConfirmationBlockTime};
-use drop_stream::DropStream;
+use drop_stream::DropStreamExt as _;
 use futures::never::Never;
 use futures::stream::{BoxStream, StreamExt as _};
 use std::sync::{Arc, Mutex, RwLock};
 use thiserror::Error;
 use tokio::task::{self, JoinHandle};
 use tokio::time::{self, Duration, MissedTickBehavior};
-use tracing::{debug, info, error};
+use tracing::{debug, error, info};
 
 use crate::observable::ObservableHashMap;
 
@@ -40,9 +40,8 @@ pub trait WalletService {
     /// Will panic if called outside the context of a Tokio runtime
     fn spawn_connection(self: Arc<Self>) -> JoinHandle<Result<Never>> where Self: Send + Sync + 'static {
         task::spawn(async move {
-            let Err(e) = self.connect().await;
-            error!("Wallet connection error: {e}");
-            Err(e)
+            self.connect().await
+                .inspect_err(|e| error!("Wallet connection error: {e}"))
         })
     }
 }
@@ -166,9 +165,9 @@ impl WalletService for WalletServiceImpl {
     }
 
     fn get_tx_confidence_stream(&self, txid: Txid) -> BoxStream<'static, Option<TxConfidence>> {
-        DropStream::new(self.tx_confidence_map.lock().unwrap().observe(txid), move || {
-            debug!("Confidence stream has been dropped for txid: {txid}");
-        }).boxed()
+        self.tx_confidence_map.lock().unwrap().observe(txid)
+            .on_drop(move || debug!("Confidence stream has been dropped for txid: {txid}"))
+            .boxed()
     }
 }
 
