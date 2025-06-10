@@ -1,9 +1,12 @@
 use bdk_wallet::bitcoin::{Amount, FeeRate};
-use futures::stream::{self, BoxStream, StreamExt as _};
-use std::iter;
+use drop_stream::DropStreamExt as _;
+use futures::stream::{self, BoxStream, Stream, StreamExt as _};
+use std::fmt::Debug;
 use std::marker::{Send, Sync};
 use std::sync::Arc;
+use tokio::time::{self, Duration};
 use tonic::{Request, Response, Result, Status};
+use tracing::{debug, error, info, instrument};
 
 use crate::pb::convert::TryProtoInto;
 use crate::pb::musigrpc::{CloseTradeRequest, CloseTradeResponse, DepositPsbt,
@@ -34,26 +37,27 @@ pub struct MusigImpl {}
 //  bigger and less symmetrical.)
 #[tonic::async_trait]
 impl musig_server::Musig for MusigImpl {
+    #[instrument(skip_all)]
     async fn init_trade(&self, request: Request<PubKeySharesRequest>) -> Result<Response<PubKeySharesResponse>> {
-        println!("Got a request: {request:?}");
+        handle_request(request, move |request| {
+            let mut trade_model = TradeModel::new(request.trade_id, request.my_role.try_proto_into()?);
+            trade_model.init_my_key_shares();
+            let my_key_shares = trade_model.get_my_key_shares()
+                .ok_or_else(|| Status::internal("missing key shares"))?;
+            let response = PubKeySharesResponse {
+                buyer_output_pub_key_share: my_key_shares[0].pub_key.serialize().into(),
+                seller_output_pub_key_share: my_key_shares[1].pub_key.serialize().into(),
+                current_block_height: 900_000,
+            };
+            TRADE_MODELS.add_trade_model(trade_model);
 
-        let request = request.into_inner();
-        let mut trade_model = TradeModel::new(request.trade_id, request.my_role.try_proto_into()?);
-        trade_model.init_my_key_shares();
-        let my_key_shares = trade_model.get_my_key_shares()
-            .ok_or_else(|| Status::internal("missing key shares"))?;
-        let response = PubKeySharesResponse {
-            buyer_output_pub_key_share: my_key_shares[0].pub_key.serialize().into(),
-            seller_output_pub_key_share: my_key_shares[1].pub_key.serialize().into(),
-            current_block_height: 900_000,
-        };
-        TRADE_MODELS.add_trade_model(trade_model);
-
-        Ok(Response::new(response))
+            Ok(response)
+        })
     }
 
+    #[instrument(skip_all)]
     async fn get_nonce_shares(&self, request: Request<NonceSharesRequest>) -> Result<Response<NonceSharesMessage>> {
-        handle_request(request, move |request, trade_model| {
+        handle_musig_request(request, move |request, trade_model| {
             trade_model.set_peer_key_shares(
                 request.buyer_output_peers_pub_key_share.try_proto_into()?,
                 request.seller_output_peers_pub_key_share.try_proto_into()?);
@@ -80,8 +84,9 @@ impl musig_server::Musig for MusigImpl {
         })
     }
 
+    #[instrument(skip_all)]
     async fn get_partial_signatures(&self, request: Request<PartialSignaturesRequest>) -> Result<Response<PartialSignaturesMessage>> {
-        handle_request(request, move |request, trade_model| {
+        handle_musig_request(request, move |request, trade_model| {
             let peer_nonce_shares = request.peers_nonce_shares
                 .ok_or_else(|| Status::not_found("missing request.peers_nonce_shares"))?;
             trade_model.set_peer_fee_bump_addresses([
@@ -99,8 +104,9 @@ impl musig_server::Musig for MusigImpl {
         })
     }
 
+    #[instrument(skip_all)]
     async fn sign_deposit_tx(&self, request: Request<DepositTxSignatureRequest>) -> Result<Response<DepositPsbt>> {
-        handle_request(request, move |request, trade_model| {
+        handle_musig_request(request, move |request, trade_model| {
             let peers_partial_signatures = request.peers_partial_signatures
                 .ok_or_else(|| Status::not_found("missing request.peers_partial_signatures"))?;
             trade_model.set_peer_partial_signatures_on_my_txs(&peers_partial_signatures.try_proto_into()?);
@@ -112,37 +118,28 @@ impl musig_server::Musig for MusigImpl {
 
     type PublishDepositTxStream = BoxStream<'static, Result<TxConfirmationStatus>>;
 
+    #[instrument(skip_all)]
     async fn publish_deposit_tx(&self, request: Request<PublishDepositTxRequest>) -> Result<Response<Self::PublishDepositTxStream>> {
-        handle_request(request, move |_request, _trade_model| {
-            // TODO: *** BROADCAST DEPOSIT TX ***
+        handle_musig_request(request, move |request, _trade_model| {
+            info!("*** BROADCAST DEPOSIT TX ***"); // TODO: Implement broadcast.
 
-            let confirmation_event = TxConfirmationStatus {
-                tx: b"signed_deposit_tx".into(),
-                current_block_height: 900_001,
-                num_confirmations: 1,
-            };
-
-            Ok(stream::iter(iter::once(Ok(confirmation_event))).boxed())
+            Ok(mock_tx_confirmation_status_stream(request.trade_id().to_owned()).boxed())
         })
     }
 
     type SubscribeTxConfirmationStatusStream = BoxStream<'static, Result<TxConfirmationStatus>>;
 
+    #[instrument(skip_all)]
     async fn subscribe_tx_confirmation_status(&self, request: Request<SubscribeTxConfirmationStatusRequest>)
                                               -> Result<Response<Self::SubscribeTxConfirmationStatusStream>> {
-        handle_request(request, move |_request, _trade_model| {
-            let confirmation_event = TxConfirmationStatus {
-                tx: b"signed_deposit_tx".into(),
-                current_block_height: 900_001,
-                num_confirmations: 1,
-            };
-
-            Ok(stream::iter(iter::once(Ok(confirmation_event))).boxed())
+        handle_musig_request(request, move |request, _trade_model| {
+            Ok(mock_tx_confirmation_status_stream(request.trade_id().to_owned()).boxed())
         })
     }
 
+    #[instrument(skip_all)]
     async fn sign_swap_tx(&self, request: Request<SwapTxSignatureRequest>) -> Result<Response<SwapTxSignatureResponse>> {
-        handle_request(request, move |request, trade_model| {
+        handle_musig_request(request, move |request, trade_model| {
             trade_model.set_swap_tx_input_peers_partial_signature(request.swap_tx_input_peers_partial_signature.try_proto_into()?);
             trade_model.aggregate_swap_tx_partial_signatures()?;
             let sig = trade_model.compute_swap_tx_input_signature()?;
@@ -157,8 +154,9 @@ impl musig_server::Musig for MusigImpl {
         })
     }
 
+    #[instrument(skip_all)]
     async fn close_trade(&self, request: Request<CloseTradeRequest>) -> Result<Response<CloseTradeResponse>> {
-        handle_request(request, move |request, trade_model| {
+        handle_musig_request(request, move |request, trade_model| {
             if let Some(peer_prv_key_share) = request.my_output_peers_prv_key_share.try_proto_into()? {
                 // Trader receives the private key share from a cooperative peer, closing our trade.
                 trade_model.set_peer_private_key_share_for_my_output(peer_prv_key_share)?;
@@ -170,7 +168,7 @@ impl musig_server::Musig for MusigImpl {
                 trade_model.aggregate_private_keys_for_my_output()?;
             } else {
                 // Peer unresponsive -- force-close our trade by publishing the swap tx. For seller only.
-                // TODO: *** BROADCAST SWAP TX ***
+                info!("*** BROADCAST SWAP TX ***"); // TODO: Implement broadcast.
             }
             let my_prv_key_share = trade_model.get_my_private_key_share_for_peer_output()
                 .ok_or_else(|| Status::internal("missing private key share"))?;
@@ -180,56 +178,68 @@ impl musig_server::Musig for MusigImpl {
     }
 }
 
+fn mock_tx_confirmation_status_stream(trade_id: String) -> impl Stream<Item=Result<TxConfirmationStatus>> {
+    let confirmation_event = TxConfirmationStatus {
+        tx: b"signed_deposit_tx".into(),
+        current_block_height: 900_001,
+        num_confirmations: 1,
+    };
+    stream::once(async {
+        time::sleep(Duration::from_secs(5)).await;
+        Ok(confirmation_event)
+    }).on_drop(move || debug!(trade_id, "Deposit tx status confirmation stream has been dropped."))
+}
+
 pub struct WalletImpl {
     pub wallet_service: Arc<dyn WalletService + Send + Sync>,
 }
 
 #[tonic::async_trait]
 impl wallet_server::Wallet for WalletImpl {
+    #[instrument(skip_all)]
     async fn wallet_balance(&self, request: Request<WalletBalanceRequest>) -> Result<Response<WalletBalanceResponse>> {
-        println!("Got a request: {request:?}");
-
-        let balance = self.wallet_service.balance().into();
-
-        Ok(Response::new(balance))
+        handle_request(request, |_request| Ok(self.wallet_service.balance().into()))
     }
 
+    #[instrument(skip_all)]
     async fn new_address(&self, request: Request<NewAddressRequest>) -> Result<Response<NewAddressResponse>> {
-        println!("Got a request: {request:?}");
+        handle_request(request, |_request| {
+            let address = self.wallet_service.reveal_next_address();
 
-        let address = self.wallet_service.reveal_next_address();
-
-        Ok(Response::new(NewAddressResponse {
-            address: address.address.to_string(),
-            derivation_path: format!("m/86'/1'/0'/0/{}", address.index),
-        }))
+            Ok(NewAddressResponse {
+                address: address.address.to_string(),
+                derivation_path: format!("m/86'/1'/0'/0/{}", address.index),
+            })
+        })
     }
 
+    #[instrument(skip_all)]
     async fn list_unspent(&self, request: Request<ListUnspentRequest>) -> Result<Response<ListUnspentResponse>> {
-        println!("Got a request: {request:?}");
+        handle_request(request, |_request| {
+            let utxos: Vec<_> = self.wallet_service.list_unspent().into_iter()
+                .map(Into::into)
+                .collect();
 
-        let utxos: Vec<_> = self.wallet_service.list_unspent().into_iter()
-            .map(Into::into)
-            .collect();
-
-        Ok(Response::new(ListUnspentResponse { utxos }))
+            Ok(ListUnspentResponse { utxos })
+        })
     }
 
     type RegisterConfidenceNtfnStream = BoxStream<'static, Result<ConfEvent>>;
 
+    #[instrument(skip_all)]
     async fn register_confidence_ntfn(&self, request: Request<ConfRequest>) -> Result<Response<Self::RegisterConfidenceNtfnStream>> {
-        println!("Got a request: {request:?}");
+        handle_request(request, move |request| {
+            let txid = request.tx_id.try_proto_into()?;
+            let conf_events = self.wallet_service.get_tx_confidence_stream(txid)
+                .map(|o| Ok(o.map(Into::into).unwrap_or_default()))
+                .boxed();
 
-        let txid = request.into_inner().tx_id.try_proto_into()?;
-        let conf_events = self.wallet_service.get_tx_confidence_stream(txid)
-            .map(|o| Ok(o.map(Into::into).unwrap_or_default()))
-            .boxed();
-
-        Ok(Response::new(conf_events))
+            Ok(conf_events)
+        })
     }
 }
 
-trait MusigRequest: std::fmt::Debug {
+trait MusigRequest: Debug {
     fn trade_id(&self) -> &str;
 }
 
@@ -249,15 +259,27 @@ impl_musig_req!(SubscribeTxConfirmationStatusRequest);
 impl_musig_req!(SwapTxSignatureRequest);
 impl_musig_req!(CloseTradeRequest);
 
-fn handle_request<Req, Res, F>(request: Request<Req>, handler: F) -> Result<Response<Res>>
+// TODO: These wrapper fns don't work with async handlers, and should eventually be changed to do so:
+
+fn handle_musig_request<Req, Res, F>(request: Request<Req>, handler: F) -> Result<Response<Res>>
     where Req: MusigRequest,
           F: FnOnce(Req, &mut TradeModel) -> Result<Res> {
-    println!("Got a request: {request:?}");
+    handle_request(request, move |request| {
+        let trade_model = TRADE_MODELS.get_trade_model(request.trade_id())
+            .ok_or_else(|| Status::not_found(format!("missing trade with id: {}", request.trade_id())))?;
+        let response = handler(request, &mut trade_model.lock().unwrap())?;
 
-    let request = request.into_inner();
-    let trade_model = TRADE_MODELS.get_trade_model(request.trade_id())
-        .ok_or_else(|| Status::not_found(format!("missing trade with id: {}", request.trade_id())))?;
-    let response = handler(request, &mut trade_model.lock().unwrap())?;
+        Ok(response)
+    })
+}
+
+fn handle_request<Req, Res, F>(request: Request<Req>, handler: F) -> Result<Response<Res>>
+    where Req: Debug,
+          F: FnOnce(Req) -> Result<Res> {
+    debug!("Got a request: {request:?}");
+
+    let response = handler(request.into_inner())
+        .inspect_err(|e| error!("Error response: {e}"))?;
 
     Ok(Response::new(response))
 }
