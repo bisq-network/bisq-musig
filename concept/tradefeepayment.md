@@ -129,7 +129,7 @@ and is actually on the chain. He verifies:
 Alice needs to prove to Bob that the used Public key $B$ is
 actually a silent payment address of the BM (derived from $S$). The BM needs to publish his silent payment address $S$
 to the public.
-According to [BIP-352](https://github.com/bitcoin/bips/blob/master/bip-0352.mediawiki), see also [this explainer](SilentPayment.md), the address
+According to [BIP-352](https://github.com/bitcoin/bips/blob/master/bip-0352.mediawiki), see also [this explainer](silentpayment/SilentPayment.md), the address
 for a silent payment is calculated via:
 $$(1)\hspace{5pt} B = S + hash(a \cdot S) \cdot G$$
 where

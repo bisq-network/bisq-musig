@@ -50,9 +50,6 @@ According to Josie, from high level:
 3. While this BIP-352 does not cover Musig2 explicitly, reading through BIP375
    should give a more detailed description of what I'm describing.
 
-Note from me: Point 2 seems to me highly suspicious of exposing the secret key $a_i$ to the other side.
-Probably we will need the coefficients of the MuSig2 key aggregation here?
-
 ## proof of payment
 
 The DLEQ described in [BIP374](https://github.com/bitcoin/bips/blob/master/bip-0374.mediawiki)
@@ -60,20 +57,7 @@ The DLEQ described in [BIP374](https://github.com/bitcoin/bips/blob/master/bip-0
 can also be used as a proof of payment:
 Each participant would provide a DLEQ for their input and their partial ECDH share
 The proofs can be verified and the shares aggregated,
-which allows the verify to produce the expected output for Bob (i.e., hashing the
-shared secret with counter k and verifying the generated output exists in the transaction).
-
-In detail
-
-$\hspace{100pt} \begin{eqnarray}
-e &:=& hash(k \cdot G || k \cdot B) \\
-s &:=& k + e \cdot a \\
-werw \\
-s \cdot G &=& (k + e \cdot a) \cdot G \\
-&=& k \cdot G + e \cdot A \\
-s \cdot B &=& (k+e\cdot a)\cdot B \\
-&=&k \cdot B + e \cdot C
-\end{eqnarray}$
+which allows the verify to produce the expected output for Bob.
 
 ## state of implementation
 
