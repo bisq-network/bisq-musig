@@ -197,7 +197,7 @@ fn mock_confidence_stream() -> BoxStream<'static, Option<TxConfidence>> {
         wallet_tx: WalletTx {
             txid,
             tx: tx.clone(),
-            chain_position: ChainPosition::Unconfirmed { last_seen: Some(0) },
+            chain_position: ChainPosition::Unconfirmed { first_seen: Some(0), last_seen: Some(0) },
         },
         num_confirmations: 0,
     });

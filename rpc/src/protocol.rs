@@ -4,6 +4,7 @@ use musig2::{AggNonce, KeyAggContext, LiftedSignature, NonceSeed, PartialSignatu
     SecNonce, SecNonceBuilder};
 use musig2::adaptor::AdaptorSignature;
 use musig2::secp::{MaybePoint, MaybeScalar, Point, Scalar};
+use musig2::secp256k1::rand as rand;
 use std::collections::BTreeMap;
 use std::sync::{Arc, LazyLock, Mutex};
 use thiserror::Error;
@@ -468,7 +469,7 @@ impl KeyCtx {
     fn init_my_key_share(&mut self) -> &KeyPair {
         // TODO: Make the RNG configurable, to aid unit testing. (Also, we may not necessarily want
         //  to use a nondeterministic random key share):
-        self.my_key_share.insert(KeyPair::random(&mut rand::thread_rng()))
+        self.my_key_share.insert(KeyPair::random(&mut rand::rng()))
     }
 
     fn get_key_shares(&self) -> Option<[Point; 2]> {
@@ -526,7 +527,7 @@ impl SigCtx {
         let aggregated_pub_key = key_ctx.aggregated_key.as_ref()
             .ok_or(ProtocolErrorKind::MissingAggPubKey)?.pub_key;
         // TODO: Make the RNG configurable, to aid unit testing:
-        self.my_nonce_share = Some(NoncePair::new(&mut rand::thread_rng(), aggregated_pub_key));
+        self.my_nonce_share = Some(NoncePair::new(&mut rand::rng(), aggregated_pub_key));
         Ok(())
     }
 

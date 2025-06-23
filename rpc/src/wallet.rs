@@ -88,6 +88,11 @@ impl Default for WalletServiceImpl {
     fn default() -> Self { Self::new() }
 }
 
+fn unconfirmed_txids(wallet: &Wallet) -> impl Iterator<Item=Txid> + '_ {
+    tx_confidence_entries(wallet)
+        .filter_map(|(txid, conf)| (conf.num_confirmations == 0).then_some(txid))
+}
+
 fn tx_confidence_entries(wallet: &Wallet) -> impl Iterator<Item=(Txid, TxConfidence)> + '_ {
     let next_height = wallet.latest_checkpoint().height() + 1;
     wallet.transactions()
@@ -115,7 +120,9 @@ impl WalletService for WalletServiceImpl {
         let start_height = wallet_tip.height();
         info!(start_hash = %wallet_tip.hash(), start_height, "Fetched latest wallet checkpoint.");
 
-        let mut emitter = Emitter::new(&rpc_client, wallet_tip, start_height);
+        let mut emitter = Emitter::new(&rpc_client, wallet_tip, start_height,
+            unconfirmed_txids(&self.wallet.read().unwrap()));
+
         while let Some(block) = task::block_in_place(|| emitter.next_block())? {
             let height = block.block_height();
             debug!(hash = %block.block_hash(), height, "New block.");
@@ -125,7 +132,8 @@ impl WalletService for WalletServiceImpl {
 
         debug!("Syncing mempool...");
         let mempool_emissions = task::block_in_place(|| emitter.mempool())?;
-        self.wallet.write().unwrap().apply_unconfirmed_txs(mempool_emissions);
+        self.wallet.write().unwrap().apply_evicted_txs(mempool_emissions.evicted_ats());
+        self.wallet.write().unwrap().apply_unconfirmed_txs(mempool_emissions.new_txs);
 
         debug!("Syncing tx confidence map with wallet.");
         self.sync_tx_confidence_map();
@@ -147,7 +155,8 @@ impl WalletService for WalletServiceImpl {
             }
 
             let mempool_emissions = task::block_in_place(|| emitter.mempool())?;
-            self.wallet.write().unwrap().apply_unconfirmed_txs(mempool_emissions);
+            self.wallet.write().unwrap().apply_evicted_txs(mempool_emissions.evicted_ats());
+            self.wallet.write().unwrap().apply_unconfirmed_txs(mempool_emissions.new_txs);
 
             // TODO: Skip needless cache/map updates if the wallet hasn't actually changed:
             self.sync_tx_confidence_map();
