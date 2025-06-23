@@ -180,9 +180,6 @@ pub(crate) struct Round3Parameter {
     claim_part_sig: PartialSignature,
     redirect_part_sig: PartialSignature,
 }
-pub(crate) struct Round4Parameter {
-    pub(crate) swap_onchain: Option<Transaction>,
-}
 /**
 this context is for the whole process and need to be persisted by the caller
 */
@@ -311,7 +308,7 @@ impl BMPProtocol {
         Ok(Round2Parameter {
             p_agg: self.p_tik.agg_point.unwrap(),
             q_agg: self.q_tik.agg_point.unwrap(),
-            deposit_tx_signed,
+            deposit_tx_signed, // TODO sending the sig is too early, must be the last thing
             swap_pub_nonce,
             warn_alice_p_nonce,
             warn_alice_q_nonce,
@@ -330,19 +327,20 @@ impl BMPProtocol {
         assert_eq!(bob.p_agg, self.p_tik.agg_point.unwrap(), "Bob is sending the wrong P' for his aggregated key.");
         assert_eq!(bob.q_agg, self.q_tik.agg_point.unwrap(), "Bob is sending the wrong Q' for his aggregated key.");
 
+        // TODO here we are actually broadcasting deposittx already. thats too early, it should be the last thing to do!
         let txid = self.deposit_tx.transfer_sig_and_broadcast(&mut self.ctx, bob.deposit_tx_signed)?;
         let adaptor_point = match self.ctx.role { // the seller's key for payout of seller deposit and trade amount is in question
             ProtocolRole::Seller => self.p_tik.pub_point,
             ProtocolRole::Buyer => self.p_tik.other_point.unwrap(),
         };
-
+        // here we are building the partial signature of the SwapTx, note that there is only one SwapTx (for Alice)
         let swap_part_sig = self.swap_tx.build_partial_sig(&self.ctx, bob.swap_pub_nonce, adaptor_point, &self.deposit_tx)?;
-        // dbg!("{:?} me", self.ctx.role);
+
         let (_p_part_me, _q_part_me) = self.warning_tx_me.build_partial_sig(&self.ctx, &bob.warn_bob_p_nonce, &bob.warn_bob_q_nonce, &self.deposit_tx)?;
-        // dbg!("{:?} peer", self.ctx.role);
+
         let (p_part_peer, q_part_peer) = self.warning_tx_peer.build_partial_sig(&self.ctx, &bob.warn_alice_p_nonce, &bob.warn_alice_q_nonce, &self.deposit_tx)?;
         //ClaimTx
-        self.claim_tx_me.build_partial_sig(&self.ctx, &bob.claim_bob_nonce, &self.warning_tx_me)?; // no nneed to send my partial sig to peer
+        self.claim_tx_me.build_partial_sig(&self.ctx, &bob.claim_bob_nonce, &self.warning_tx_me)?; // no need to send my partial sig to peer
         let claim_part_sig = self.claim_tx_peer.build_partial_sig(&self.ctx, &bob.claim_alice_nonce, &self.warning_tx_peer)?; // sign bobs transaction that I constructed
 
         //RedirectTx
@@ -359,34 +357,12 @@ impl BMPProtocol {
             redirect_part_sig,
         })
     }
-    pub(crate) fn round4(&mut self, bob: Round3Parameter) -> anyhow::Result<Round4Parameter> {
+    pub(crate) fn round4(&mut self, bob: Round3Parameter) -> anyhow::Result<()> {
         self.check_round(4);
         self.swap_tx.aggregate_sigs(bob.swap_part_sig)?;
         self.warning_tx_me.aggregate_sigs(bob.p_part_peer, bob.q_part_peer)?;
         self.claim_tx_me.aggregate_sigs(bob.claim_part_sig)?;
         self.redirect_tx_me.aggregate_sigs(bob.redirect_part_sig)?;
-
-        if self.ctx.role == ProtocolRole::Seller {
-            // only the seller can sign and use SwapTx
-            let tx = self.swap_tx.sign(&self.p_tik)?;
-            Ok(Round4Parameter {
-                swap_onchain: Some(tx)
-            })          // debug normally Bob would see the SwapTx on the chain or mempool and reveal, let do it here
-        } else {
-            Ok(Round4Parameter {
-                swap_onchain: None,
-            })
-        }
-    }
-
-    pub(crate) fn round5(&mut self, bob: Round4Parameter) -> anyhow::Result<()> {
-        self.check_round(5);
-        if self.ctx.role == ProtocolRole::Buyer {
-            let tx = bob.swap_onchain.as_ref().unwrap();
-            self.swap_tx.reveal(tx, &mut self.p_tik)?;
-            // dbg!("Revealed p_tik aggregated secret key:");
-            // dbg!(&self.p_tik);
-        }
         Ok(())
     }
 

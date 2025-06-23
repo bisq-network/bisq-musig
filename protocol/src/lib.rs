@@ -65,12 +65,8 @@ mod tests {
         assert_eq!(alice_r3.deposit_txid, bob_r3.deposit_txid);
 
         // Round 4 ---------------------------
-        let alice_r4 = alice.round4(bob_r3)?;
-        let bob_r4 = bob.round4(alice_r3)?;
-
-        // Round 5 --------------------------
-        alice.round5(bob_r4)?;
-        bob.round5(alice_r4)?;
+        let _alice_r4 = alice.round4(bob_r3)?;
+        let _bob_r4 = bob.round4(alice_r3)?;
 
         // done -----------------------------
         crate::nigiri::tiktok();
@@ -80,13 +76,22 @@ mod tests {
     #[test]
     fn test_swap() -> anyhow::Result<()> {
         // create all transaction and Broadcast DepositTx already
-        let (alice, bob) = initial_tx_creation()?;
+        let (mut alice, mut bob) = initial_tx_creation()?;
         dbg!(&alice.swap_tx.tx);
         dbg!(&bob.swap_tx.tx);
 
         // alice broadcats SwapTx
+        let alice_swap = alice.swap_tx.sign(&alice.p_tik)?;
         dbg!(alice.swap_tx.broadcast(alice.ctx));
         nigiri::tiktok();
+        // bob must find the transaction and retrieve P_a from it and then spend DepositTx-Output0 to his wallet.
+        // TODO need to read the transaction from blockchain looking for bob.swap_tx.txid
+        // cheating and using the transaction from alice directly
+        bob.swap_tx.reveal(&alice_swap, &mut bob.p_tik)?;
+        assert!(bob.p_tik.agg_sec.is_some(), "We should have the aggregated secret key now");
+        assert!(bob.p_tik.other_sec.unwrap() == alice.p_tik.sec, "Bob should have Alice secret key for p_tik");
+        // TODO now make a arbitrary transaction with the key into own wallet.
+
         Ok(())
     }
 
@@ -122,7 +127,8 @@ mod tests {
         // thread::sleep(Duration::from_secs(512)); //otherwise non-BIP68-final error
 
         let tx = alice.claim_tx_me.broadcast(alice.ctx)?;
-        dbg!(tx);
+
+        println!("http://localhost:5000/tx/{}", tx);
         nigiri::tiktok();
         Ok(())
     }
