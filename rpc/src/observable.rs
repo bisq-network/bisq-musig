@@ -1,4 +1,4 @@
-use futures::Stream;
+use futures_util::Stream;
 use std::borrow::Borrow;
 use std::collections::{HashMap, HashSet};
 use std::collections::hash_map::Entry;
@@ -130,7 +130,7 @@ impl<K, V> ObservableHashMap<K, V>
 
 #[cfg(test)]
 mod tests {
-    use futures::StreamExt as _;
+    use futures_util::StreamExt as _;
     use super::*;
 
     #[tokio::test]

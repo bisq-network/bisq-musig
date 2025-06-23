@@ -1,4 +1,4 @@
-use futures::never::Never;
+use futures_util::never::Never;
 
 /// A simple utility trait to allow structs to be polymorphic over the storage type of their fields,
 /// to facilitate passing data to and from functions by reference or value, decided statically for

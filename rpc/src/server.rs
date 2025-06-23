@@ -1,6 +1,6 @@
 use bdk_wallet::bitcoin::{Amount, FeeRate};
 use drop_stream::DropStreamExt as _;
-use futures::stream::{self, BoxStream, Stream, StreamExt as _};
+use futures_util::stream::{self, BoxStream, Stream, StreamExt as _};
 use std::fmt::Debug;
 use std::marker::{Send, Sync};
 use std::sync::Arc;

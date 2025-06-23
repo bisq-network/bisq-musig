@@ -8,7 +8,7 @@ default-run = "musig-cli"
 bdk_bitcoind_rpc = "0.20.0"
 bdk_wallet = "2.0.0"
 drop-stream = "0.3.2"
-futures = "0.3.31"
+futures-util = { version = "0.3.31", default-features = false, features = ["alloc"] }
 musig2 = { version = "0.3.1", features = ["rand"] }
 prost = "0.13.5"
 serde = { version = "1.0.219", features = ["derive"] }
