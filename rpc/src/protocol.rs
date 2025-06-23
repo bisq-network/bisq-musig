@@ -598,6 +598,7 @@ type Result<T, E = ProtocolErrorKind> = std::result::Result<T, E>;
 
 #[derive(Error, Debug)]
 #[error(transparent)]
+#[non_exhaustive]
 pub enum ProtocolErrorKind {
     #[error("missing key share")]
     MissingKeyShare,

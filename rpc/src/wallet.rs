@@ -205,6 +205,7 @@ pub type Result<T, E = WalletErrorKind> = std::result::Result<T, E>;
 
 #[derive(Error, Debug)]
 #[error(transparent)]
+#[non_exhaustive]
 pub enum WalletErrorKind {
     BitcoindRpc(#[from] bdk_bitcoind_rpc::bitcoincore_rpc::Error),
     ApplyHeader(#[from] bdk_wallet::chain::local_chain::ApplyHeaderError),
