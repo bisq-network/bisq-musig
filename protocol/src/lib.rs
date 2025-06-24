@@ -8,11 +8,13 @@ use musig2::secp::{Point, Scalar};
 use musig2::KeyAggContext;
 mod protocol_musig_adaptor;
 mod nigiri;
+mod wallet_service;
 
 #[cfg(test)]
 mod tests {
     use crate::nigiri;
     use crate::protocol_musig_adaptor::{BMPContext, BMPProtocol, ProtocolRole};
+    use crate::wallet_service::WalletService;
     use bdk_electrum::bdk_core::bitcoin::Amount;
 
     #[test]
@@ -20,6 +22,7 @@ mod tests {
         initial_tx_creation()?;
         Ok(())
     }
+
     pub fn initial_tx_creation() -> anyhow::Result<(BMPProtocol, BMPProtocol)> {
         println!("running...");
         nigiri::check_start();
@@ -29,14 +32,16 @@ mod tests {
         let bob_funds = nigiri::funded_wallet();
         //TestWallet::new()?;
         nigiri::fund_wallet(&mut alice_funds);
+        let alice_service = WalletService::new().load(alice_funds);
+        let bob_service = WalletService::new().load(bob_funds);
         let seller_amount = &Amount::from_btc(1.4)?;
         let buyer_amount = &Amount::from_btc(0.2)?;
 
-        // init p3 --------------------------
-        let alice_context = BMPContext::new(alice_funds, ProtocolRole::Seller, seller_amount.clone(), buyer_amount.clone())?;
+        // up to here this was the preparation for the protocol, the code from now on needs to be called from outside API
+        let alice_context = BMPContext::new(alice_service, ProtocolRole::Seller, seller_amount.clone(), buyer_amount.clone())?;
 
         let mut alice = BMPProtocol::new(alice_context)?;
-        let bob_context = BMPContext::new(bob_funds, ProtocolRole::Buyer, seller_amount.clone(), buyer_amount.clone())?;
+        let bob_context = BMPContext::new(bob_service, ProtocolRole::Buyer, seller_amount.clone(), buyer_amount.clone())?;
         let mut bob = BMPProtocol::new(bob_context)?;
         nigiri::tiktok();
 

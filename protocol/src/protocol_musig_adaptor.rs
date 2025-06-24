@@ -1,3 +1,4 @@
+use crate::wallet_service::WalletService;
 use bdk_electrum::{electrum_client, BdkElectrumClient};
 use bdk_wallet::bitcoin::absolute::LockTime;
 use bdk_wallet::bitcoin::bip32::Xpriv;
@@ -206,9 +207,9 @@ pub struct BMPProtocol {
 }
 
 impl BMPContext {
-    pub(crate) fn new(funds: MemWallet, role: ProtocolRole, seller_amount: Amount, buyer_amount: Amount) -> anyhow::Result<BMPContext> {
+    pub(crate) fn new(wallet_service: WalletService, role: ProtocolRole, seller_amount: Amount, buyer_amount: Amount) -> anyhow::Result<BMPContext> {
         Ok(BMPContext {
-            funds,
+            funds: wallet_service.retrieve_wallet(),
             role,
             seller_amount,
             buyer_amount,
