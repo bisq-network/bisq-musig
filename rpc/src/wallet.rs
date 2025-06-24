@@ -12,7 +12,7 @@ use std::sync::{Arc, Mutex, RwLock};
 use thiserror::Error;
 use tokio::task::{self, JoinHandle};
 use tokio::time::{self, Duration, MissedTickBehavior};
-use tracing::{debug, error, info};
+use tracing::{debug, error, info, trace};
 
 use crate::observable::ObservableHashMap;
 
@@ -82,6 +82,30 @@ impl WalletServiceImpl {
         let wallet = self.wallet.read().unwrap();
         self.tx_confidence_map.lock().unwrap().sync(tx_confidence_entries(&wallet));
     }
+
+    fn sync_from_rpc_emitter(&self, emitter: &mut Emitter<&Client>) -> Result<()> {
+        trace!("Syncing blocks...");
+        while let Some(block) = task::block_in_place(|| emitter.next_block())? {
+            let height = block.block_height();
+            debug!(hash = %block.block_hash(), height, "New block.");
+            self.wallet.write().unwrap()
+                .apply_block_connected_to(&block.block, height, block.connected_to())?;
+        }
+
+        trace!("Syncing mempool...");
+        {
+            let mempool_emissions = task::block_in_place(|| emitter.mempool())?;
+            let mut wallet = self.wallet.write().unwrap();
+            wallet.apply_evicted_txs(mempool_emissions.evicted_ats());
+            wallet.apply_unconfirmed_txs(mempool_emissions.new_txs);
+        }
+
+        trace!("Syncing tx confidence map with wallet.");
+        // TODO: Skip needless cache/map updates if the wallet hasn't actually changed:
+        self.sync_tx_confidence_map();
+
+        Ok(())
+    }
 }
 
 impl Default for WalletServiceImpl {
@@ -122,22 +146,7 @@ impl WalletService for WalletServiceImpl {
 
         let mut emitter = Emitter::new(&rpc_client, wallet_tip, start_height,
             unconfirmed_txids(&self.wallet.read().unwrap()));
-
-        while let Some(block) = task::block_in_place(|| emitter.next_block())? {
-            let height = block.block_height();
-            debug!(hash = %block.block_hash(), height, "New block.");
-            self.wallet.write().unwrap()
-                .apply_block_connected_to(&block.block, height, block.connected_to())?;
-        }
-
-        debug!("Syncing mempool...");
-        let mempool_emissions = task::block_in_place(|| emitter.mempool())?;
-        self.wallet.write().unwrap().apply_evicted_txs(mempool_emissions.evicted_ats());
-        self.wallet.write().unwrap().apply_unconfirmed_txs(mempool_emissions.new_txs);
-
-        debug!("Syncing tx confidence map with wallet.");
-        self.sync_tx_confidence_map();
-
+        self.sync_from_rpc_emitter(&mut emitter)?;
         info!(wallet_balance_total = %self.balance().total(), "Finished initial sync.");
 
         info!("Polling for further blocks and mempool txs...");
@@ -146,20 +155,7 @@ impl WalletService for WalletServiceImpl {
         interval.tick().await;
         loop {
             interval.tick().await;
-
-            while let Some(block) = task::block_in_place(|| emitter.next_block())? {
-                let height = block.block_height();
-                debug!(hash = %block.block_hash(), height, "New block.");
-                self.wallet.write().unwrap()
-                    .apply_block_connected_to(&block.block, height, block.connected_to())?;
-            }
-
-            let mempool_emissions = task::block_in_place(|| emitter.mempool())?;
-            self.wallet.write().unwrap().apply_evicted_txs(mempool_emissions.evicted_ats());
-            self.wallet.write().unwrap().apply_unconfirmed_txs(mempool_emissions.new_txs);
-
-            // TODO: Skip needless cache/map updates if the wallet hasn't actually changed:
-            self.sync_tx_confidence_map();
+            self.sync_from_rpc_emitter(&mut emitter)?;
         }
     }
 
