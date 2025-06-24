@@ -1,15 +1,15 @@
-use bdk_wallet::bitcoin::{Address, Amount, FeeRate, Network};
 use bdk_wallet::bitcoin::address::{NetworkChecked, NetworkUnchecked, NetworkValidation};
-use musig2::{AggNonce, KeyAggContext, LiftedSignature, NonceSeed, PartialSignature, PubNonce,
-    SecNonce, SecNonceBuilder};
+use bdk_wallet::bitcoin::{Address, Amount, FeeRate, Network};
 use musig2::adaptor::AdaptorSignature;
 use musig2::secp::{MaybePoint, MaybeScalar, Point, Scalar};
-use musig2::secp256k1::rand as rand;
+use musig2::secp256k1::rand;
+use musig2::{AggNonce, KeyAggContext, LiftedSignature, NonceSeed, PartialSignature, PubNonce,
+    SecNonce, SecNonceBuilder};
 use std::collections::BTreeMap;
 use std::sync::{Arc, LazyLock, Mutex};
 use thiserror::Error;
 
-use crate::storage::{ByRef, ByVal, ByOptVal, Storage, ValStorage};
+use crate::storage::{ByOptVal, ByRef, ByVal, Storage, ValStorage};
 
 pub trait TradeModelStore {
     fn add_trade_model(&self, trade_model: TradeModel);

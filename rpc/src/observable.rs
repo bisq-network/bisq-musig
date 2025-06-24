@@ -1,7 +1,7 @@
 use futures_util::Stream;
 use std::borrow::Borrow;
-use std::collections::{HashMap, HashSet};
 use std::collections::hash_map::Entry;
+use std::collections::{HashMap, HashSet};
 use std::hash::Hash;
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::UnboundedReceiverStream;
@@ -131,6 +131,7 @@ impl<K, V> ObservableHashMap<K, V>
 #[cfg(test)]
 mod tests {
     use futures_util::StreamExt as _;
+
     use super::*;
 
     #[tokio::test]
