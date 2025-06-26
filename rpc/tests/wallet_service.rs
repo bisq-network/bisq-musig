@@ -1,18 +1,18 @@
 use anyhow::{bail, Result};
-use bdk_bitcoind_rpc::bitcoincore_rpc::{Auth, Client, RpcApi as _};
 use bdk_bitcoind_rpc::bitcoincore_rpc::bitcoincore_rpc_json::EstimateMode;
-use bdk_wallet::{Balance, serde_json};
+use bdk_bitcoind_rpc::bitcoincore_rpc::{Auth, Client, RpcApi as _};
 use bdk_wallet::bitcoin::{Address, Amount, BlockHash, Txid};
-use futures::StreamExt as _;
+use bdk_wallet::{serde_json, Balance};
+use futures_util::StreamExt as _;
 use rpc::wallet::{TxConfidence, WalletService, WalletServiceImpl};
+use serde::Deserialize;
 use std::collections::HashMap;
 use std::fs;
 use std::process::Command;
 use std::sync::Arc;
-use serde::Deserialize;
 use tokio::sync::{OnceCell, Semaphore, SemaphorePermit};
-use tokio::time::{self, Duration};
 use tokio::task;
+use tokio::time::{self, Duration};
 
 const BITCOIND_RPC_URL: &str = "http://localhost:18443";
 const BITCOIND_POLLING_PERIOD: Duration = Duration::from_millis(100);

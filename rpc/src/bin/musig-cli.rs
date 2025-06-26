@@ -1,9 +1,9 @@
-use bdk_wallet::bitcoin::hashes::{Hash as _, sha256d};
+use bdk_wallet::bitcoin::hashes::{sha256d, Hash as _};
 use bdk_wallet::serde_json;
 use clap::{Parser, Subcommand};
-use futures::StreamExt as _;
-use rpc::pb::walletrpc::{ConfRequest, ListUnspentRequest, NewAddressRequest, WalletBalanceRequest};
+use futures_util::StreamExt as _;
 use rpc::pb::walletrpc::wallet_client::WalletClient;
+use rpc::pb::walletrpc::{ConfRequest, ListUnspentRequest, NewAddressRequest, WalletBalanceRequest};
 use tonic::Request;
 
 #[derive(Debug, Parser)]

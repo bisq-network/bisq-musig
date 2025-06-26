@@ -1,18 +1,18 @@
 #![cfg_attr(feature = "unimock", expect(clippy::ignored_unit_patterns, reason = "macro-generated code"))]
 
-use bdk_bitcoind_rpc::Emitter;
 use bdk_bitcoind_rpc::bitcoincore_rpc::{Auth, Client, RpcApi as _};
-use bdk_wallet::{AddressInfo, Balance, KeychainKind, LocalOutput, Wallet};
+use bdk_bitcoind_rpc::Emitter;
 use bdk_wallet::bitcoin::{Network, Transaction, Txid};
-use bdk_wallet::chain::{CheckPoint, ChainPosition, ConfirmationBlockTime};
+use bdk_wallet::chain::{ChainPosition, CheckPoint, ConfirmationBlockTime};
+use bdk_wallet::{AddressInfo, Balance, KeychainKind, LocalOutput, Wallet};
 use drop_stream::DropStreamExt as _;
-use futures::never::Never;
-use futures::stream::{BoxStream, StreamExt as _};
+use futures_util::never::Never;
+use futures_util::stream::{BoxStream, StreamExt as _};
 use std::sync::{Arc, Mutex, RwLock};
 use thiserror::Error;
 use tokio::task::{self, JoinHandle};
 use tokio::time::{self, Duration, MissedTickBehavior};
-use tracing::{debug, error, info};
+use tracing::{debug, error, info, trace};
 
 use crate::observable::ObservableHashMap;
 
@@ -82,10 +82,39 @@ impl WalletServiceImpl {
         let wallet = self.wallet.read().unwrap();
         self.tx_confidence_map.lock().unwrap().sync(tx_confidence_entries(&wallet));
     }
+
+    fn sync_from_rpc_emitter(&self, emitter: &mut Emitter<&Client>) -> Result<()> {
+        trace!("Syncing blocks...");
+        while let Some(block) = task::block_in_place(|| emitter.next_block())? {
+            let height = block.block_height();
+            debug!(hash = %block.block_hash(), height, "New block.");
+            self.wallet.write().unwrap()
+                .apply_block_connected_to(&block.block, height, block.connected_to())?;
+        }
+
+        trace!("Syncing mempool...");
+        {
+            let mempool_emissions = task::block_in_place(|| emitter.mempool())?;
+            let mut wallet = self.wallet.write().unwrap();
+            wallet.apply_evicted_txs(mempool_emissions.evicted_ats());
+            wallet.apply_unconfirmed_txs(mempool_emissions.new_txs);
+        }
+
+        trace!("Syncing tx confidence map with wallet.");
+        // TODO: Skip needless cache/map updates if the wallet hasn't actually changed:
+        self.sync_tx_confidence_map();
+
+        Ok(())
+    }
 }
 
 impl Default for WalletServiceImpl {
     fn default() -> Self { Self::new() }
+}
+
+fn unconfirmed_txids(wallet: &Wallet) -> impl Iterator<Item=Txid> + '_ {
+    tx_confidence_entries(wallet)
+        .filter_map(|(txid, conf)| (conf.num_confirmations == 0).then_some(txid))
 }
 
 fn tx_confidence_entries(wallet: &Wallet) -> impl Iterator<Item=(Txid, TxConfidence)> + '_ {
@@ -115,21 +144,9 @@ impl WalletService for WalletServiceImpl {
         let start_height = wallet_tip.height();
         info!(start_hash = %wallet_tip.hash(), start_height, "Fetched latest wallet checkpoint.");
 
-        let mut emitter = Emitter::new(&rpc_client, wallet_tip, start_height);
-        while let Some(block) = task::block_in_place(|| emitter.next_block())? {
-            let height = block.block_height();
-            debug!(hash = %block.block_hash(), height, "New block.");
-            self.wallet.write().unwrap()
-                .apply_block_connected_to(&block.block, height, block.connected_to())?;
-        }
-
-        debug!("Syncing mempool...");
-        let mempool_emissions = task::block_in_place(|| emitter.mempool())?;
-        self.wallet.write().unwrap().apply_unconfirmed_txs(mempool_emissions);
-
-        debug!("Syncing tx confidence map with wallet.");
-        self.sync_tx_confidence_map();
-
+        let mut emitter = Emitter::new(&rpc_client, wallet_tip, start_height,
+            unconfirmed_txids(&self.wallet.read().unwrap()));
+        self.sync_from_rpc_emitter(&mut emitter)?;
         info!(wallet_balance_total = %self.balance().total(), "Finished initial sync.");
 
         info!("Polling for further blocks and mempool txs...");
@@ -138,19 +155,7 @@ impl WalletService for WalletServiceImpl {
         interval.tick().await;
         loop {
             interval.tick().await;
-
-            while let Some(block) = task::block_in_place(|| emitter.next_block())? {
-                let height = block.block_height();
-                debug!(hash = %block.block_hash(), height, "New block.");
-                self.wallet.write().unwrap()
-                    .apply_block_connected_to(&block.block, height, block.connected_to())?;
-            }
-
-            let mempool_emissions = task::block_in_place(|| emitter.mempool())?;
-            self.wallet.write().unwrap().apply_unconfirmed_txs(mempool_emissions);
-
-            // TODO: Skip needless cache/map updates if the wallet hasn't actually changed:
-            self.sync_tx_confidence_map();
+            self.sync_from_rpc_emitter(&mut emitter)?;
         }
     }
 
@@ -196,6 +201,7 @@ pub type Result<T, E = WalletErrorKind> = std::result::Result<T, E>;
 
 #[derive(Error, Debug)]
 #[error(transparent)]
+#[non_exhaustive]
 pub enum WalletErrorKind {
     BitcoindRpc(#[from] bdk_bitcoind_rpc::bitcoincore_rpc::Error),
     ApplyHeader(#[from] bdk_wallet::chain::local_chain::ApplyHeaderError),

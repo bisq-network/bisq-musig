@@ -1,6 +1,6 @@
 use bdk_wallet::bitcoin::{Amount, FeeRate};
 use drop_stream::DropStreamExt as _;
-use futures::stream::{self, BoxStream, Stream, StreamExt as _};
+use futures_util::stream::{self, BoxStream, Stream, StreamExt as _};
 use std::fmt::Debug;
 use std::marker::{Send, Sync};
 use std::sync::Arc;
@@ -9,15 +9,15 @@ use tonic::{Request, Response, Result, Status};
 use tracing::{debug, error, info, instrument};
 
 use crate::pb::convert::TryProtoInto;
+use crate::pb::musigrpc::musig_server;
 use crate::pb::musigrpc::{CloseTradeRequest, CloseTradeResponse, DepositPsbt,
     DepositTxSignatureRequest, NonceSharesMessage, NonceSharesRequest, PartialSignaturesMessage,
     PartialSignaturesRequest, PubKeySharesRequest, PubKeySharesResponse, PublishDepositTxRequest,
     SubscribeTxConfirmationStatusRequest, SwapTxSignatureRequest, SwapTxSignatureResponse,
     TxConfirmationStatus};
-use crate::pb::musigrpc::musig_server;
+use crate::pb::walletrpc::wallet_server;
 use crate::pb::walletrpc::{ConfEvent, ConfRequest, ListUnspentRequest, ListUnspentResponse,
     NewAddressRequest, NewAddressResponse, WalletBalanceRequest, WalletBalanceResponse};
-use crate::pb::walletrpc::wallet_server;
 use crate::protocol::{TradeModel, TradeModelStore as _, TRADE_MODELS};
 use crate::wallet::WalletService;
 

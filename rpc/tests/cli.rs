@@ -1,21 +1,21 @@
-use assert_cmd::Command;
 use assert_cmd::assert::Assert;
-use bdk_wallet::{KeychainKind, LocalOutput};
-use bdk_wallet::bitcoin::{OutPoint, Transaction};
+use assert_cmd::Command;
 use bdk_wallet::bitcoin::consensus::Decodable as _;
 use bdk_wallet::bitcoin::hex::test_hex_unwrap as hex;
+use bdk_wallet::bitcoin::{OutPoint, Transaction};
 use bdk_wallet::chain::{ChainPosition, ConfirmationBlockTime};
+use bdk_wallet::{KeychainKind, LocalOutput};
 use const_format::str_replace;
+use futures_util::stream::{self, BoxStream, StreamExt as _};
+use predicates::str;
 use rpc::server::{WalletImpl, WalletServer};
 use rpc::wallet::{TxConfidence, WalletService, WalletServiceImpl, WalletServiceMock, WalletTx};
-use predicates::str;
 use std::sync::Arc;
 use std::time::Duration;
-use futures::stream::{self, BoxStream, StreamExt as _};
 use tokio::task::{self, JoinHandle};
-use tonic::transport::{self, Server};
 use tonic::transport::server::TcpIncoming;
-use unimock::{MockFn as _, Unimock, matching};
+use tonic::transport::{self, Server};
+use unimock::{matching, MockFn as _, Unimock};
 
 const CLI_TIMEOUT: Duration = Duration::from_millis(200);
 
@@ -197,7 +197,7 @@ fn mock_confidence_stream() -> BoxStream<'static, Option<TxConfidence>> {
         wallet_tx: WalletTx {
             txid,
             tx: tx.clone(),
-            chain_position: ChainPosition::Unconfirmed { last_seen: Some(0) },
+            chain_position: ChainPosition::Unconfirmed { first_seen: Some(0), last_seen: Some(0) },
         },
         num_confirmations: 0,
     });

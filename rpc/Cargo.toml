@@ -5,28 +5,27 @@ edition = "2021"
 default-run = "musig-cli"
 
 [dependencies]
-bdk_bitcoind_rpc = "0.18.0"
-bdk_wallet = "1.2.0"
+bdk_bitcoind_rpc = "0.20.0"
+bdk_wallet = "2.0.0"
 drop-stream = "0.3.2"
-futures = "0.3.31"
-musig2 = { version = "0.2.4", features = ["rand"] }
+futures-util = { version = "0.3.31", default-features = false, features = ["alloc"] }
+musig2 = { version = "0.3.1", features = ["rand"] }
 prost = "0.13.5"
-rand = "0.8.5"
 serde = { version = "1.0.219", features = ["derive"] }
-serde_with = { version = "3.12.0", features = ["hex"] }
+serde_with = { version = "3.13.0", features = ["hex"] }
 thiserror = "2.0.12"
-tracing = "0.1.41"
 tokio = { version = "1.45.0", features = ["macros", "rt-multi-thread", "time"] }
 tokio-stream = "0.1.17"
 tonic = "0.13.1"
+tracing = "0.1.41"
 unimock = { version = "0.6.7", optional = true }
 # Dependencies used only by the binary target(s):
 # TODO: Consider making a workspace of separate packages to avoid pulling these into the library:
-clap = { version = "4.5.39", features = ["derive"] }
+clap = { version = "4.5.40", features = ["derive"] }
 tracing-subscriber = { version = "0.3.19", features = ["env-filter"] }
 
 [build-dependencies]
-tonic-build = "0.13.0"
+tonic-build = "0.13.1"
 
 [dev-dependencies]
 rpc = { path = ".", features = ["unimock"] }
@@ -41,8 +40,9 @@ pedantic = "warn"
 allow_attributes = "warn"
 allow_attributes_without_reason = "warn"
 branches_sharing_code = "warn"
-iter_on_single_items = "warn"
+exhaustive_enums = "warn"
 iter_on_empty_collections = "warn"
+iter_on_single_items = "warn"
 missing_const_for_fn = "warn"
 renamed_function_params = "warn"
 significant_drop_tightening = "warn"
