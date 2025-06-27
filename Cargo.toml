@@ -1,0 +1,6 @@
+[workspace]
+resolver = "2"
+members = ["adaptor", "bdktest", "protocol", "rpc"]
+
+[workspace.dependencies]
+rand = "0.9.1"

@@ -1,5 +1,4 @@
-use musig2::{AdaptorSignature, KeyAggContext, PartialSignature};
-use secp::{MaybeScalar, Point, Scalar};
+use musig2::{secp::{MaybeScalar, Point, Scalar}, AdaptorSignature, KeyAggContext, PartialSignature};
 // Using the functional API.
 
 pub(crate) fn _m2() {

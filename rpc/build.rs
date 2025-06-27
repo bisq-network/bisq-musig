@@ -2,19 +2,27 @@ use std::borrow::Cow;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     tonic_build::configure()
-        .serde_serialized_types(&["WalletBalanceResponse", "NewAddressResponse", "ListUnspentResponse"])
-        .serde_serialized_type("TransactionOutput", &[
-            rev_hex("txId"), hex("scriptPubKey")
+        .serde_serialized_types(&[
+            "WalletBalanceResponse",
+            "NewAddressResponse",
+            "ListUnspentResponse",
         ])
-        .serde_serialized_type("ConfEvent", &[
-            opt_hex("rawTx"), enum_field("confidenceType", "ConfidenceType")
-        ])
-        .serde_serialized_type("ConfirmationBlockTime", &[
-            rev_hex("blockHash")
-        ])
+        .serde_serialized_type("TransactionOutput", &[rev_hex("txId"), hex("scriptPubKey")])
+        .serde_serialized_type(
+            "ConfEvent",
+            &[
+                opt_hex("rawTx"),
+                enum_field("confidenceType", "ConfidenceType"),
+            ],
+        )
+        .serde_serialized_type("ConfirmationBlockTime", &[rev_hex("blockHash")])
         .serde_serialized_enum("ConfidenceType")
         .compile_protos(
-            &["src/main/proto/rpc.proto", "src/main/proto/wallet.proto"],
+            &[
+                "src/main/proto/rpc.proto",
+                "src/main/proto/wallet.proto",
+                "src/main/proto/bmp_protocol.proto",
+            ],
             &["src/main/proto"],
         )?;
     Ok(())
@@ -23,19 +31,33 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 type CustomField<'a> = (&'a str, Cow<'static, str>);
 
 const fn hex(field: &str) -> CustomField {
-    (field, Cow::Borrowed("#[serde_as(as = \"::serde_with::hex::Hex\")]"))
+    (
+        field,
+        Cow::Borrowed("#[serde_as(as = \"::serde_with::hex::Hex\")]"),
+    )
 }
 
 const fn rev_hex(field: &str) -> CustomField {
-    (field, Cow::Borrowed("#[serde_as(as = \"crate::pb::convert::hex::ByteReversedHex\")]"))
+    (
+        field,
+        Cow::Borrowed("#[serde_as(as = \"crate::pb::convert::hex::ByteReversedHex\")]"),
+    )
 }
 
 const fn opt_hex(field: &str) -> CustomField {
-    (field, Cow::Borrowed("#[serde_as(as = \"::core::option::Option<::serde_with::hex::Hex>\")]"))
+    (
+        field,
+        Cow::Borrowed("#[serde_as(as = \"::core::option::Option<::serde_with::hex::Hex>\")]"),
+    )
 }
 
 fn enum_field<'a>(field: &'a str, type_name: &'_ str) -> CustomField<'a> {
-    (field, Cow::Owned(format!("#[serde_as(as = \"::serde_with::TryFromInto<{type_name}>\")]")))
+    (
+        field,
+        Cow::Owned(format!(
+            "#[serde_as(as = \"::serde_with::TryFromInto<{type_name}>\")]"
+        )),
+    )
 }
 
 trait BuilderEx {
@@ -43,7 +65,10 @@ trait BuilderEx {
 
     fn serde_serialized_type(self, path: &str, custom_fields: &[CustomField]) -> Self;
 
-    fn serde_serialized_types(mut self, paths: &[&str]) -> Self where Self: Sized {
+    fn serde_serialized_types(mut self, paths: &[&str]) -> Self
+    where
+        Self: Sized,
+    {
         for &path in paths {
             self = self.serde_serialized_type(path, &[]);
         }

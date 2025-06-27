@@ -13,5 +13,5 @@ bdk_esplora = { version = "0.20.1", features = ["blocking"] }
 bdk_bitcoind_rpc = "0.17.1"
 rand = "0.8.5"
 ctrlc = "2.0.1"
-musig2 = "0.2.2"
+musig2 = "0.3.1"
 secp = { version = "0.4.1", features = ["rand"] }

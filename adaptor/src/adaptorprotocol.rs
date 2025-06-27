@@ -3,7 +3,7 @@ use musig2::{
     SecNonce,
 };
 use rand::Rng;
-use secp::{MaybeScalar, Point, Scalar};
+use musig2::secp::{MaybeScalar, Point, Scalar};
 /*
 Let's assume Alice and Bob have a 2of2 Multisig, where they hold one key each already.
 This module we try to simulate a peer to peer communication for 2of2 Multisig with adaptor
