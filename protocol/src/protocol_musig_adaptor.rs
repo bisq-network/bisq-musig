@@ -138,7 +138,7 @@ impl MemWallet {
         Ok(tx.compute_txid())
     }
 }
-
+#[derive(Debug)]
 pub struct Round1Parameter {
     // DepositTx --------
     pub(crate) p_a: Point,
@@ -152,11 +152,11 @@ pub struct Round1Parameter {
     pub claim_spend: ScriptBuf,
     pub redirect_anchor_spend: ScriptBuf,
 }
+#[derive(Debug)]
 pub(crate) struct Round2Parameter {
     // DepositTx --------
     pub(crate) p_agg: Point,
     pub(crate) q_agg: Point,
-    pub(crate) deposit_tx_signed: Psbt,
     // SwapTx --------------
     // partial adaptive  signature for SwapTx
     pub(crate) swap_pub_nonce: PubNonce,
@@ -169,6 +169,7 @@ pub(crate) struct Round2Parameter {
     redirect_alice_nonce: PubNonce,
     redirect_bob_nonce: PubNonce,
 }
+#[derive(Debug)]
 pub(crate) struct Round3Parameter {
     // DepositTx --------
     pub(crate) deposit_txid: Txid, // only for verification / fast fail
@@ -180,6 +181,10 @@ pub(crate) struct Round3Parameter {
     q_part_peer: PartialSignature,
     claim_part_sig: PartialSignature,
     redirect_part_sig: PartialSignature,
+}
+#[derive(Debug)]
+pub(crate) struct Round4Parameter {
+    deposit_tx_signed: Psbt,
 }
 /**
 this context is for the whole process and need to be persisted by the caller
@@ -274,7 +279,7 @@ impl BMPProtocol {
         self.q_tik.aggregate_key(bob.q_a)?;
         // now we have the aggregated key
         // so we can contruct the Deposit Tx
-        let deposit_tx_signed = self.deposit_tx.build_and_merge_tx(&mut self.ctx, &bob.dep_part_psbt, &self.p_tik, &self.q_tik)?;
+        let deposit_tx_merged = self.deposit_tx.build_and_merge_tx(&mut self.ctx, &bob.dep_part_psbt, &self.p_tik, &self.q_tik)?;
         self.warning_tx_me.build(&mut self.ctx, &self.p_tik, &self.q_tik, &self.deposit_tx)?;
         self.warning_tx_peer.anchor_spend = Some(bob.warn_anchor_spend);
         self.warning_tx_peer.build(&mut self.ctx, &self.p_tik, &self.q_tik, &self.deposit_tx)?;
@@ -284,7 +289,7 @@ impl BMPProtocol {
         let warn_bob_q_nonce = self.warning_tx_peer.sig_q.as_ref().unwrap().pub_nonce.clone();
 
         // given the depositTx, we can create SwapTx for Alice.
-        self.swap_tx.build(self.q_tik.clone(), &deposit_tx_signed.unsigned_tx, bob.swap_script)?;
+        self.swap_tx.build(self.q_tik.clone(), &deposit_tx_merged.unsigned_tx, bob.swap_script)?;
         // let start the signing process for swaptx already.
         let swap_pub_nonce = self.swap_tx.get_pub_nonce(); // could be one round earlier, if we solve secure nonce generation
 
@@ -309,7 +314,6 @@ impl BMPProtocol {
         Ok(Round2Parameter {
             p_agg: self.p_tik.agg_point.unwrap(),
             q_agg: self.q_tik.agg_point.unwrap(),
-            deposit_tx_signed, // TODO sending the sig is too early, must be the last thing
             swap_pub_nonce,
             warn_alice_p_nonce,
             warn_alice_q_nonce,
@@ -328,8 +332,8 @@ impl BMPProtocol {
         assert_eq!(bob.p_agg, self.p_tik.agg_point.unwrap(), "Bob is sending the wrong P' for his aggregated key.");
         assert_eq!(bob.q_agg, self.q_tik.agg_point.unwrap(), "Bob is sending the wrong Q' for his aggregated key.");
 
-        // TODO here we are actually broadcasting deposittx already. thats too early, it should be the last thing to do!
-        let txid = self.deposit_tx.transfer_sig_and_broadcast(&mut self.ctx, bob.deposit_tx_signed)?;
+        // let txid = self.deposit_tx.transfer_sig_and_broadcast(&mut self.ctx, bob.deposit_tx_merged)?;
+        let txid = self.deposit_tx.tx.as_ref().unwrap().compute_txid();
         let adaptor_point = match self.ctx.role { // the seller's key for payout of seller deposit and trade amount is in question
             ProtocolRole::Seller => self.p_tik.pub_point,
             ProtocolRole::Buyer => self.p_tik.other_point.unwrap(),
@@ -358,12 +362,22 @@ impl BMPProtocol {
             redirect_part_sig,
         })
     }
-    pub(crate) fn round4(&mut self, bob: Round3Parameter) -> anyhow::Result<()> {
+    pub(crate) fn round4(&mut self, bob: Round3Parameter) -> anyhow::Result<Round4Parameter> {
         self.check_round(4);
+        dbg!(&bob);
         self.swap_tx.aggregate_sigs(bob.swap_part_sig)?;
         self.warning_tx_me.aggregate_sigs(bob.p_part_peer, bob.q_part_peer)?;
         self.claim_tx_me.aggregate_sigs(bob.claim_part_sig)?;
         self.redirect_tx_me.aggregate_sigs(bob.redirect_part_sig)?;
+        // TODO  final check
+        self.deposit_tx.sign(&mut self.ctx)?;
+        Ok(Round4Parameter {
+            deposit_tx_signed: self.deposit_tx.merged_psbt.clone().unwrap()
+        })
+    }
+    pub(crate) fn round5(&mut self, bob: Round4Parameter) -> anyhow::Result<()> {
+        self.check_round(5);
+        self.deposit_tx.transfer_sig_and_broadcast(&mut self.ctx, bob.deposit_tx_signed)?;
         Ok(())
     }
 
@@ -801,7 +815,7 @@ impl SwapTx {
 
 pub struct DepositTx {
     pub part_psbt: Option<Psbt>,
-    pub signed_psbt: Option<Psbt>,
+    pub merged_psbt: Option<Psbt>,
     pub tx: Option<Transaction>,
 }
 
@@ -810,7 +824,7 @@ impl DepositTx {
     fn new() -> DepositTx {
         DepositTx {
             part_psbt: None,
-            signed_psbt: None,
+            merged_psbt: None,
             tx: None,
         }
     }
@@ -885,11 +899,16 @@ impl DepositTx {
         sort(&mut merged_psbt);
 
         // sign my psbt
-        ctx.funds.wallet.sign(&mut merged_psbt, SignOptions::default())?;
-        self.signed_psbt = Some(merged_psbt.clone());
+        self.merged_psbt = Some(merged_psbt.clone());
+        self.sign(ctx)?; // TODO move this signing to the end!
         self.part_psbt = None; // make sure not reused.
-        self.tx = Some(merged_psbt.clone().extract_tx()?);
-        Ok(merged_psbt)
+        self.tx = Some(self.merged_psbt.clone().unwrap().extract_tx()?);
+        Ok(self.merged_psbt.clone().unwrap())
+    }
+
+    fn sign(&mut self, ctx: &mut BMPContext) -> anyhow::Result<()> {
+        ctx.funds.wallet.sign(&mut self.merged_psbt.as_mut().unwrap(), SignOptions::default())?;
+        Ok(())
     }
 
     fn transfer_sig_and_broadcast(&mut self, ctx: &mut BMPContext,
@@ -897,7 +916,7 @@ impl DepositTx {
     ) -> anyhow::Result<Txid> {
         // I expect to find all sigs missing in psbt_alice to be in psbt_bob
         // also I expect that both psbts are the same exect for the sigs.
-        let mut my_psbt = self.signed_psbt.as_ref().unwrap().clone();
+        let mut my_psbt = self.merged_psbt.as_ref().unwrap().clone();
 
         // dbg!(&my_psbt.unsigned_tx);
         // dbg!(&psbt_bob.unsigned_tx);
@@ -911,8 +930,8 @@ impl DepositTx {
         }
         let tx = my_psbt.extract_tx()?;
         self.tx = Some(tx.clone());
-        self.signed_psbt = None; // remove used data
-        // TODO alice and bob will broadcast, is that a bug or a feature?
+        self.merged_psbt = None; // remove used data
+        // TODO both alice and bob will broadcast, is that a bug or a feature?
         let depo_txid = ctx.funds.transaction_broadcast(&tx)?;
         dbg!("DepositTx txid: {:?}", &depo_txid);
         Ok(depo_txid)

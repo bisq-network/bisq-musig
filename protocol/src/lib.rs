@@ -18,7 +18,7 @@ mod tests {
     use bdk_electrum::bdk_core::bitcoin::Amount;
 
     #[test]
-    fn test_musig() -> anyhow::Result<()> {
+    fn test_initial_tx_creation() -> anyhow::Result<()> {
         initial_tx_creation()?;
         Ok(())
     }
@@ -70,8 +70,12 @@ mod tests {
         assert_eq!(alice_r3.deposit_txid, bob_r3.deposit_txid);
 
         // Round 4 ---------------------------
-        let _alice_r4 = alice.round4(bob_r3)?;
-        let _bob_r4 = bob.round4(alice_r3)?;
+        let alice_r4 = alice.round4(bob_r3)?;
+        let bob_r4 = bob.round4(alice_r3)?;
+
+        // Round 5 all is ok, broadcasting deposit-tx ---------------------------
+        alice.round5(bob_r4)?;
+        bob.round5(alice_r4)?;
 
         // done -----------------------------
         crate::nigiri::tiktok();
