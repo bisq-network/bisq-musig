@@ -1,4 +1,4 @@
-# trade fee payment in the DepositTx
+# Trade fee payment in the DepositTx
 
 In this section I am going a little further into details on how to use [silent payment](https://github.com/bitcoin/bips/blob/master/bip-0352.mediawiki)
 for trade fee payment when using
@@ -7,7 +7,8 @@ theoretical foundations to understand silent payments in our use case. Keep in m
 and still has some simplifications.
 In this section, Alice and Carol are the
 traders and Bob is the BM that receives the trade fee payment. Prerequisite to this section would be the chapter
-of `working principle of silent payments` from [the silent payment article](SilentPayment.md), but we are going much more into details as its
+of `working principle of silent payments` from [the silent payment article](https://htmlpreview.github.io/?https://github.com/ChrisSon15/bisq-musig/blob/main/concept/renderedForWeb/SilentPayment.html), but we are going
+much more into details as its
 needed for the cooperative payment with SP.
 The trade fee payment is modeled as another UTXO of `DepositTx`,
 this was suggested by Hendrik lately as this is a simple solution for now.
