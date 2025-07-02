@@ -6,9 +6,9 @@ use bdk_electrum::bdk_core::bitcoin::{TapSighashType, Witness};
 use bdk_wallet::bitcoin::key::TapTweak;
 use musig2::secp::{Point, Scalar};
 use musig2::KeyAggContext;
-mod protocol_musig_adaptor;
+pub mod protocol_musig_adaptor;
 mod nigiri;
-mod wallet_service;
+pub mod wallet_service;
 
 #[cfg(test)]
 mod tests {

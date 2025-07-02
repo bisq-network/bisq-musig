@@ -1,4 +1,6 @@
 use clap::Parser;
+use rpc::bmp_service::BmpServiceImpl;
+use rpc::pb::bmp_protocol::bmp_protocol_service_server::BmpProtocolServiceServer;
 use rpc::server::{MusigImpl, MusigServer, WalletImpl, WalletServer};
 use rpc::wallet::WalletServiceImpl;
 use std::error::Error;
@@ -40,9 +42,13 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let wallet = WalletImpl { wallet_service: Arc::new(WalletServiceImpl::new()) };
     wallet.wallet_service.clone().spawn_connection();
 
+    let bmp_protocol_impl = BmpServiceImpl::default();
+
+    println!("Starting RPC server on port {}", cli.port);
     Server::builder()
         .add_service(MusigServer::new(musig))
         .add_service(WalletServer::new(wallet))
+        .add_service(BmpProtocolServiceServer::new(bmp_protocol_impl))
         .serve(addr)
         .await?;
 
