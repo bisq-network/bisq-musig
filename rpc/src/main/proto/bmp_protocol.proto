@@ -16,7 +16,9 @@ service BmpProtocolService {
 
   rpc ExecuteRound3(Round3Request) returns (Round3Response);
 
-  rpc ExecuteRound4(Round4Request) returns (google.protobuf.Empty);
+  rpc ExecuteRound4(Round4Request) returns (Round4Response);
+  
+  rpc ExecuteRound5(Round5Request) returns (google.protobuf.Empty);
 }
 
 // === Messages ===
@@ -82,4 +84,13 @@ message Round3Response {
 message Round4Request {
   string trade_id = 1;
   Round3Response peer_round3_response = 2;
+}
+
+message Round4Response {
+    bytes deposit_tx_signed = 1;
+}
+
+message Round5Request {
+    string trade_id = 1;
+    Round4Response peer_round4_response = 2;
 }

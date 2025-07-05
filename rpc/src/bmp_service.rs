@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use tonic::{Request, Response, Status};
+use tracing::info;
 use uuid::Uuid;
 
 use bdk_wallet::bitcoin::Amount;
@@ -26,8 +27,10 @@ impl BmpProtocolService for BmpServiceImpl {
         request: Request<InitializeRequest>,
     ) -> Result<Response<InitializeResponse>, Status> {
         let req = request.into_inner();
+        info!("Received initialize request: {:?}",req);
 
-        //todo: this is just a mock wallet_service at the moment
+        let mem_wallet = MemWallet::new(); // TODO
+
         let mem_wallet = MemWallet::new().map_err(|e| Status::internal(e.to_string()))?;
         let wallet_service = WalletService::new().load(mem_wallet);
 
@@ -122,7 +125,7 @@ impl BmpProtocolService for BmpServiceImpl {
     async fn execute_round4(
         &self,
         request: tonic::Request<bmp_protocol::Round4Request>,
-    ) -> std::result::Result<tonic::Response<()>, tonic::Status> {
+    ) -> std::result::Result<tonic::Response<bmp_protocol::Round4Response>, tonic::Status> {
         let req = request.into_inner();
         let trade_id = req.trade_id;
 
@@ -133,8 +136,29 @@ impl BmpProtocolService for BmpServiceImpl {
 
         let peer_round3_params = req.peer_round3_response.unwrap().try_proto_into()?;
 
-        protocol
+        let round4_result = protocol
             .round4(peer_round3_params)
+            .map_err(|e| Status::aborted(e.to_string()))?;
+
+        Ok(Response::new(round4_result.try_into()?))
+    }
+
+    async fn execute_round5(
+        &self,
+        request: tonic::Request<bmp_protocol::Round5Request>,
+    ) -> std::result::Result<tonic::Response<()>, tonic::Status> {
+        let req = request.into_inner();
+        let trade_id = req.trade_id;
+
+        let mut protocols = self.active_protocols.lock().unwrap();
+        let protocol = protocols
+            .get_mut(&trade_id)
+            .ok_or_else(|| Status::not_found(format!("Trade not found: {}", trade_id)))?;
+
+        let peer_round4_params = req.peer_round4_response.unwrap().try_proto_into()?;
+
+        protocol
+            .round5(peer_round4_params)
             .map_err(|e| Status::aborted(e.to_string()))?;
 
         Ok(Response::new(()))

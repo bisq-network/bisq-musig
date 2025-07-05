@@ -39,7 +39,7 @@ impl TryProtoInto<bmp_engine::Round1Parameter> for bmp_pb::Round1Response {
             p_a: self.p_a.as_slice().try_proto_into()?,
             q_a: self.q_a.as_slice().try_proto_into()?,
             dep_part_psbt: Psbt::deserialize(&self.dep_part_psbt).map_err(|e| {
-                Status::invalid_argument(format!("Failed to deserialize Psbt: {}", e))
+                Status::invalid_argument(format!("Failed to deserialize Psbt: {e}"))
             })?,
             swap_script: self.swap_script.map(ScriptBuf::from_bytes),
             warn_anchor_spend: ScriptBuf::from_bytes(self.warn_anchor_spend),
@@ -56,7 +56,7 @@ impl TryFrom<bmp_engine::Round1Parameter> for bmp_pb::Round1Response {
             p_a: value.p_a.serialize().to_vec(),
             q_a: value.q_a.serialize().to_vec(),
             dep_part_psbt: value.dep_part_psbt.serialize(),
-            swap_script: value.swap_script.map(|v| v.into_bytes()),
+            swap_script: value.swap_script.map(bdk_wallet::bitcoin::ScriptBuf::into_bytes),
             warn_anchor_spend: value.warn_anchor_spend.into_bytes(),
             claim_spend: value.claim_spend.into_bytes(),
             redirect_anchor_spend: value.redirect_anchor_spend.into_bytes(),
@@ -124,6 +124,25 @@ impl TryProtoInto<bmp_engine::Round3Parameter> for bmp_pb::Round3Response {
             q_part_peer: self.q_part_peer.as_slice().try_proto_into()?,
             claim_part_sig: self.claim_part_sig.as_slice().try_proto_into()?,
             redirect_part_sig: self.redirect_part_sig.as_slice().try_proto_into()?,
+        })
+    }
+}
+
+impl TryFrom<bmp_engine::Round4Parameter> for bmp_pb::Round4Response {
+    type Error = Status;
+    fn try_from(value: bmp_engine::Round4Parameter) -> Result<Self, Self::Error> {
+        Ok(Self {
+            deposit_tx_signed: value.deposit_tx_signed().serialize(),
+        })
+    }
+}
+
+impl TryProtoInto<bmp_engine::Round4Parameter> for bmp_pb::Round4Response {
+    fn try_proto_into(self) -> Result<bmp_engine::Round4Parameter> {
+        Ok(bmp_engine::Round4Parameter {
+            deposit_tx_signed: Psbt::deserialize(&self.deposit_tx_signed).map_err(|e| {
+                Status::invalid_argument(format!("Failed to deserialize Psbt: {e}"))
+            })?,
         })
     }
 }

@@ -71,6 +71,12 @@ mvn install exec:java
 mvn exec:java -Pwallet
 ```
 
+
+6. To run the `BmpClient`:
+```bash
+mvn exec:java -P bmp
+```
+
 ### Integration tests using Nigiri
 
 Some of the integration tests require [Nigiri](https://github.com/vulpemventures/nigiri) to run, which is a command-line

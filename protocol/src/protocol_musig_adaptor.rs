@@ -184,7 +184,13 @@ pub struct Round3Parameter {
 }
 #[derive(Debug)]
 pub struct Round4Parameter {
-    deposit_tx_signed: Psbt,
+    pub deposit_tx_signed: Psbt,
+}
+
+impl Round4Parameter {
+    pub fn deposit_tx_signed(&self) -> &Psbt {
+        &self.deposit_tx_signed
+    }
 }
 /**
 this context is for the whole process and need to be persisted by the caller
@@ -375,7 +381,7 @@ impl BMPProtocol {
             deposit_tx_signed: self.deposit_tx.merged_psbt.clone().unwrap()
         })
     }
-    pub(crate) fn round5(&mut self, bob: Round4Parameter) -> anyhow::Result<()> {
+    pub fn round5(&mut self, bob: Round4Parameter) -> anyhow::Result<()> {
         self.check_round(5);
         self.deposit_tx.transfer_sig_and_broadcast(&mut self.ctx, bob.deposit_tx_signed)?;
         Ok(())

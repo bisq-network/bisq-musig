@@ -38,16 +38,16 @@ async fn main() -> Result<(), Box<dyn Error>> {
         .init();
 
     let addr = format!("127.0.0.1:{}", cli.port).parse()?;
-    let musig = MusigImpl::default();
-    let wallet = WalletImpl { wallet_service: Arc::new(WalletServiceImpl::new()) };
-    wallet.wallet_service.clone().spawn_connection();
+    // let musig = MusigImpl::default();
+    // let wallet = WalletImpl { wallet_service: Arc::new(WalletServiceImpl::new()) };
+    // wallet.wallet_service.clone().spawn_connection();
 
     let bmp_protocol_impl = BmpServiceImpl::default();
 
     println!("Starting RPC server on port {}", cli.port);
     Server::builder()
-        .add_service(MusigServer::new(musig))
-        .add_service(WalletServer::new(wallet))
+        // .add_service(MusigServer::new(musig))
+        // .add_service(WalletServer::new(wallet))
         .add_service(BmpProtocolServiceServer::new(bmp_protocol_impl))
         .serve(addr)
         .await?;
