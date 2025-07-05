@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
+use protocol::nigiri;
 use tonic::{Request, Response, Status};
 use tracing::info;
 use uuid::Uuid;
@@ -29,10 +30,10 @@ impl BmpProtocolService for BmpServiceImpl {
         let req = request.into_inner();
         info!("Received initialize request: {:?}",req);
 
-        let mem_wallet = MemWallet::new(); // TODO
-
-        let mem_wallet = MemWallet::new().map_err(|e| Status::internal(e.to_string()))?;
-        let wallet_service = WalletService::new().load(mem_wallet);
+        //todo retrieve the actual wallet
+        let mut mock_wallet = nigiri::funded_wallet();
+        nigiri::fund_wallet(&mut mock_wallet);
+        let wallet_service = WalletService::new().load(mock_wallet);
 
         let role = match Role::try_from(req.role).unwrap() {
             Role::Seller => ProtocolRole::Seller,

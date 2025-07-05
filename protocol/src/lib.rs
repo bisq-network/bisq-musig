@@ -7,7 +7,7 @@ use bdk_wallet::bitcoin::key::TapTweak;
 use musig2::secp::{Point, Scalar};
 use musig2::KeyAggContext;
 pub mod protocol_musig_adaptor;
-mod nigiri;
+pub mod nigiri;
 pub mod wallet_service;
 
 #[cfg(test)]

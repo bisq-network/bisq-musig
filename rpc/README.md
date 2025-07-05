@@ -68,6 +68,7 @@ mvn install exec:java
 5. To subsequently run the Java test client for the wallet gRPC interface, run:
 
 ```sh
+nigiri start && \
 mvn exec:java -Pwallet
 ```
 

@@ -5,13 +5,13 @@ use bdk_wallet::bitcoin::Amount;
 use std::process::Output;
 use std::{process::Command, thread, time};
 
-pub(crate) fn funded_wallet() -> MemWallet {
+pub fn funded_wallet() -> MemWallet {
     println!("loading wallet...");
     let mut wallet = MemWallet::new().unwrap();
     fund_wallet(&mut wallet);
     wallet
 }
-pub(crate) fn fund_wallet(wallet: &mut MemWallet) {
+pub fn fund_wallet(wallet: &mut MemWallet) {
     let initial_balance = wallet.balance();
     // load some more coin to wallet
     let adr = wallet.next_unused_address().to_string();
