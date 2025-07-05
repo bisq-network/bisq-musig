@@ -132,7 +132,7 @@ impl TryFrom<bmp_engine::Round4Parameter> for bmp_pb::Round4Response {
     type Error = Status;
     fn try_from(value: bmp_engine::Round4Parameter) -> Result<Self, Self::Error> {
         Ok(Self {
-            deposit_tx_signed: value.deposit_tx_signed().serialize(),
+            deposit_tx_signed: value.deposit_tx_signed.serialize(),
         })
     }
 }

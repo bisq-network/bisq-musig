@@ -187,11 +187,6 @@ pub struct Round4Parameter {
     pub deposit_tx_signed: Psbt,
 }
 
-impl Round4Parameter {
-    pub fn deposit_tx_signed(&self) -> &Psbt {
-        &self.deposit_tx_signed
-    }
-}
 /**
 this context is for the whole process and need to be persisted by the caller
 */
