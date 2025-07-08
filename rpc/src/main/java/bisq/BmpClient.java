@@ -26,6 +26,15 @@ public class BmpClient {
         ManagedChannel channel = ManagedChannelBuilder.forAddress("localhost", 50051).usePlaintext().build();
         BmpProtocolServiceGrpc.BmpProtocolServiceBlockingStub client = BmpProtocolServiceGrpc.newBlockingStub(channel);
 
+        try {
+            runBmpProtocolTest(client);
+        } finally {
+            System.out.println("Shutting down channel.");
+            channel.shutdown();
+        }
+    }
+
+    private static void runBmpProtocolTest(BmpProtocolServiceGrpc.BmpProtocolServiceBlockingStub client) {
         System.out.println("Initializing seller and buyer...");
         // Initialize the seller and buyer
         InitializeResponse sellerInitResponse = client
@@ -82,8 +91,5 @@ public class BmpClient {
         System.out.println("Buyer Round 5 executed.");
 
         System.out.println("\nBMP protocol executed successfully!");
-
-        System.out.println("Shutting down channel.");
-        channel.shutdown();
     }
 }
