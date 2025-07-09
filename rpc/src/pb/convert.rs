@@ -9,11 +9,15 @@ use musig2::{LiftedSignature, PubNonce};
 use prost::UnknownEnumValue;
 use tonic::{Result, Status};
 
-use crate::pb::musigrpc::{self, NonceSharesMessage, PartialSignaturesMessage,
-    ReceiverAddressAndAmount};
-use crate::pb::walletrpc::{ConfEvent, ConfidenceType, ConfirmationBlockTime, TransactionOutput,
-    WalletBalanceResponse};
-use crate::protocol::{ExchangedNonces, ExchangedSigs, ProtocolErrorKind, RedirectionReceiver, Role};
+use crate::pb::musigrpc::{
+    self, NonceSharesMessage, PartialSignaturesMessage, ReceiverAddressAndAmount,
+};
+use crate::pb::walletrpc::{
+    ConfEvent, ConfidenceType, ConfirmationBlockTime, TransactionOutput, WalletBalanceResponse,
+};
+use crate::protocol::{
+    ExchangedNonces, ExchangedSigs, ProtocolErrorKind, RedirectionReceiver, Role,
+};
 use crate::storage::{ByRef, ByVal};
 use crate::wallet::TxConfidence;
 
