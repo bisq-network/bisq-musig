@@ -29,9 +29,10 @@ enum Role {
 }
 
 message InitializeRequest {
-  Role role = 1;
-  uint64 seller_amount_sats = 2;
-  uint64 buyer_amount_sats = 3;
+  string trade_id = 1;
+  Role role = 2;
+  uint64 seller_amount_sats = 3;
+  uint64 buyer_amount_sats = 4;
 }
 
 message InitializeResponse { string trade_id = 1; }

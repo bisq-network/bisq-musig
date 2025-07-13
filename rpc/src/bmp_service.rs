@@ -3,7 +3,6 @@ use std::collections::HashMap;
 use std::sync::Mutex;
 use tonic::{Request, Response, Result, Status};
 use tracing::info;
-use uuid::Uuid;
 
 use bdk_wallet::bitcoin::Amount;
 use protocol::protocol_musig_adaptor::{BMPContext, BMPProtocol, ProtocolRole, Round1Parameter};
@@ -51,14 +50,18 @@ impl BmpProtocolService for BmpServiceImpl {
 
         let protocol = BMPProtocol::new(context).map_err(|e| Status::internal(e.to_string()))?;
 
-        let trade_id = Uuid::new_v4().to_string();
-
+        let trade_id = &req.trade_id;
+        if trade_id.is_empty() {
+            return Err(Status::invalid_argument("Trade ID must not be empty"));
+        }
         self.active_protocols
             .lock()
             .unwrap()
             .insert(trade_id.clone(), protocol);
 
-        Ok(Response::new(InitializeResponse { trade_id }))
+        Ok(Response::new(InitializeResponse {
+            trade_id: trade_id.clone(),
+        }))
     }
 
     async fn execute_round1(
