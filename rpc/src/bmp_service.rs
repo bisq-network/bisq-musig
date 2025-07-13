@@ -1,14 +1,12 @@
 use protocol::nigiri;
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::sync::Mutex;
 use tonic::{Request, Response, Result, Status};
 use tracing::info;
 use uuid::Uuid;
 
 use bdk_wallet::bitcoin::Amount;
-use protocol::protocol_musig_adaptor::{
-    BMPContext, BMPProtocol, MemWallet, ProtocolRole, Round1Parameter,
-};
+use protocol::protocol_musig_adaptor::{BMPContext, BMPProtocol, ProtocolRole, Round1Parameter};
 use protocol::wallet_service::WalletService;
 
 use crate::pb::bmp_protocol::bmp_protocol_service_server::BmpProtocolService;
@@ -26,7 +24,7 @@ impl BmpProtocolService for BmpServiceImpl {
     async fn initialize(
         &self,
         request: Request<InitializeRequest>,
-    ) -> Result<Response<InitializeResponse>, Status> {
+    ) -> Result<Response<InitializeResponse>> {
         let req = request.into_inner();
         info!("Received initialize request: {:?}", req);
 
