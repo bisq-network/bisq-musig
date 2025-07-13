@@ -1,7 +1,7 @@
+use protocol::nigiri;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
-use protocol::nigiri;
-use tonic::{Result,Request, Response, Status};
+use tonic::{Request, Response, Result, Status};
 use tracing::info;
 use uuid::Uuid;
 
@@ -11,9 +11,9 @@ use protocol::protocol_musig_adaptor::{
 };
 use protocol::wallet_service::WalletService;
 
-use crate::pb::bmp_converter::TryProtoInto as _;
 use crate::pb::bmp_protocol::bmp_protocol_service_server::BmpProtocolService;
 use crate::pb::bmp_protocol::{self, InitializeRequest, InitializeResponse, Role};
+use crate::pb::convert::TryProtoInto as _;
 
 #[derive(Default)]
 pub struct BmpServiceImpl {
@@ -28,15 +28,15 @@ impl BmpProtocolService for BmpServiceImpl {
         request: Request<InitializeRequest>,
     ) -> Result<Response<InitializeResponse>, Status> {
         let req = request.into_inner();
-        info!("Received initialize request: {:?}",req);
+        info!("Received initialize request: {:?}", req);
 
         //todo retrieve the actual wallet
         let mut mock_wallet = nigiri::funded_wallet();
         nigiri::fund_wallet(&mut mock_wallet);
         let wallet_service = WalletService::new().load(mock_wallet);
 
-        let role = Role::try_from(req.role)
-            .map_err(|_| Status::invalid_argument("Unrecognised role"))?;
+        let role =
+            Role::try_from(req.role).map_err(|_| Status::invalid_argument("Unrecognised role"))?;
         let role = match role {
             Role::Seller => ProtocolRole::Seller,
             Role::Buyer => ProtocolRole::Buyer,

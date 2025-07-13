@@ -40,7 +40,7 @@ pub trait TryProtoInto<T> {
     fn try_proto_into(self) -> Result<T>;
 }
 
-macro_rules! impl_try_proto_into_for_slice {
+#[macro_export] macro_rules! impl_try_proto_into_for_slice {
     ($into_type:ty, $err_msg:literal) => {
         impl TryProtoInto<$into_type> for &[u8] {
             fn try_proto_into(self) -> Result<$into_type> {

@@ -1,37 +1,9 @@
-use bdk_wallet::bitcoin::{hashes::Hash as _, Txid};
-
-use musig2::secp::{Point};
-use tonic::{Result, Status};
-
 use crate::pb::bmp_protocol as bmp_pb;
+use crate::pb::convert::TryProtoInto;
+use bdk_wallet::bitcoin::hashes::Hash as _;
 use bdk_wallet::bitcoin::{psbt::Psbt, ScriptBuf};
-use musig2::{PartialSignature, PubNonce};
 use protocol::protocol_musig_adaptor::{self as bmp_engine};
-
-pub trait TryProtoInto<T> {
-    fn try_proto_into(self) -> Result<T>;
-}
-
-macro_rules! impl_try_proto_into_for_slice {
-    ($into_type:ty, $err_msg:literal) => {
-        impl TryProtoInto<$into_type> for &[u8] {
-            fn try_proto_into(self) -> Result<$into_type> {
-                self.try_into()
-                    .map_err(|_| Status::invalid_argument($err_msg))
-            }
-        }
-    };
-}
-
-impl_try_proto_into_for_slice!(Point, "could not decode nonzero point");
-impl_try_proto_into_for_slice!(PubNonce, "could not decode pub nonce");
-impl_try_proto_into_for_slice!(PartialSignature, "could not decode partial signature");
-
-impl TryProtoInto<Txid> for &[u8] {
-    fn try_proto_into(self) -> Result<Txid> {
-        Txid::from_slice(self).map_err(|_| Status::invalid_argument("could not decode txid"))
-    }
-}
+use tonic::{Result, Status};
 
 impl TryProtoInto<bmp_engine::Round1Parameter> for bmp_pb::Round1Response {
     fn try_proto_into(self) -> Result<bmp_engine::Round1Parameter> {
@@ -56,7 +28,9 @@ impl TryFrom<bmp_engine::Round1Parameter> for bmp_pb::Round1Response {
             p_a: value.p_a.serialize().to_vec(),
             q_a: value.q_a.serialize().to_vec(),
             dep_part_psbt: value.dep_part_psbt.serialize(),
-            swap_script: value.swap_script.map(bdk_wallet::bitcoin::ScriptBuf::into_bytes),
+            swap_script: value
+                .swap_script
+                .map(bdk_wallet::bitcoin::ScriptBuf::into_bytes),
             warn_anchor_spend: value.warn_anchor_spend.into_bytes(),
             claim_spend: value.claim_spend.into_bytes(),
             redirect_anchor_spend: value.redirect_anchor_spend.into_bytes(),
