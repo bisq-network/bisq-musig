@@ -120,7 +120,8 @@ To run the full Java integration test suite (`BmpServiceIntegrationTest.java`), 
 
 2.  **Start two `musigd` gRPC servers:**
 
-    The test requires two server instances to represent the two parties in the trade (Alice and Bob). Run these commands from the project's root directory. It's best to run them in separate terminal windows so you can monitor their output.
+The test requires two server instances to represent the two parties in the trade (Alice and Bob). Run these commands from the project's root directory.
+It's best to run them in separate terminal windows so you can monitor their output.
 
     *   Server for Bob (port 50051):
         ```sh

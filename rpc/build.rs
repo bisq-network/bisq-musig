@@ -14,7 +14,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         ])
         .serde_serialized_enum("ConfidenceType")
         .compile_protos(
-            &["src/main/proto/rpc.proto", "src/main/proto/wallet.proto","src/main/proto/bmp_protocol.proto"],
+            &["src/main/proto/rpc.proto", "src/main/proto/wallet.proto", "src/main/proto/bmp_protocol.proto"],
             &["src/main/proto"],
         )?;
     Ok(())
