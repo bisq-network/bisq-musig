@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use protocol::nigiri;
-use tonic::{Request, Response, Status};
+use tonic::{Result,Request, Response, Status};
 use tracing::info;
 use uuid::Uuid;
 
@@ -35,7 +35,9 @@ impl BmpProtocolService for BmpServiceImpl {
         nigiri::fund_wallet(&mut mock_wallet);
         let wallet_service = WalletService::new().load(mock_wallet);
 
-        let role = match Role::try_from(req.role).unwrap() {
+        let role = Role::try_from(req.role)
+            .map_err(|_| Status::invalid_argument("Unrecognised role"))?;
+        let role = match role {
             Role::Seller => ProtocolRole::Seller,
             Role::Buyer => ProtocolRole::Buyer,
             _ => return Err(Status::invalid_argument("Role must be 'Seller' or 'Buyer'")),
@@ -63,8 +65,8 @@ impl BmpProtocolService for BmpServiceImpl {
 
     async fn execute_round1(
         &self,
-        request: tonic::Request<bmp_protocol::Round1Request>,
-    ) -> std::result::Result<tonic::Response<bmp_protocol::Round1Response>, tonic::Status> {
+        request: Request<bmp_protocol::Round1Request>,
+    ) -> Result<Response<bmp_protocol::Round1Response>> {
         let req = request.into_inner();
         let trade_id = req.trade_id;
 
@@ -83,7 +85,7 @@ impl BmpProtocolService for BmpServiceImpl {
     async fn execute_round2(
         &self,
         request: Request<bmp_protocol::Round2Request>,
-    ) -> Result<Response<bmp_protocol::Round2Response>, Status> {
+    ) -> Result<Response<bmp_protocol::Round2Response>> {
         let req = request.into_inner();
         let trade_id = req.trade_id;
 
@@ -104,8 +106,8 @@ impl BmpProtocolService for BmpServiceImpl {
 
     async fn execute_round3(
         &self,
-        request: tonic::Request<bmp_protocol::Round3Request>,
-    ) -> std::result::Result<tonic::Response<bmp_protocol::Round3Response>, tonic::Status> {
+        request: Request<bmp_protocol::Round3Request>,
+    ) -> Result<Response<bmp_protocol::Round3Response>> {
         let req = request.into_inner();
         let trade_id = req.trade_id;
 
@@ -125,8 +127,8 @@ impl BmpProtocolService for BmpServiceImpl {
 
     async fn execute_round4(
         &self,
-        request: tonic::Request<bmp_protocol::Round4Request>,
-    ) -> std::result::Result<tonic::Response<bmp_protocol::Round4Response>, tonic::Status> {
+        request: Request<bmp_protocol::Round4Request>,
+    ) -> Result<Response<bmp_protocol::Round4Response>> {
         let req = request.into_inner();
         let trade_id = req.trade_id;
 
@@ -146,8 +148,8 @@ impl BmpProtocolService for BmpServiceImpl {
 
     async fn execute_round5(
         &self,
-        request: tonic::Request<bmp_protocol::Round5Request>,
-    ) -> std::result::Result<tonic::Response<()>, tonic::Status> {
+        request: Request<bmp_protocol::Round5Request>,
+    ) -> Result<Response<()>> {
         let req = request.into_inner();
         let trade_id = req.trade_id;
 
