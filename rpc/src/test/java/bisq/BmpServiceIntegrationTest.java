@@ -42,7 +42,7 @@ public class BmpServiceIntegrationTest {
     }
 
     @AfterAll
-    void teardown() throws InterruptedException {
+    void tearDown() throws InterruptedException {
         if (alice_channel != null) {
             System.out.println("Shutting down alice gRPC channel.");
             alice_channel.shutdown().awaitTermination(5, TimeUnit.SECONDS);

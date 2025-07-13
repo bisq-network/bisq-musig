@@ -30,7 +30,7 @@ impl TryFrom<bmp_engine::Round1Parameter> for bmp_pb::Round1Response {
             dep_part_psbt: value.dep_part_psbt.serialize(),
             swap_script: value
                 .swap_script
-                .map(bdk_wallet::bitcoin::ScriptBuf::into_bytes),
+                .map(ScriptBuf::into_bytes),
             warn_anchor_spend: value.warn_anchor_spend.into_bytes(),
             claim_spend: value.claim_spend.into_bytes(),
             redirect_anchor_spend: value.redirect_anchor_spend.into_bytes(),
