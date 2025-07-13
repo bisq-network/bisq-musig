@@ -29,7 +29,6 @@ impl BmpProtocolService for BmpServiceImpl {
 
         //todo retrieve the actual wallet
         let mut mock_wallet = nigiri::funded_wallet();
-        nigiri::fund_wallet(&mut mock_wallet);
         let wallet_service = WalletService::new().load(mock_wallet);
 
         let role =
