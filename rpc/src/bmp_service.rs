@@ -25,7 +25,7 @@ impl BmpProtocolService for BmpServiceImpl {
         request: Request<InitializeRequest>,
     ) -> Result<Response<InitializeResponse>> {
         let req = request.into_inner();
-        info!("Received initialize request: {:?}", req);
+        info!("Received initialize request: {req:?}");
 
         //todo retrieve the actual wallet
         let mut mock_wallet = nigiri::funded_wallet();

@@ -6,7 +6,7 @@ default-run = "musig-cli"
 
 [dependencies]
 bdk_bitcoind_rpc = "0.20.0"
-bdk_wallet = "2.0.0"
+bdk_wallet = {workspace = true}
 drop-stream = "0.3.2"
 futures-util = { version = "0.3.31", default-features = false, features = ["alloc"] }
 musig2 = { workspace = true}

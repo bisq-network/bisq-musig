@@ -3,4 +3,7 @@ resolver = "3"
 members = ["adaptor", "bdktest", "protocol", "rpc"]
 
 [workspace.dependencies]
+bdk_bitcoind_rpc = "0.20.0"
+bdk_electrum = { version = "0.23.0", default-features = false, features = ["use-rustls-ring",] }
+bdk_wallet = "2.0.0"
 musig2 = { version = "0.3.1", features = ["rand"] }
