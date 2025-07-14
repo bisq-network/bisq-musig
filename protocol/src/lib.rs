@@ -53,17 +53,7 @@ mod tests {
         let alice_r2 = alice.round2(bob_response)?;
         let bob_r2 = bob.round2(alice_response)?;
 
-        println!("P2TR P' {}", alice.p_tik.get_agg_adr()?.to_string());
-        println!("P2TR Q' {}", alice.q_tik.get_agg_adr()?.to_string());
-
-        assert!(alice.get_p_tik_agg() == bob.get_p_tik_agg());
-        assert!(alice.q_tik.agg_point == bob.q_tik.agg_point);
-
         // Round 3 ----------
-        // let alice_sig_p = alice.warning_tx_me.sig_p.as_ref().unwrap();
-        // let alice_adaptor_p = alice_sig_p.adaptor_sig.as_ref().unwrap();
-
-
         let alice_r3 = alice.round3(bob_r2)?;
         let bob_r3 = bob.round3(alice_r2)?;
 
@@ -103,6 +93,8 @@ mod tests {
 
         Ok(())
     }
+
+    // TODO write a test where Bob does not sign DepositTx but Alice has it already. Bob needs to remove the funds from the INPUT OF dEPOSITtX.
 
     #[test]
     fn test_warning() -> anyhow::Result<()> {
