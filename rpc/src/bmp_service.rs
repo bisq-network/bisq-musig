@@ -28,7 +28,7 @@ impl BmpProtocolService for BmpServiceImpl {
         info!("Received initialize request: {req:?}");
 
         //todo retrieve the actual wallet
-        let mut mock_wallet = nigiri::funded_wallet();
+        let mock_wallet = nigiri::funded_wallet();
         let wallet_service = WalletService::new().load(mock_wallet);
 
         let role =
@@ -36,7 +36,6 @@ impl BmpProtocolService for BmpServiceImpl {
         let role = match role {
             Role::Seller => ProtocolRole::Seller,
             Role::Buyer => ProtocolRole::Buyer,
-            _ => return Err(Status::invalid_argument("Role must be 'Seller' or 'Buyer'")),
         };
 
         let context = BMPContext::new(
@@ -73,12 +72,13 @@ impl BmpProtocolService for BmpServiceImpl {
         let mut protocols = self.active_protocols.lock().unwrap();
         let protocol = protocols
             .get_mut(&trade_id)
-            .ok_or_else(|| Status::not_found(format!("Trade not found: {}", trade_id)))?;
+            .ok_or_else(|| Status::not_found(format!("Trade not found: {trade_id}")))?;
 
         let round1_result = protocol
             .round1()
             .map_err(|e| Status::aborted(e.to_string()))?;
 
+        drop(protocols);
         Ok(Response::new(round1_result.try_into()?))
     }
 
@@ -92,7 +92,7 @@ impl BmpProtocolService for BmpServiceImpl {
         let mut protocols = self.active_protocols.lock().unwrap();
         let protocol = protocols
             .get_mut(&trade_id)
-            .ok_or_else(|| Status::not_found(format!("Trade not found: {}", trade_id)))?;
+            .ok_or_else(|| Status::not_found(format!("Trade not found: {trade_id}")))?;
 
         let peer_round1_params: Round1Parameter =
             req.peer_round1_response.unwrap().try_proto_into()?;
@@ -101,6 +101,7 @@ impl BmpProtocolService for BmpServiceImpl {
             .round2(peer_round1_params)
             .map_err(|e| Status::aborted(e.to_string()))?;
 
+        drop(protocols);
         Ok(Response::new(round2_result.try_into()?))
     }
 
@@ -114,7 +115,7 @@ impl BmpProtocolService for BmpServiceImpl {
         let mut protocols = self.active_protocols.lock().unwrap();
         let protocol = protocols
             .get_mut(&trade_id)
-            .ok_or_else(|| Status::not_found(format!("Trade not found: {}", trade_id)))?;
+            .ok_or_else(|| Status::not_found(format!("Trade not found: {trade_id}")))?;
 
         let peer_round2_params = req.peer_round2_response.unwrap().try_proto_into()?;
 
@@ -122,6 +123,7 @@ impl BmpProtocolService for BmpServiceImpl {
             .round3(peer_round2_params)
             .map_err(|e| Status::aborted(e.to_string()))?;
 
+        drop(protocols);
         Ok(Response::new(round3_result.try_into()?))
     }
 
@@ -135,7 +137,7 @@ impl BmpProtocolService for BmpServiceImpl {
         let mut protocols = self.active_protocols.lock().unwrap();
         let protocol = protocols
             .get_mut(&trade_id)
-            .ok_or_else(|| Status::not_found(format!("Trade not found: {}", trade_id)))?;
+            .ok_or_else(|| Status::not_found(format!("Trade not found: {trade_id}")))?;
 
         let peer_round3_params = req.peer_round3_response.unwrap().try_proto_into()?;
 
@@ -143,6 +145,7 @@ impl BmpProtocolService for BmpServiceImpl {
             .round4(peer_round3_params)
             .map_err(|e| Status::aborted(e.to_string()))?;
 
+        drop(protocols);
         Ok(Response::new(round4_result.try_into()?))
     }
 
@@ -156,7 +159,7 @@ impl BmpProtocolService for BmpServiceImpl {
         let mut protocols = self.active_protocols.lock().unwrap();
         let protocol = protocols
             .get_mut(&trade_id)
-            .ok_or_else(|| Status::not_found(format!("Trade not found: {}", trade_id)))?;
+            .ok_or_else(|| Status::not_found(format!("Trade not found: {trade_id}")))?;
 
         let peer_round4_params = req.peer_round4_response.unwrap().try_proto_into()?;
 
@@ -164,6 +167,7 @@ impl BmpProtocolService for BmpServiceImpl {
             .round5(peer_round4_params)
             .map_err(|e| Status::aborted(e.to_string()))?;
 
+        drop(protocols);
         Ok(Response::new(()))
     }
 }
