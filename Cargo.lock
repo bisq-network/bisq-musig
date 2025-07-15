@@ -396,11 +396,11 @@ dependencies = [
 
 [[package]]
 name = "bdk_electrum"
-version = "0.21.0"
+version = "0.23.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cb2ac12acbf8f263c59d74ceeeed015e0fd00982aa8e71824f63d102999be040"
+checksum = "28f25503fbb646a219a23145ca1a753f7e239232225c661df8353f05faf00116"
 dependencies = [
- "bdk_core 0.4.1",
+ "bdk_core 0.6.0",
  "electrum-client 0.23.1",
 ]
 
@@ -2445,8 +2445,8 @@ name = "protocol"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "bdk_electrum 0.21.0",
- "bdk_wallet 1.2.0",
+ "bdk_electrum 0.23.0",
+ "bdk_wallet 2.0.0",
  "dotenv",
  "musig2 0.3.1",
  "rand 0.9.1",
@@ -2756,6 +2756,7 @@ dependencies = [
  "aws-lc-rs",
  "log",
  "once_cell",
+ "ring",
  "rustls-pki-types",
  "rustls-webpki 0.103.3",
  "subtle",
