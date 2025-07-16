@@ -30,6 +30,7 @@ public class BmpClient {
                 BmpProtocolServiceGrpc.newBlockingStub(channel);
 
         try {
+            runBmpProtocolTest(client);
         } finally {
             System.out.println("Shutting down channel.");
             channel.shutdown();
