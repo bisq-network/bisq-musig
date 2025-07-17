@@ -1,6 +1,6 @@
-<mxfile host="Electron" agent="Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) draw.io/26.2.2 Chrome/134.0.6998.178 Electron/35.1.2 Safari/537.36" version="26.2.2">
+<mxfile host="drawio-plugin" agent="Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36" modified="2025-07-15T13:51:47.147Z" version="22.1.22" etag="s0J8CLoLFjMs2VXsONt5" type="embed">
   <diagram id="23iRSUPoRavnBvh4doch" name="Page-1">
-    <mxGraphModel dx="880" dy="842" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="827" pageHeight="1169" background="#FFFFFF" math="0" shadow="0">
+    <mxGraphModel dx="958" dy="800" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="827" pageHeight="1169" background="#FFFFFF" math="0" shadow="0">
       <root>
         <mxCell id="0" />
         <mxCell id="1" parent="0" />
@@ -79,7 +79,7 @@
         <mxCell id="72" style="edgeStyle=none;shape=connector;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;entryX=1;entryY=0.5;entryDx=0;entryDy=0;labelBackgroundColor=default;strokeColor=default;align=center;verticalAlign=middle;fontFamily=Helvetica;fontSize=11;fontColor=default;endArrow=classic;" parent="1" source="25" target="19" edge="1">
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
-        <mxCell id="25" value="4. Traders exchange secret keys for P&#39;&amp;nbsp;" style="html=1;align=center;verticalAlign=top;rounded=1;absoluteArcSize=1;arcSize=10;dashed=0;whiteSpace=wrap;" parent="1" vertex="1">
+        <mxCell id="25" value="4. Traders exchange secret keys for P&#39; and R&#39;" style="html=1;align=center;verticalAlign=top;rounded=1;absoluteArcSize=1;arcSize=10;dashed=0;whiteSpace=wrap;" parent="1" vertex="1">
           <mxGeometry x="329" y="260" width="140" height="40" as="geometry" />
         </mxCell>
         <mxCell id="27" value="" style="ellipse;html=1;shape=endState;fillColor=strokeColor;fontFamily=Helvetica;fontSize=11;fontColor=default;" parent="1" vertex="1">
@@ -89,15 +89,15 @@
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
         <mxCell id="30" value="5. Seller or Buyer broadcast WarningTx" style="html=1;align=center;verticalAlign=top;rounded=1;absoluteArcSize=1;arcSize=10;dashed=0;whiteSpace=wrap;" parent="1" vertex="1">
-          <mxGeometry x="550" y="240" width="140" height="40" as="geometry" />
+          <mxGeometry x="540" y="260" width="140" height="40" as="geometry" />
         </mxCell>
         <mxCell id="50" style="edgeStyle=none;shape=connector;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;entryX=0.5;entryY=0;entryDx=0;entryDy=0;labelBackgroundColor=default;strokeColor=default;align=center;verticalAlign=middle;fontFamily=Helvetica;fontSize=11;fontColor=default;endArrow=classic;" parent="1" source="33" target="57" edge="1">
           <mxGeometry relative="1" as="geometry">
-            <mxPoint x="620" y="725" as="targetPoint" />
+            <mxPoint x="610" y="745" as="targetPoint" />
           </mxGeometry>
         </mxCell>
         <mxCell id="33" value="13. Seller or Buyer broadcast ClaimTx" style="html=1;align=center;verticalAlign=top;rounded=1;absoluteArcSize=1;arcSize=10;dashed=0;whiteSpace=wrap;" parent="1" vertex="1">
-          <mxGeometry x="550" y="635" width="140" height="40" as="geometry" />
+          <mxGeometry x="540" y="655" width="140" height="40" as="geometry" />
         </mxCell>
         <mxCell id="38" style="edgeStyle=none;shape=connector;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;labelBackgroundColor=default;strokeColor=default;align=center;verticalAlign=middle;fontFamily=Helvetica;fontSize=11;fontColor=default;endArrow=classic;exitX=1;exitY=0.5;exitDx=0;exitDy=0;" parent="1" source="53" target="37" edge="1">
           <mxGeometry relative="1" as="geometry" />
@@ -109,18 +109,18 @@
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
         <mxCell id="37" value="9. Buyer or Seller creates and broadcasts a transaction with total funds to his wallet" style="html=1;align=center;verticalAlign=top;rounded=1;absoluteArcSize=1;arcSize=10;dashed=0;whiteSpace=wrap;" parent="1" vertex="1">
-          <mxGeometry x="711" y="315" width="140" height="80" as="geometry" />
+          <mxGeometry x="701" y="335" width="140" height="80" as="geometry" />
         </mxCell>
         <mxCell id="39" value="" style="ellipse;html=1;shape=endState;fillColor=strokeColor;fontFamily=Helvetica;fontSize=11;fontColor=default;" parent="1" vertex="1">
           <mxGeometry x="384" y="490" width="30" height="30" as="geometry" />
         </mxCell>
         <mxCell id="45" style="edgeStyle=none;shape=connector;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;labelBackgroundColor=default;strokeColor=default;align=center;verticalAlign=middle;fontFamily=Helvetica;fontSize=11;fontColor=default;endArrow=classic;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" parent="1" source="41" target="81" edge="1">
           <mxGeometry relative="1" as="geometry">
-            <mxPoint x="780" y="540" as="targetPoint" />
+            <mxPoint x="770" y="560" as="targetPoint" />
           </mxGeometry>
         </mxCell>
         <mxCell id="41" value="11. Buyer or Seller broadcasts RedirectTx" style="html=1;align=center;verticalAlign=top;rounded=1;absoluteArcSize=1;arcSize=10;dashed=0;whiteSpace=wrap;" parent="1" vertex="1">
-          <mxGeometry x="711" y="455" width="140" height="40" as="geometry" />
+          <mxGeometry x="701" y="475" width="140" height="40" as="geometry" />
         </mxCell>
         <mxCell id="44" style="edgeStyle=none;shape=connector;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;labelBackgroundColor=default;strokeColor=default;align=center;verticalAlign=middle;fontFamily=Helvetica;fontSize=11;fontColor=default;endArrow=classic;exitX=1;exitY=0.5;exitDx=0;exitDy=0;" parent="1" source="54" target="41" edge="1">
           <mxGeometry relative="1" as="geometry" />
@@ -132,24 +132,24 @@
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
         <mxCell id="46" value="12. t2 expired?" style="rhombus;whiteSpace=wrap;html=1;fontSize=11;" parent="1" vertex="1">
-          <mxGeometry x="578" y="535" width="80" height="80" as="geometry" />
+          <mxGeometry x="568" y="555" width="80" height="80" as="geometry" />
         </mxCell>
         <mxCell id="53" value="&amp;nbsp;8. key already exchanged?" style="rhombus;whiteSpace=wrap;html=1;fontSize=11;" parent="1" vertex="1">
-          <mxGeometry x="580" y="315" width="80" height="80" as="geometry" />
+          <mxGeometry x="570" y="335" width="80" height="80" as="geometry" />
         </mxCell>
         <mxCell id="54" value="10. t1 expired?" style="rhombus;whiteSpace=wrap;html=1;fontSize=11;" parent="1" vertex="1">
-          <mxGeometry x="580" y="435" width="80" height="80" as="geometry" />
+          <mxGeometry x="570" y="455" width="80" height="80" as="geometry" />
         </mxCell>
         <mxCell id="56" value="" style="shape=sumEllipse;perimeter=ellipsePerimeter;html=1;backgroundOutline=1;fontFamily=Helvetica;fontSize=11;fontColor=default;" parent="1" vertex="1">
-          <mxGeometry x="889" y="340" width="30" height="30" as="geometry" />
+          <mxGeometry x="879" y="360" width="30" height="30" as="geometry" />
         </mxCell>
         <mxCell id="57" value="" style="shape=sumEllipse;perimeter=ellipsePerimeter;html=1;backgroundOutline=1;fontFamily=Helvetica;fontSize=11;fontColor=default;" parent="1" vertex="1">
-          <mxGeometry x="605" y="725" width="30" height="30" as="geometry" />
+          <mxGeometry x="595" y="745" width="30" height="30" as="geometry" />
         </mxCell>
-        <mxCell id="71" style="rounded=0;orthogonalLoop=1;jettySize=auto;html=1;entryX=0;entryY=1;entryDx=0;entryDy=0;" parent="1" source="66" target="30" edge="1">
+        <mxCell id="71" style="rounded=0;orthogonalLoop=1;jettySize=auto;html=1;entryX=0.143;entryY=1;entryDx=0;entryDy=0;entryPerimeter=0;" parent="1" source="66" target="30" edge="1">
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
-        <mxCell id="66" value="7. Traders exchange secret keys for Q&#39;" style="html=1;align=center;verticalAlign=top;rounded=1;absoluteArcSize=1;arcSize=10;dashed=0;whiteSpace=wrap;" parent="1" vertex="1">
+        <mxCell id="66" value="7. Traders exchange secret keys for Q&#39; and S&#39;" style="html=1;align=center;verticalAlign=top;rounded=1;absoluteArcSize=1;arcSize=10;dashed=0;whiteSpace=wrap;" parent="1" vertex="1">
           <mxGeometry x="329" y="385" width="140" height="40" as="geometry" />
         </mxCell>
         <mxCell id="73" style="edgeStyle=none;shape=connector;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;entryX=0.843;entryY=1.025;entryDx=0;entryDy=0;entryPerimeter=0;labelBackgroundColor=default;strokeColor=default;align=center;verticalAlign=middle;fontFamily=Helvetica;fontSize=11;fontColor=default;endArrow=classic;" parent="1" source="66" target="19" edge="1">
@@ -183,16 +183,16 @@
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
         <mxCell id="78" value="One of the traders has been inactive, therefore the other traders got the funds" style="text;html=1;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=11;fontFamily=Helvetica;fontColor=default;" parent="1" vertex="1">
-          <mxGeometry x="708" y="705" width="119" height="70" as="geometry" />
+          <mxGeometry x="698" y="725" width="119" height="70" as="geometry" />
         </mxCell>
         <mxCell id="80" value="Other trade issue WarningTx and is signaling he wants arbitration, we answer by requesting arbitration as well." style="text;html=1;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=11;fontFamily=Helvetica;fontColor=default;" parent="1" vertex="1">
-          <mxGeometry x="770" y="560" width="140" height="80" as="geometry" />
+          <mxGeometry x="760" y="580" width="140" height="80" as="geometry" />
         </mxCell>
         <mxCell id="81" value="" style="shape=sumEllipse;perimeter=ellipsePerimeter;html=1;backgroundOutline=1;fontFamily=Helvetica;fontSize=11;fontColor=default;" parent="1" vertex="1">
-          <mxGeometry x="766" y="530" width="30" height="30" as="geometry" />
+          <mxGeometry x="756" y="550" width="30" height="30" as="geometry" />
         </mxCell>
         <mxCell id="82" value="One of the traders tried to cheat on the other one and gets punished by loosing the funds" style="text;html=1;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=11;fontFamily=Helvetica;fontColor=default;" parent="1" vertex="1">
-          <mxGeometry x="860" y="370" width="119" height="70" as="geometry" />
+          <mxGeometry x="850" y="390" width="119" height="70" as="geometry" />
         </mxCell>
       </root>
     </mxGraphModel>
