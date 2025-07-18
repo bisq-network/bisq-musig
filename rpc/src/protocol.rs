@@ -1,5 +1,6 @@
 use bdk_wallet::bitcoin::address::{NetworkChecked, NetworkUnchecked, NetworkValidation};
-use bdk_wallet::bitcoin::{Address, Amount, FeeRate, Network, Psbt};
+use bdk_wallet::bitcoin::hashes::Hash as _;
+use bdk_wallet::bitcoin::{Address, Amount, FeeRate, Network, Psbt, TapSighash};
 use musig2::adaptor::AdaptorSignature;
 use musig2::secp::{MaybePoint, MaybeScalar, Point, Scalar};
 use musig2::secp256k1::rand;
@@ -51,6 +52,7 @@ pub struct TradeModel {
     buyers_half_deposit_psbt: Option<Psbt>,
     sellers_half_deposit_psbt: Option<Psbt>,
     redirection_receivers: Option<Vec<RedirectionReceiver>>,
+    swap_tx_input_sighash: Option<TapSighash>,
     swap_tx_input_sig_ctx: SigCtx,
     buyers_warning_tx_buyer_input_sig_ctx: SigCtx,
     buyers_warning_tx_seller_input_sig_ctx: SigCtx,
@@ -80,13 +82,12 @@ pub struct ExchangedNonces<'a, S: Storage> {
     pub sellers_redirect_tx_input_nonce_share: S::Store<'a, PubNonce>,
 }
 
-#[expect(clippy::struct_field_names,
-reason = "not sure removing common postfix would make things clearer")] // TODO: Consider further.
 pub struct ExchangedSigs<'a, S: Storage> {
     pub peers_warning_tx_buyer_input_partial_signature: S::Store<'a, PartialSignature>,
     pub peers_warning_tx_seller_input_partial_signature: S::Store<'a, PartialSignature>,
     pub peers_redirect_tx_input_partial_signature: S::Store<'a, PartialSignature>,
     pub swap_tx_input_partial_signature: Option<S::Store<'a, PartialSignature>>,
+    pub swap_tx_input_sighash: Option<S::Store<'a, TapSighash>>,
 }
 
 pub struct RedirectionReceiver<V: NetworkValidation = NetworkChecked> {
@@ -360,27 +361,36 @@ impl TradeModel {
         Ok(())
     }
 
+    pub fn init_swap_tx_input_sighash(&mut self) -> Result<()> {
+        self.check_unsigned_deposit_tx_is_known()?;
+        // TODO: Use real or non-fixed swap tx input sighash:
+        self.swap_tx_input_sighash = Some(TapSighash::from_byte_array(*b"swap tx input..................."));
+        Ok(())
+    }
+
     pub fn sign_partial(&mut self) -> Result<()> {
         self.check_unsigned_deposit_tx_is_known()?;
         self.check_prepared_tx_params_are_known()?;
-        // TODO: Make these dummy messages (txs-to-sign) non-fixed, for greater realism:
+        // TODO: Make these dummy messages (sighashes for txs-to-sign) non-fixed, for greater realism:
         let [buyer_key_ctx, seller_key_ctx] = [&self.buyer_output_key_ctx, &self.seller_output_key_ctx];
+        let swap_tx_input_sighash = self.swap_tx_input_sighash
+            .ok_or(ProtocolErrorKind::MissingSighash)?;
 
         self.buyers_warning_tx_buyer_input_sig_ctx
-            .sign_partial(buyer_key_ctx, b"buyer's warning tx buyer input".into())?;
+            .sign_partial(buyer_key_ctx, b"buyer's warning tx buyer input..".into())?;
         self.sellers_warning_tx_buyer_input_sig_ctx
-            .sign_partial(buyer_key_ctx, b"seller's warning tx buyer input".into())?;
+            .sign_partial(buyer_key_ctx, b"seller's warning tx buyer input.".into())?;
         self.buyers_redirect_tx_input_sig_ctx
-            .sign_partial(buyer_key_ctx, b"buyer's redirect tx input".into())?;
+            .sign_partial(buyer_key_ctx, b"buyer's redirect tx input.......".into())?;
 
         self.swap_tx_input_sig_ctx
-            .sign_partial(seller_key_ctx, b"swap tx input".into())?;
+            .sign_partial(seller_key_ctx, swap_tx_input_sighash.to_byte_array().into())?;
         self.buyers_warning_tx_seller_input_sig_ctx
-            .sign_partial(seller_key_ctx, b"buyer's warning tx seller input".into())?;
+            .sign_partial(seller_key_ctx, b"buyer's warning tx seller input.".into())?;
         self.sellers_warning_tx_seller_input_sig_ctx
             .sign_partial(seller_key_ctx, b"seller's warning tx seller input".into())?;
         self.sellers_redirect_tx_input_sig_ctx
-            .sign_partial(seller_key_ctx, b"seller's redirect tx input".into())?;
+            .sign_partial(seller_key_ctx, b"seller's redirect tx input......".into())?;
         Ok(())
     }
 
@@ -390,14 +400,16 @@ impl TradeModel {
                 peers_warning_tx_buyer_input_partial_signature: self.sellers_warning_tx_buyer_input_sig_ctx.my_partial_sig.as_ref()?,
                 peers_warning_tx_seller_input_partial_signature: self.sellers_warning_tx_seller_input_sig_ctx.my_partial_sig.as_ref()?,
                 peers_redirect_tx_input_partial_signature: self.sellers_redirect_tx_input_sig_ctx.my_partial_sig.as_ref()?,
-                swap_tx_input_partial_signature: Some(self.swap_tx_input_sig_ctx.my_partial_sig.as_ref()?),
+                swap_tx_input_partial_signature: self.swap_tx_input_sig_ctx.my_partial_sig.as_ref(),
+                swap_tx_input_sighash: self.swap_tx_input_sighash.as_ref(),
             }
         } else {
             ExchangedSigs {
                 peers_warning_tx_buyer_input_partial_signature: self.buyers_warning_tx_buyer_input_sig_ctx.my_partial_sig.as_ref()?,
                 peers_warning_tx_seller_input_partial_signature: self.buyers_warning_tx_seller_input_sig_ctx.my_partial_sig.as_ref()?,
                 peers_redirect_tx_input_partial_signature: self.buyers_redirect_tx_input_sig_ctx.my_partial_sig.as_ref()?,
-                swap_tx_input_partial_signature: Some(self.swap_tx_input_sig_ctx.my_partial_sig.as_ref()?),
+                swap_tx_input_partial_signature: self.swap_tx_input_sig_ctx.my_partial_sig.as_ref(),
+                swap_tx_input_sighash: self.swap_tx_input_sighash.as_ref(),
             }
         })
     }
@@ -668,6 +680,8 @@ pub enum ProtocolErrorKind {
     MissingNonceShare,
     #[error("missing partial signature")]
     MissingPartialSig,
+    #[error("missing sighash")]
+    MissingSighash,
     #[error("missing deposit PSBT")]
     MissingDepositPsbt,
     #[error("missing tx params")]

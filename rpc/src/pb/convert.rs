@@ -1,7 +1,7 @@
 use bdk_wallet::bitcoin::address::NetworkUnchecked;
 use bdk_wallet::bitcoin::consensus::Encodable as _;
 use bdk_wallet::bitcoin::hashes::Hash as _;
-use bdk_wallet::bitcoin::{Address, Amount, Psbt, Txid};
+use bdk_wallet::bitcoin::{Address, Amount, Psbt, TapSighash, Txid};
 use bdk_wallet::chain::ChainPosition;
 use bdk_wallet::{Balance, LocalOutput};
 use musig2::secp::{MaybeScalar, Point, Scalar};
@@ -66,6 +66,13 @@ impl TryProtoInto<Txid> for &[u8] {
     fn try_proto_into(self) -> Result<Txid> {
         Txid::from_slice(self)
             .map_err(|e| Status::invalid_argument(format!("could not decode txid: {e}")))
+    }
+}
+
+impl TryProtoInto<TapSighash> for &[u8] {
+    fn try_proto_into(self) -> Result<TapSighash> {
+        TapSighash::from_slice(self)
+            .map_err(|e| Status::invalid_argument(format!("could not decode sighash: {e}")))
     }
 }
 
@@ -145,6 +152,8 @@ impl<'a> TryProtoInto<ExchangedSigs<'a, ByVal>> for PartialSignaturesMessage {
             self.peers_redirect_tx_input_partial_signature.try_proto_into()?,
             swap_tx_input_partial_signature:
             self.swap_tx_input_partial_signature.try_proto_into()?,
+            swap_tx_input_sighash:
+            self.swap_tx_input_sighash.try_proto_into()?,
         })
     }
 }
@@ -197,6 +206,8 @@ impl From<ExchangedSigs<'_, ByRef>> for PartialSignaturesMessage {
             value.peers_redirect_tx_input_partial_signature.serialize().into(),
             swap_tx_input_partial_signature:
             value.swap_tx_input_partial_signature.map(|s| s.serialize().into()),
+            swap_tx_input_sighash:
+            value.swap_tx_input_sighash.map(|s| s.as_byte_array().into()),
         }
     }
 }
@@ -215,7 +226,7 @@ impl From<Balance> for WalletBalanceResponse {
 impl From<LocalOutput> for TransactionOutput {
     fn from(value: LocalOutput) -> Self {
         Self {
-            tx_id: value.outpoint.txid.as_byte_array().into(),
+            tx_id: value.outpoint.txid.to_byte_array().into(),
             vout: value.outpoint.vout,
             script_pub_key: value.txout.script_pubkey.into_bytes(),
             value: value.txout.value.to_sat(),
@@ -230,7 +241,7 @@ impl From<TxConfidence> for ConfEvent {
         let (confidence_type, confirmation_block_time) = match wallet_tx.chain_position {
             ChainPosition::Confirmed { anchor, .. } =>
                 (ConfidenceType::Confirmed, Some(ConfirmationBlockTime {
-                    block_hash: anchor.block_id.hash.as_byte_array().to_vec(),
+                    block_hash: anchor.block_id.hash.to_byte_array().into(),
                     block_height: anchor.block_id.height,
                     confirmation_time: anchor.confirmation_time,
                 })),

@@ -104,6 +104,7 @@ impl musig_server::Musig for MusigImpl {
             trade_model.set_redirection_receivers(request.receivers.into_iter().map(TryProtoInto::try_proto_into))?;
             trade_model.set_peer_nonce_shares(peer_nonce_shares.try_proto_into()?);
             trade_model.aggregate_nonce_shares()?;
+            trade_model.init_swap_tx_input_sighash()?;
             trade_model.sign_partial()?;
             let my_partial_signatures = trade_model.get_my_partial_signatures_on_peer_txs()
                 .ok_or_else(|| Status::internal("missing partial signatures"))?;
