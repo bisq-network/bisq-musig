@@ -72,17 +72,20 @@ impl musig_server::Musig for MusigImpl {
             trade_model.deposit_tx_fee_rate = Some(FeeRate::from_sat_per_kwu(request.deposit_tx_fee_rate));
             trade_model.prepared_tx_fee_rate = Some(FeeRate::from_sat_per_kwu(request.prepared_tx_fee_rate));
             trade_model.init_my_fee_bump_addresses()?;
+            trade_model.init_my_half_deposit_psbt()?;
             trade_model.init_my_nonce_shares()?;
 
             let my_fee_bump_addresses = trade_model.get_my_fee_bump_addresses()
                 .ok_or_else(|| Status::internal("missing fee bump addresses"))?;
+            let my_half_deposit_psbt = trade_model.get_my_half_deposit_psbt()
+                .ok_or_else(|| Status::internal("missing half deposit PSBT"))?;
             let my_nonce_shares = trade_model.get_my_nonce_shares()
                 .ok_or_else(|| Status::internal("missing nonce shares"))?;
 
             Ok(NonceSharesMessage {
                 warning_tx_fee_bump_address: my_fee_bump_addresses[0].to_string(),
                 redirect_tx_fee_bump_address: my_fee_bump_addresses[1].to_string(),
-                half_deposit_psbt: vec![],
+                half_deposit_psbt: my_half_deposit_psbt.serialize(),
                 ..my_nonce_shares.into()
             })
         })
@@ -97,6 +100,7 @@ impl musig_server::Musig for MusigImpl {
                 (&peer_nonce_shares.warning_tx_fee_bump_address).try_proto_into()?,
                 (&peer_nonce_shares.redirect_tx_fee_bump_address).try_proto_into()?
             ])?;
+            trade_model.set_peer_half_deposit_psbt((&peer_nonce_shares.half_deposit_psbt[..]).try_proto_into()?);
             trade_model.set_redirection_receivers(request.receivers.into_iter().map(TryProtoInto::try_proto_into))?;
             trade_model.set_peer_nonce_shares(peer_nonce_shares.try_proto_into()?);
             trade_model.aggregate_nonce_shares()?;

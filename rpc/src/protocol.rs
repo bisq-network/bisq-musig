@@ -1,5 +1,5 @@
 use bdk_wallet::bitcoin::address::{NetworkChecked, NetworkUnchecked, NetworkValidation};
-use bdk_wallet::bitcoin::{Address, Amount, FeeRate, Network};
+use bdk_wallet::bitcoin::{Address, Amount, FeeRate, Network, Psbt};
 use musig2::adaptor::AdaptorSignature;
 use musig2::secp::{MaybePoint, MaybeScalar, Point, Scalar};
 use musig2::secp256k1::rand;
@@ -48,6 +48,8 @@ pub struct TradeModel {
     sellers_warning_tx_fee_bump_address: Option<Address>,
     buyers_redirect_tx_fee_bump_address: Option<Address>,
     sellers_redirect_tx_fee_bump_address: Option<Address>,
+    buyers_half_deposit_psbt: Option<Psbt>,
+    sellers_half_deposit_psbt: Option<Psbt>,
     redirection_receivers: Option<Vec<RedirectionReceiver>>,
     swap_tx_input_sig_ctx: SigCtx,
     buyers_warning_tx_buyer_input_sig_ctx: SigCtx,
@@ -152,6 +154,30 @@ impl TradeModel {
         matches!(self.my_role, Role::BuyerAsMaker | Role::BuyerAsTaker)
     }
 
+    const fn check_deposit_tx_params_are_known(&self) -> Result<()> {
+        if self.trade_amount.is_none() || self.buyers_security_deposit.is_none() ||
+            self.sellers_security_deposit.is_none() || self.deposit_tx_fee_rate.is_none() {
+            return Err(ProtocolErrorKind::MissingTxParams);
+        }
+        Ok(())
+    }
+
+    const fn check_prepared_tx_params_are_known(&self) -> Result<()> {
+        if self.buyers_warning_tx_fee_bump_address.is_none() || self.sellers_warning_tx_fee_bump_address.is_none() ||
+            self.buyers_redirect_tx_fee_bump_address.is_none() || self.sellers_redirect_tx_fee_bump_address.is_none() ||
+            self.redirection_receivers.is_none() || self.prepared_tx_fee_rate.is_none() {
+            return Err(ProtocolErrorKind::MissingTxParams);
+        }
+        Ok(())
+    }
+
+    const fn check_unsigned_deposit_tx_is_known(&self) -> Result<()> {
+        if self.buyers_half_deposit_psbt.is_none() || self.sellers_half_deposit_psbt.is_none() {
+            return Err(ProtocolErrorKind::MissingDepositPsbt);
+        }
+        Ok(())
+    }
+
     pub fn init_my_key_shares(&mut self) {
         let buyer_output_pub_key = self.buyer_output_key_ctx.init_my_key_share().pub_key;
         self.seller_output_key_ctx.init_my_key_share();
@@ -220,6 +246,38 @@ impl TradeModel {
             self.buyers_redirect_tx_fee_bump_address = Some(redirect_tx_fee_bump_address?);
         }
         Ok(())
+    }
+
+    //noinspection SpellCheckingInspection
+    pub fn init_my_half_deposit_psbt(&mut self) -> Result<()> {
+        self.check_deposit_tx_params_are_known()?;
+        // TODO: Replace dummy PSBT with real one provided by a service, say by passing in a
+        //  suitable service or context object.
+        let empty_psbt = "cHNidP8BAAoAAAAAAAAAAAAAAA==".parse()
+            .expect("hardcoded PSBT should be valid");
+
+        if self.am_buyer() {
+            self.buyers_half_deposit_psbt = Some(empty_psbt);
+        } else {
+            self.sellers_half_deposit_psbt = Some(empty_psbt);
+        }
+        Ok(())
+    }
+
+    pub const fn get_my_half_deposit_psbt(&self) -> Option<&Psbt> {
+        if self.am_buyer() {
+            self.buyers_half_deposit_psbt.as_ref()
+        } else {
+            self.sellers_half_deposit_psbt.as_ref()
+        }
+    }
+
+    pub fn set_peer_half_deposit_psbt(&mut self, half_deposit_psbt: Psbt) {
+        if self.am_buyer() {
+            self.sellers_half_deposit_psbt = Some(half_deposit_psbt);
+        } else {
+            self.buyers_half_deposit_psbt = Some(half_deposit_psbt);
+        }
     }
 
     pub fn set_redirection_receivers<I, E>(&mut self, receivers: I) -> Result<(), E>
@@ -303,6 +361,8 @@ impl TradeModel {
     }
 
     pub fn sign_partial(&mut self) -> Result<()> {
+        self.check_unsigned_deposit_tx_is_known()?;
+        self.check_prepared_tx_params_are_known()?;
         // TODO: Make these dummy messages (txs-to-sign) non-fixed, for greater realism:
         let [buyer_key_ctx, seller_key_ctx] = [&self.buyer_output_key_ctx, &self.seller_output_key_ctx];
 
@@ -608,11 +668,15 @@ pub enum ProtocolErrorKind {
     MissingNonceShare,
     #[error("missing partial signature")]
     MissingPartialSig,
+    #[error("missing deposit PSBT")]
+    MissingDepositPsbt,
+    #[error("missing tx params")]
+    MissingTxParams,
     #[error("missing aggregated pubkey")]
     MissingAggPubKey,
-    #[error("missing aggregated nonce")]
-    MissingAggSig,
     #[error("missing aggregated signature")]
+    MissingAggSig,
+    #[error("missing aggregated nonce")]
     MissingAggNonce,
     #[error("nonce has already been used")]
     NonceReuse,

@@ -1,7 +1,7 @@
 use bdk_wallet::bitcoin::address::NetworkUnchecked;
 use bdk_wallet::bitcoin::consensus::Encodable as _;
 use bdk_wallet::bitcoin::hashes::Hash as _;
-use bdk_wallet::bitcoin::{Address, Amount, Txid};
+use bdk_wallet::bitcoin::{Address, Amount, Psbt, Txid};
 use bdk_wallet::chain::ChainPosition;
 use bdk_wallet::{Balance, LocalOutput};
 use musig2::secp::{MaybeScalar, Point, Scalar};
@@ -48,21 +48,31 @@ macro_rules! impl_try_proto_into_for_slice {
     ($into_type:ty, $err_msg:literal) => {
         impl TryProtoInto<$into_type> for &[u8] {
             fn try_proto_into(self) -> Result<$into_type> {
-                self.try_into().map_err(|_| Status::invalid_argument($err_msg))
+                self.try_into().map_err(|e| {
+                    Status::invalid_argument(format!("could not decode {}: {e}", $err_msg))
+                })
             }
         }
     };
 }
 
-impl_try_proto_into_for_slice!(Point, "could not decode nonzero point");
-impl_try_proto_into_for_slice!(PubNonce, "could not decode pub nonce");
-impl_try_proto_into_for_slice!(Scalar, "could not decode nonzero scalar");
-impl_try_proto_into_for_slice!(MaybeScalar, "could not decode scalar");
-impl_try_proto_into_for_slice!(LiftedSignature, "could not decode signature");
+impl_try_proto_into_for_slice!(Point, "nonzero point");
+impl_try_proto_into_for_slice!(PubNonce, "pub nonce");
+impl_try_proto_into_for_slice!(Scalar, "nonzero scalar");
+impl_try_proto_into_for_slice!(MaybeScalar, "scalar");
+impl_try_proto_into_for_slice!(LiftedSignature, "signature");
 
 impl TryProtoInto<Txid> for &[u8] {
     fn try_proto_into(self) -> Result<Txid> {
-        Txid::from_slice(self).map_err(|_| Status::invalid_argument("could not decode txid"))
+        Txid::from_slice(self)
+            .map_err(|e| Status::invalid_argument(format!("could not decode txid: {e}")))
+    }
+}
+
+impl TryProtoInto<Psbt> for &[u8] {
+    fn try_proto_into(self) -> Result<Psbt> {
+        Psbt::deserialize(self)
+            .map_err(|e| Status::invalid_argument(format!("could not decode PSBT: {e}")))
     }
 }
 
