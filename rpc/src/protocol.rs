@@ -151,7 +151,7 @@ impl TradeModel {
         trade_model
     }
 
-    const fn am_buyer(&self) -> bool {
+    pub const fn am_buyer(&self) -> bool {
         matches!(self.my_role, Role::BuyerAsMaker | Role::BuyerAsTaker)
     }
 
@@ -394,13 +394,13 @@ impl TradeModel {
         Ok(())
     }
 
-    pub fn get_my_partial_signatures_on_peer_txs(&self) -> Option<ExchangedSigs<ByRef>> {
+    pub fn get_my_partial_signatures_on_peer_txs(&self, buyer_ready_to_release: bool) -> Option<ExchangedSigs<ByRef>> {
         Some(if self.am_buyer() {
             ExchangedSigs {
                 peers_warning_tx_buyer_input_partial_signature: self.sellers_warning_tx_buyer_input_sig_ctx.my_partial_sig.as_ref()?,
                 peers_warning_tx_seller_input_partial_signature: self.sellers_warning_tx_seller_input_sig_ctx.my_partial_sig.as_ref()?,
                 peers_redirect_tx_input_partial_signature: self.sellers_redirect_tx_input_sig_ctx.my_partial_sig.as_ref()?,
-                swap_tx_input_partial_signature: self.swap_tx_input_sig_ctx.my_partial_sig.as_ref(),
+                swap_tx_input_partial_signature: self.swap_tx_input_sig_ctx.my_partial_sig.as_ref().filter(|_| buyer_ready_to_release),
                 swap_tx_input_sighash: self.swap_tx_input_sighash.as_ref(),
             }
         } else {
