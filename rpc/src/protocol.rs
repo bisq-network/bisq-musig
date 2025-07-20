@@ -361,20 +361,11 @@ impl TradeModel {
         Ok(())
     }
 
-    pub fn init_swap_tx_input_sighash(&mut self) -> Result<()> {
-        self.check_unsigned_deposit_tx_is_known()?;
-        // TODO: Use real or non-fixed swap tx input sighash:
-        self.swap_tx_input_sighash = Some(TapSighash::from_byte_array(*b"swap tx input..................."));
-        Ok(())
-    }
-
     pub fn sign_partial(&mut self) -> Result<()> {
         self.check_unsigned_deposit_tx_is_known()?;
         self.check_prepared_tx_params_are_known()?;
         // TODO: Make these dummy messages (sighashes for txs-to-sign) non-fixed, for greater realism:
         let [buyer_key_ctx, seller_key_ctx] = [&self.buyer_output_key_ctx, &self.seller_output_key_ctx];
-        let swap_tx_input_sighash = self.swap_tx_input_sighash
-            .ok_or(ProtocolErrorKind::MissingSighash)?;
 
         self.buyers_warning_tx_buyer_input_sig_ctx
             .sign_partial(buyer_key_ctx, b"buyer's warning tx buyer input..".into())?;
@@ -383,14 +374,27 @@ impl TradeModel {
         self.buyers_redirect_tx_input_sig_ctx
             .sign_partial(buyer_key_ctx, b"buyer's redirect tx input.......".into())?;
 
-        self.swap_tx_input_sig_ctx
-            .sign_partial(seller_key_ctx, swap_tx_input_sighash.to_byte_array().into())?;
         self.buyers_warning_tx_seller_input_sig_ctx
             .sign_partial(seller_key_ctx, b"buyer's warning tx seller input.".into())?;
         self.sellers_warning_tx_seller_input_sig_ctx
             .sign_partial(seller_key_ctx, b"seller's warning tx seller input".into())?;
         self.sellers_redirect_tx_input_sig_ctx
             .sign_partial(seller_key_ctx, b"seller's redirect tx input......".into())?;
+
+        if !self.am_buyer() {
+            // Unlike the other multisig sighashes, only the seller is able to independently compute
+            // the swap-tx-input sighash. The buyer must wait for the next round, when the deposit
+            // tx is signed, to partially sign the swap tx using the sighash passed by the seller.
+            self.sign_swap_tx_input_partial(
+                TapSighash::from_byte_array(*b"swap tx input..................."))?;
+        }
+        Ok(())
+    }
+
+    pub fn sign_swap_tx_input_partial(&mut self, sighash: TapSighash) -> Result<()> {
+        let sighash = self.swap_tx_input_sighash.insert(sighash);
+        self.swap_tx_input_sig_ctx
+            .sign_partial(&self.seller_output_key_ctx, sighash.as_byte_array().into())?;
         Ok(())
     }
 
@@ -680,8 +684,6 @@ pub enum ProtocolErrorKind {
     MissingNonceShare,
     #[error("missing partial signature")]
     MissingPartialSig,
-    #[error("missing sighash")]
-    MissingSighash,
     #[error("missing deposit PSBT")]
     MissingDepositPsbt,
     #[error("missing tx params")]

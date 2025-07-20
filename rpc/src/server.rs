@@ -102,7 +102,6 @@ impl musig_server::Musig for MusigImpl {
             trade_model.set_redirection_receivers(request.receivers.into_iter().map(TryProtoInto::try_proto_into))?;
             trade_model.set_peer_nonce_shares(peer_nonce_shares.try_proto_into()?);
             trade_model.aggregate_nonce_shares()?;
-            trade_model.init_swap_tx_input_sighash()?;
             trade_model.sign_partial()?;
             let my_partial_signatures = trade_model
                 .get_my_partial_signatures_on_peer_txs(request.buyer_ready_to_release)
@@ -117,6 +116,11 @@ impl musig_server::Musig for MusigImpl {
         handle_musig_request(request, move |request, trade_model| {
             let peers_partial_signatures = request.peers_partial_signatures
                 .ok_or_else(|| Status::not_found("missing request.peers_partial_signatures"))?;
+            if trade_model.am_buyer() {
+                let sighash = peers_partial_signatures.swap_tx_input_sighash.as_ref()
+                    .ok_or_else(|| Status::not_found("missing request.peers_partial_signatures.swap_tx_input_sighash"))?;
+                trade_model.sign_swap_tx_input_partial((&sighash[..]).try_proto_into()?)?;
+            }
             trade_model.set_peer_partial_signatures_on_my_txs(&peers_partial_signatures.try_proto_into()?);
             trade_model.aggregate_partial_signatures()?;
 
