@@ -62,7 +62,7 @@ const ELECTRUM_URL: &str =
 // "ssl://electrum.blockstream.info:60002";
     "localhost:50000"; //TODO move to env
 impl MemWallet {
-    pub(crate) fn new() -> anyhow::Result<MemWallet> {
+    pub fn new() -> anyhow::Result<MemWallet> {
         let mut seed: [u8; 32] = [0u8; 32];
         rand::rng().fill_bytes(&mut seed);
 
@@ -141,51 +141,52 @@ impl MemWallet {
 #[derive(Debug)]
 pub struct Round1Parameter {
     // DepositTx --------
-    pub(crate) p_a: Point,
-    pub(crate) q_a: Point,
-    pub(crate) dep_part_psbt: Psbt,
+    pub p_a: Point,
+    pub q_a: Point,
+    pub dep_part_psbt: Psbt,
     // Swap Tx -----
     // public nounce
     // Seller address where to send the swap amount to
-    pub(crate) swap_script: Option<ScriptBuf>, // only set from Seller
+    pub swap_script: Option<ScriptBuf>, // only set from Seller
     pub warn_anchor_spend: ScriptBuf,
     pub claim_spend: ScriptBuf,
     pub redirect_anchor_spend: ScriptBuf,
 }
 #[derive(Debug)]
-pub(crate) struct Round2Parameter {
+pub struct Round2Parameter {
     // DepositTx --------
-    pub(crate) p_agg: Point,
-    pub(crate) q_agg: Point,
+    pub p_agg: Point,
+    pub q_agg: Point,
     // SwapTx --------------
     // partial adaptive  signature for SwapTx
-    pub(crate) swap_pub_nonce: PubNonce,
-    warn_alice_p_nonce: PubNonce,
-    warn_alice_q_nonce: PubNonce,
-    warn_bob_q_nonce: PubNonce,
-    warn_bob_p_nonce: PubNonce,
-    claim_alice_nonce: PubNonce,
-    claim_bob_nonce: PubNonce,
-    redirect_alice_nonce: PubNonce,
-    redirect_bob_nonce: PubNonce,
+    pub swap_pub_nonce: PubNonce,
+    pub warn_alice_p_nonce: PubNonce,
+    pub warn_alice_q_nonce: PubNonce,
+    pub warn_bob_q_nonce: PubNonce,
+    pub warn_bob_p_nonce: PubNonce,
+    pub claim_alice_nonce: PubNonce,
+    pub claim_bob_nonce: PubNonce,
+    pub redirect_alice_nonce: PubNonce,
+    pub redirect_bob_nonce: PubNonce,
 }
 #[derive(Debug)]
-pub(crate) struct Round3Parameter {
+pub struct Round3Parameter {
     // DepositTx --------
-    pub(crate) deposit_txid: Txid, // only for verification / fast fail
+    pub deposit_txid: Txid, // only for verification / fast fail
     // SwapTx --------------
     // aggregated adaptive signature for SwapTx,
 
-    pub(crate) swap_part_sig: PartialSignature,
-    p_part_peer: PartialSignature,
-    q_part_peer: PartialSignature,
-    claim_part_sig: PartialSignature,
-    redirect_part_sig: PartialSignature,
+    pub swap_part_sig: PartialSignature,
+    pub p_part_peer: PartialSignature,
+    pub q_part_peer: PartialSignature,
+    pub claim_part_sig: PartialSignature,
+    pub redirect_part_sig: PartialSignature,
 }
 #[derive(Debug)]
-pub(crate) struct Round4Parameter {
-    deposit_tx_signed: Psbt,
+pub struct Round4Parameter {
+    pub deposit_tx_signed: Psbt,
 }
+
 /**
 this context is for the whole process and need to be persisted by the caller
 */
@@ -212,7 +213,7 @@ pub struct BMPProtocol {
 }
 
 impl BMPContext {
-    pub(crate) fn new(wallet_service: WalletService, role: ProtocolRole, seller_amount: Amount, buyer_amount: Amount) -> anyhow::Result<BMPContext> {
+    pub fn new(wallet_service: WalletService, role: ProtocolRole, seller_amount: Amount, buyer_amount: Amount) -> anyhow::Result<BMPContext> {
         Ok(BMPContext {
             funds: wallet_service.retrieve_wallet(),
             role,
@@ -222,7 +223,7 @@ impl BMPContext {
     }
 }
 impl BMPProtocol {
-    pub(crate) fn new(ctx: BMPContext) -> anyhow::Result<BMPProtocol> {
+    pub fn new(ctx: BMPContext) -> anyhow::Result<BMPProtocol> {
         let role = ctx.role;
         Ok(BMPProtocol {
             ctx,
@@ -240,7 +241,7 @@ impl BMPProtocol {
         })
     }
 
-    pub(crate) fn round1(&mut self) -> anyhow::Result<Round1Parameter> {
+    pub fn round1(&mut self) -> anyhow::Result<Round1Parameter> {
         self.check_round(1);
 
         let dep_part_psbt = self.deposit_tx.generate_part_tx(&mut self.ctx, &self.p_tik.pub_point, &self.q_tik.pub_point)?;
@@ -267,7 +268,7 @@ impl BMPProtocol {
         })
     }
 
-    pub(crate) fn round2(&mut self, bob: Round1Parameter) -> anyhow::Result<Round2Parameter> {
+    pub fn round2(&mut self, bob: Round1Parameter) -> anyhow::Result<Round2Parameter> {
         self.check_round(2);
         assert_ne!(bob.p_a, bob.q_a, "Bob is sending the same point for P' and Q'.");
         println!("The {:?} sellers secret for P_Tik is {:?}.", self.ctx.role, self.p_tik.sec);
@@ -325,7 +326,7 @@ impl BMPProtocol {
             redirect_bob_nonce,
         })
     }
-    pub(crate) fn round3(&mut self, bob: Round2Parameter) -> anyhow::Result<Round3Parameter> {
+    pub fn round3(&mut self, bob: Round2Parameter) -> anyhow::Result<Round3Parameter> {
         self.check_round(3);
         // actually this next test is not necessary, but double-checking and fast fail is always good
         // TODO since we are sending this only to validate, we could use a hash of it as well, optimization
@@ -362,7 +363,7 @@ impl BMPProtocol {
             redirect_part_sig,
         })
     }
-    pub(crate) fn round4(&mut self, bob: Round3Parameter) -> anyhow::Result<Round4Parameter> {
+    pub fn round4(&mut self, bob: Round3Parameter) -> anyhow::Result<Round4Parameter> {
         self.check_round(4);
         dbg!(&bob);
         self.swap_tx.aggregate_sigs(bob.swap_part_sig)?;
@@ -375,7 +376,7 @@ impl BMPProtocol {
             deposit_tx_signed: self.deposit_tx.merged_psbt.clone().unwrap()
         })
     }
-    pub(crate) fn round5(&mut self, bob: Round4Parameter) -> anyhow::Result<()> {
+    pub fn round5(&mut self, bob: Round4Parameter) -> anyhow::Result<()> {
         self.check_round(5);
         self.deposit_tx.transfer_sig_and_broadcast(&mut self.ctx, bob.deposit_tx_signed)?;
         Ok(())

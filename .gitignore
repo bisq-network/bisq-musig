@@ -1,4 +1,7 @@
 target
-/.idea
+.idea
 /bdktest/bdk-electrum-example.db
 /concept/tmp/
+.classpath
+.project
+.settings
