@@ -1,26 +1,22 @@
 package bisq;
 
-import static org.junit.jupiter.api.Assertions.*;
-
 import bmp_protocol.BmpProtocol.*;
 import bmp_protocol.BmpProtocolServiceGrpc;
-
 import com.google.protobuf.ByteString;
-
 import io.grpc.ManagedChannel;
 import io.grpc.ManagedChannelBuilder;
+
+import java.util.concurrent.TimeUnit;
 
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestInstance;
 
-import java.io.IOException;
-import java.util.concurrent.TimeUnit;
+import static org.junit.jupiter.api.Assertions.*;
 
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
 public class BmpServiceIntegrationTest {
-
     private ManagedChannel alice_channel;
     private ManagedChannel bob_channel;
     private BmpProtocolServiceGrpc.BmpProtocolServiceBlockingStub aliceStub;
@@ -53,7 +49,7 @@ public class BmpServiceIntegrationTest {
     }
 
     @Test
-    void testHappyPathFullProtocolAndBroadcast() throws IOException, InterruptedException {
+    void testHappyPathFullProtocolAndBroadcast() throws InterruptedException {
 
         System.out.println("Starting transaction... ");
         // === Initialize Trades for Alice (Seller) and Bob (Buyer) ===
@@ -158,13 +154,14 @@ public class BmpServiceIntegrationTest {
                 bobRound4Data.getDepositTxSigned().isEmpty(), "Bob's Round 4 signed PSBT is empty");
 
         // -- ROUND 5: Exchange Round 4 data, finalize and broadcast --
-        // This is the final step where the transaction is broadcasted.
+        // This is the final step where the transaction is broadcast.
         // Alice broadcasts.
         Round5Request aliceRound5Req =
                 Round5Request.newBuilder()
                         .setTradeId(aliceTradeId)
                         .setPeerRound4Response(bobRound4Data) // Alice gets Bob's R4 data
                         .build();
+        //noinspection ResultOfMethodCallIgnored
         aliceStub.executeRound5(aliceRound5Req);
         System.out.println("Alice finished Round 5. Transaction should be broadcast.");
 
@@ -174,6 +171,7 @@ public class BmpServiceIntegrationTest {
                         .setTradeId(bobTradeId)
                         .setPeerRound4Response(aliceRound4Data) // Bob gets Alice's R4 data
                         .build();
+        //noinspection ResultOfMethodCallIgnored
         bobStub.executeRound5(bobRound5Req);
         System.out.println("Bob finished Round 5.");
 

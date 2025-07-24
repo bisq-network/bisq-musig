@@ -1,7 +1,7 @@
 use bdk_wallet::bitcoin::address::NetworkUnchecked;
 use bdk_wallet::bitcoin::consensus::Encodable as _;
 use bdk_wallet::bitcoin::hashes::Hash as _;
-use bdk_wallet::bitcoin::{Address, Amount, Txid};
+use bdk_wallet::bitcoin::{Address, Amount, Psbt, TapSighash, Txid};
 use bdk_wallet::chain::ChainPosition;
 use bdk_wallet::{Balance, LocalOutput};
 use musig2::secp::{MaybeScalar, Point, Scalar};
@@ -9,11 +9,15 @@ use musig2::{LiftedSignature, PubNonce};
 use prost::UnknownEnumValue;
 use tonic::{Result, Status};
 
-use crate::pb::musigrpc::{self, NonceSharesMessage, PartialSignaturesMessage,
-    ReceiverAddressAndAmount};
-use crate::pb::walletrpc::{ConfEvent, ConfidenceType, ConfirmationBlockTime, TransactionOutput,
-    WalletBalanceResponse};
-use crate::protocol::{ExchangedNonces, ExchangedSigs, ProtocolErrorKind, RedirectionReceiver, Role};
+use crate::pb::musigrpc::{
+    self, NonceSharesMessage, PartialSignaturesMessage, ReceiverAddressAndAmount,
+};
+use crate::pb::walletrpc::{
+    ConfEvent, ConfidenceType, ConfirmationBlockTime, TransactionOutput, WalletBalanceResponse,
+};
+use crate::protocol::{
+    ExchangedNonces, ExchangedSigs, ProtocolErrorKind, RedirectionReceiver, Role,
+};
 use crate::storage::{ByRef, ByVal};
 use crate::wallet::TxConfidence;
 
@@ -40,25 +44,42 @@ pub trait TryProtoInto<T> {
     fn try_proto_into(self) -> Result<T>;
 }
 
-#[macro_export] macro_rules! impl_try_proto_into_for_slice {
+macro_rules! impl_try_proto_into_for_slice {
     ($into_type:ty, $err_msg:literal) => {
         impl TryProtoInto<$into_type> for &[u8] {
             fn try_proto_into(self) -> Result<$into_type> {
-                self.try_into().map_err(|_| Status::invalid_argument($err_msg))
+                self.try_into().map_err(|e| {
+                    Status::invalid_argument(format!("could not decode {}: {e}", $err_msg))
+                })
             }
         }
-    }
+    };
 }
 
-impl_try_proto_into_for_slice!(Point, "could not decode nonzero point");
-impl_try_proto_into_for_slice!(PubNonce, "could not decode pub nonce");
-impl_try_proto_into_for_slice!(Scalar, "could not decode nonzero scalar");
-impl_try_proto_into_for_slice!(MaybeScalar, "could not decode scalar");
-impl_try_proto_into_for_slice!(LiftedSignature, "could not decode signature");
+impl_try_proto_into_for_slice!(Point, "nonzero point");
+impl_try_proto_into_for_slice!(PubNonce, "pub nonce");
+impl_try_proto_into_for_slice!(Scalar, "nonzero scalar");
+impl_try_proto_into_for_slice!(MaybeScalar, "scalar");
+impl_try_proto_into_for_slice!(LiftedSignature, "signature");
 
 impl TryProtoInto<Txid> for &[u8] {
     fn try_proto_into(self) -> Result<Txid> {
-        Txid::from_slice(self).map_err(|_| Status::invalid_argument("could not decode txid"))
+        Txid::from_slice(self)
+            .map_err(|e| Status::invalid_argument(format!("could not decode txid: {e}")))
+    }
+}
+
+impl TryProtoInto<TapSighash> for &[u8] {
+    fn try_proto_into(self) -> Result<TapSighash> {
+        TapSighash::from_slice(self)
+            .map_err(|e| Status::invalid_argument(format!("could not decode sighash: {e}")))
+    }
+}
+
+impl TryProtoInto<Psbt> for &[u8] {
+    fn try_proto_into(self) -> Result<Psbt> {
+        Psbt::deserialize(self)
+            .map_err(|e| Status::invalid_argument(format!("could not decode PSBT: {e}")))
     }
 }
 
@@ -131,6 +152,8 @@ impl<'a> TryProtoInto<ExchangedSigs<'a, ByVal>> for PartialSignaturesMessage {
             self.peers_redirect_tx_input_partial_signature.try_proto_into()?,
             swap_tx_input_partial_signature:
             self.swap_tx_input_partial_signature.try_proto_into()?,
+            swap_tx_input_sighash:
+            self.swap_tx_input_sighash.try_proto_into()?,
         })
     }
 }
@@ -183,6 +206,8 @@ impl From<ExchangedSigs<'_, ByRef>> for PartialSignaturesMessage {
             value.peers_redirect_tx_input_partial_signature.serialize().into(),
             swap_tx_input_partial_signature:
             value.swap_tx_input_partial_signature.map(|s| s.serialize().into()),
+            swap_tx_input_sighash:
+            value.swap_tx_input_sighash.map(|s| s.as_byte_array().into()),
         }
     }
 }
@@ -201,7 +226,7 @@ impl From<Balance> for WalletBalanceResponse {
 impl From<LocalOutput> for TransactionOutput {
     fn from(value: LocalOutput) -> Self {
         Self {
-            tx_id: value.outpoint.txid.as_byte_array().into(),
+            tx_id: value.outpoint.txid.to_byte_array().into(),
             vout: value.outpoint.vout,
             script_pub_key: value.txout.script_pubkey.into_bytes(),
             value: value.txout.value.to_sat(),
@@ -216,7 +241,7 @@ impl From<TxConfidence> for ConfEvent {
         let (confidence_type, confirmation_block_time) = match wallet_tx.chain_position {
             ChainPosition::Confirmed { anchor, .. } =>
                 (ConfidenceType::Confirmed, Some(ConfirmationBlockTime {
-                    block_hash: anchor.block_id.hash.as_byte_array().to_vec(),
+                    block_hash: anchor.block_id.hash.to_byte_array().into(),
                     block_height: anchor.block_id.height,
                     confirmation_time: anchor.confirmation_time,
                 })),

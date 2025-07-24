@@ -3,7 +3,9 @@ use bdk_wallet::serde_json;
 use clap::{Parser, Subcommand};
 use futures_util::StreamExt as _;
 use rpc::pb::walletrpc::wallet_client::WalletClient;
-use rpc::pb::walletrpc::{ConfRequest, ListUnspentRequest, NewAddressRequest, WalletBalanceRequest};
+use rpc::pb::walletrpc::{
+    ConfRequest, ListUnspentRequest, NewAddressRequest, WalletBalanceRequest,
+};
 use tonic::Request;
 
 #[derive(Debug, Parser)]
@@ -53,7 +55,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             println!("{}", serde_json::to_string_pretty(&response.into_inner())?);
         }
         Commands::NotifyConfidence { tx_id } => {
-            let tx_id = tx_id.parse::<sha256d::Hash>()?.as_byte_array().to_vec();
+            let tx_id = tx_id.parse::<sha256d::Hash>()?.to_byte_array().into();
             let response = client.register_confidence_ntfn(Request::new(ConfRequest { tx_id })).await?;
             drop(client);
             let mut stream = response.into_inner();

@@ -1,7 +1,6 @@
 package bisq;
 
 import com.google.common.collect.ImmutableMap;
-import com.google.protobuf.ByteString;
 import io.grpc.Channel;
 import io.grpc.Grpc;
 import io.grpc.InsecureChannelCredentials;
@@ -59,15 +58,15 @@ public class TradeProtocolClient {
         String buyerTradeId = "buyer-trade-" + tradeNum;
         String sellerTradeId = "seller-trade-" + tradeNum;
 
-        ByteString swapTxInputBuyerPartialSignature = switch (tradeType) {
+        switch (tradeType) {
             case TAKER_IS_BUYER -> setupTakerIsBuyerTrade(buyerTradeId, sellerTradeId);
             case TAKER_IS_SELLER -> setupTakerIsSellerTrade(buyerTradeId, sellerTradeId);
-        };
+        }
 
-        doRestOfTrade(buyerTradeId, sellerTradeId, swapTxInputBuyerPartialSignature, closureType);
+        doRestOfTrade(buyerTradeId, sellerTradeId, closureType);
     }
 
-    private ByteString setupTakerIsBuyerTrade(String buyerTradeId, String sellerTradeId) {
+    private void setupTakerIsBuyerTrade(String buyerTradeId, String sellerTradeId) {
         var buyerPubKeyShareResponse = stub.initTrade(PubKeySharesRequest.newBuilder()
                 .setTradeId(buyerTradeId)
                 .setMyRole(Role.BUYER_AS_TAKER)
@@ -126,8 +125,7 @@ public class TradeProtocolClient {
 
         var sellerDepositPsbt = stub.signDepositTx(DepositTxSignatureRequest.newBuilder()
                 .setTradeId(sellerTradeId)
-                // REDACT buyer's swapTxInputPartialSignature (as not yet known by seller):
-                .setPeersPartialSignatures(buyerPartialSignatureMessage.toBuilder().clearSwapTxInputPartialSignature())
+                .setPeersPartialSignatures(buyerPartialSignatureMessage)
                 .build());
         System.out.println("Got reply: " + sellerDepositPsbt);
 
@@ -154,11 +152,9 @@ public class TradeProtocolClient {
         System.out.println("Awaiting Deposit Tx confirmation...\n");
         buyerDepositTxConfirmationIter.forEachRemaining(reply -> System.out.println("Got reply: " + reply));
         sellerDepositTxConfirmationIter.forEachRemaining(reply -> System.out.println("Got reply: " + reply));
-
-        return buyerPartialSignatureMessage.getSwapTxInputPartialSignature();
     }
 
-    private ByteString setupTakerIsSellerTrade(String buyerTradeId, String sellerTradeId) {
+    private void setupTakerIsSellerTrade(String buyerTradeId, String sellerTradeId) {
         var sellerPubKeyShareResponse = stub.initTrade(PubKeySharesRequest.newBuilder()
                 .setTradeId(sellerTradeId)
                 .setMyRole(Role.SELLER_AS_TAKER)
@@ -230,8 +226,7 @@ public class TradeProtocolClient {
 
         var sellerDepositPsbt = stub.signDepositTx(DepositTxSignatureRequest.newBuilder()
                 .setTradeId(sellerTradeId)
-                // REDACT buyer's swapTxInputPartialSignature (as not yet known by seller):
-                .setPeersPartialSignatures(buyerPartialSignatureMessage.toBuilder().clearSwapTxInputPartialSignature())
+                .setPeersPartialSignatures(buyerPartialSignatureMessage)
                 .build());
         System.out.println("Got reply: " + sellerDepositPsbt);
 
@@ -245,25 +240,40 @@ public class TradeProtocolClient {
         System.out.println("Awaiting Deposit Tx confirmation...\n");
         buyerDepositTxConfirmationIter.forEachRemaining(reply -> System.out.println("Got reply: " + reply));
         sellerDepositTxConfirmationIter.forEachRemaining(reply -> System.out.println("Got reply: " + reply));
-
-        return buyerPartialSignatureMessage.getSwapTxInputPartialSignature();
     }
 
-    private void doRestOfTrade(String buyerTradeId, String sellerTradeId, ByteString swapTxInputBuyerPartialSignature, ClosureType closureType) {
+    private void doRestOfTrade(String buyerTradeId, String sellerTradeId, ClosureType closureType) {
         // DELAY: Buyer makes fiat payment.
+
+        // (Buyer calls 'GetPartialSignatures' a second time, this time with the ready-to-release flag set, so that his
+        // previously withheld swapTxInputPartialSignature is revealed, to pass to the seller. All other request proto
+        // fields besides the trade ID may be left as their default values.)
+        var buyerPartialSignatureMessage = stub.getPartialSignatures(PartialSignaturesRequest.newBuilder()
+                .setTradeId(buyerTradeId)
+                .setBuyerReadyToRelease(true)
+                .build());
+        System.out.println("Got reply: " + buyerPartialSignatureMessage);
 
         // Buyer sends Message E to seller. (Includes previously withheld buyer's swapTxInputPartialSignature.)
 
         // (Seller should compute Swap Tx signature immediately upon receipt of Message E, instead of waiting until the
         // end of the trade, to make sure that there's no problem with it and raise a dispute ASAP otherwise.)
-        var swapTxSignatureResponse = stub.signSwapTx(SwapTxSignatureRequest.newBuilder()
+        var blankSwapTxSignatureResponse = stub.signSwapTx(SwapTxSignatureRequest.newBuilder()
                 .setTradeId(sellerTradeId)
-                // NOW send the redacted buyer's swapTxInputPartialSignature:
-                .setSwapTxInputPeersPartialSignature(swapTxInputBuyerPartialSignature)
+                .setSwapTxInputPeersPartialSignature(buyerPartialSignatureMessage.getSwapTxInputPartialSignature())
                 .build());
-        System.out.println("Got reply: " + swapTxSignatureResponse);
+        System.out.println("Got reply: " + blankSwapTxSignatureResponse);
 
         // DELAY: Seller checks buyer's fiat payment.
+
+        // (Seller calls 'SignSwapTx' a second time, this time with the ready-to-release flag set, so that a non-blank
+        // response is returned, containing the peerOutputPrvKeyShare to pass to the buyer, which releases his payout.
+        // All other request proto fields besides the trade ID may be left as their default values.)
+        var swapTxSignatureResponse = stub.signSwapTx(SwapTxSignatureRequest.newBuilder()
+                .setTradeId(sellerTradeId)
+                .setSellerReadyToRelease(true)
+                .build());
+        System.out.println("Got reply: " + swapTxSignatureResponse);
 
         if (closureType == ClosureType.COOPERATIVE) {
             // Seller sends Message F to buyer.

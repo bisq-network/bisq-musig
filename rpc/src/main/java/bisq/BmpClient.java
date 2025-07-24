@@ -1,24 +1,11 @@
 package bisq;
 
-import bmp_protocol.BmpProtocol.InitializeRequest;
-import bmp_protocol.BmpProtocol.InitializeResponse;
-import bmp_protocol.BmpProtocol.Role;
-import bmp_protocol.BmpProtocol.Round1Request;
-import bmp_protocol.BmpProtocol.Round1Response;
-import bmp_protocol.BmpProtocol.Round2Request;
-import bmp_protocol.BmpProtocol.Round2Response;
-import bmp_protocol.BmpProtocol.Round3Request;
-import bmp_protocol.BmpProtocol.Round3Response;
-import bmp_protocol.BmpProtocol.Round4Request;
-import bmp_protocol.BmpProtocol.Round4Response;
-import bmp_protocol.BmpProtocol.Round5Request;
+import bmp_protocol.BmpProtocol.*;
 import bmp_protocol.BmpProtocolServiceGrpc;
-
 import io.grpc.ManagedChannel;
 import io.grpc.ManagedChannelBuilder;
 
 public class BmpClient {
-
     public static void main(String[] args) throws InterruptedException {
         System.out.println("Waiting for gRPC server to start...");
         Thread.sleep(1000); // 1-second delay
@@ -125,12 +112,14 @@ public class BmpClient {
 
         // Round 5
         System.out.println("\n--- Executing Round 5 ---");
+        //noinspection ResultOfMethodCallIgnored
         client.executeRound5(
                 Round5Request.newBuilder()
                         .setTradeId(sellerTradeId)
                         .setPeerRound4Response(buyerRound4Response)
                         .build());
         System.out.println("Seller Round 5 executed.");
+        //noinspection ResultOfMethodCallIgnored
         client.executeRound5(
                 Round5Request.newBuilder()
                         .setTradeId(buyerTradeId)

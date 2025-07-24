@@ -10,14 +10,18 @@ use tracing::{debug, error, info, instrument};
 
 use crate::pb::convert::TryProtoInto;
 use crate::pb::musigrpc::musig_server;
-use crate::pb::musigrpc::{CloseTradeRequest, CloseTradeResponse, DepositPsbt,
-    DepositTxSignatureRequest, NonceSharesMessage, NonceSharesRequest, PartialSignaturesMessage,
-    PartialSignaturesRequest, PubKeySharesRequest, PubKeySharesResponse, PublishDepositTxRequest,
+use crate::pb::musigrpc::{
+    CloseTradeRequest, CloseTradeResponse, DepositPsbt, DepositTxSignatureRequest,
+    NonceSharesMessage, NonceSharesRequest, PartialSignaturesMessage, PartialSignaturesRequest,
+    PubKeySharesRequest, PubKeySharesResponse, PublishDepositTxRequest,
     SubscribeTxConfirmationStatusRequest, SwapTxSignatureRequest, SwapTxSignatureResponse,
-    TxConfirmationStatus};
+    TxConfirmationStatus,
+};
 use crate::pb::walletrpc::wallet_server;
-use crate::pb::walletrpc::{ConfEvent, ConfRequest, ListUnspentRequest, ListUnspentResponse,
-    NewAddressRequest, NewAddressResponse, WalletBalanceRequest, WalletBalanceResponse};
+use crate::pb::walletrpc::{
+    ConfEvent, ConfRequest, ListUnspentRequest, ListUnspentResponse, NewAddressRequest,
+    NewAddressResponse, WalletBalanceRequest, WalletBalanceResponse,
+};
 use crate::protocol::{TradeModel, TradeModelStore as _, TRADE_MODELS};
 use crate::wallet::WalletService;
 
@@ -27,14 +31,6 @@ pub use wallet_server::WalletServer;
 #[derive(Debug, Default)]
 pub struct MusigImpl {}
 
-// FIXME: At present, the Musig service passes some fields to the Java client that should be kept
-//  secret for a time before passing them to the peer, namely the buyer's partial signature on the
-//  swap tx and the seller's private key share for the buyer payout. Premature revelation of those
-//  secrets would allow the seller to close the trade before the buyer starts payment, or the buyer
-//  to close the trade before the seller had a chance to confirm receipt of payment (but after the
-//  buyer starts payment), respectively. This should probably be changed, as the Java client should
-//  never hold secrets which directly control funds (but doing so makes the RPC interface a little
-//  bigger and less symmetrical.)
 #[tonic::async_trait]
 impl musig_server::Musig for MusigImpl {
     #[instrument(skip_all)]
@@ -68,17 +64,20 @@ impl musig_server::Musig for MusigImpl {
             trade_model.deposit_tx_fee_rate = Some(FeeRate::from_sat_per_kwu(request.deposit_tx_fee_rate));
             trade_model.prepared_tx_fee_rate = Some(FeeRate::from_sat_per_kwu(request.prepared_tx_fee_rate));
             trade_model.init_my_fee_bump_addresses()?;
+            trade_model.init_my_half_deposit_psbt()?;
             trade_model.init_my_nonce_shares()?;
 
             let my_fee_bump_addresses = trade_model.get_my_fee_bump_addresses()
                 .ok_or_else(|| Status::internal("missing fee bump addresses"))?;
+            let my_half_deposit_psbt = trade_model.get_my_half_deposit_psbt()
+                .ok_or_else(|| Status::internal("missing half deposit PSBT"))?;
             let my_nonce_shares = trade_model.get_my_nonce_shares()
                 .ok_or_else(|| Status::internal("missing nonce shares"))?;
 
             Ok(NonceSharesMessage {
                 warning_tx_fee_bump_address: my_fee_bump_addresses[0].to_string(),
                 redirect_tx_fee_bump_address: my_fee_bump_addresses[1].to_string(),
-                half_deposit_psbt: vec![],
+                half_deposit_psbt: my_half_deposit_psbt.serialize(),
                 ..my_nonce_shares.into()
             })
         })
@@ -87,17 +86,25 @@ impl musig_server::Musig for MusigImpl {
     #[instrument(skip_all)]
     async fn get_partial_signatures(&self, request: Request<PartialSignaturesRequest>) -> Result<Response<PartialSignaturesMessage>> {
         handle_musig_request(request, move |request, trade_model| {
+            if let Some(my_partial_signatures) = trade_model
+                .get_my_partial_signatures_on_peer_txs(request.buyer_ready_to_release) {
+                // Ignore receiver list and peer's nonce shares, as they have already been set
+                // (otherwise we wouldn't already have the partial signatures on the peer's txs).
+                return Ok(my_partial_signatures.into());
+            }
             let peer_nonce_shares = request.peers_nonce_shares
                 .ok_or_else(|| Status::not_found("missing request.peers_nonce_shares"))?;
             trade_model.set_peer_fee_bump_addresses([
                 (&peer_nonce_shares.warning_tx_fee_bump_address).try_proto_into()?,
                 (&peer_nonce_shares.redirect_tx_fee_bump_address).try_proto_into()?
             ])?;
+            trade_model.set_peer_half_deposit_psbt((&peer_nonce_shares.half_deposit_psbt[..]).try_proto_into()?);
             trade_model.set_redirection_receivers(request.receivers.into_iter().map(TryProtoInto::try_proto_into))?;
             trade_model.set_peer_nonce_shares(peer_nonce_shares.try_proto_into()?);
             trade_model.aggregate_nonce_shares()?;
             trade_model.sign_partial()?;
-            let my_partial_signatures = trade_model.get_my_partial_signatures_on_peer_txs()
+            let my_partial_signatures = trade_model
+                .get_my_partial_signatures_on_peer_txs(request.buyer_ready_to_release)
                 .ok_or_else(|| Status::internal("missing partial signatures"))?;
 
             Ok(my_partial_signatures.into())
@@ -109,6 +116,11 @@ impl musig_server::Musig for MusigImpl {
         handle_musig_request(request, move |request, trade_model| {
             let peers_partial_signatures = request.peers_partial_signatures
                 .ok_or_else(|| Status::not_found("missing request.peers_partial_signatures"))?;
+            if trade_model.am_buyer() {
+                let sighash = peers_partial_signatures.swap_tx_input_sighash.as_ref()
+                    .ok_or_else(|| Status::not_found("missing request.peers_partial_signatures.swap_tx_input_sighash"))?;
+                trade_model.sign_swap_tx_input_partial((&sighash[..]).try_proto_into()?)?;
+            }
             trade_model.set_peer_partial_signatures_on_my_txs(&peers_partial_signatures.try_proto_into()?);
             trade_model.aggregate_partial_signatures()?;
 
@@ -140,12 +152,21 @@ impl musig_server::Musig for MusigImpl {
     #[instrument(skip_all)]
     async fn sign_swap_tx(&self, request: Request<SwapTxSignatureRequest>) -> Result<Response<SwapTxSignatureResponse>> {
         handle_musig_request(request, move |request, trade_model| {
-            trade_model.set_swap_tx_input_peers_partial_signature(request.swap_tx_input_peers_partial_signature.try_proto_into()?);
-            trade_model.aggregate_swap_tx_partial_signatures()?;
-            let sig = trade_model.compute_swap_tx_input_signature()?;
+            if trade_model.am_buyer() {
+                return Err(Status::failed_precondition("operation only available for seller"));
+            }
+            let sig = if let Ok(sig) = trade_model.compute_swap_tx_input_signature() { sig } else {
+                trade_model.set_swap_tx_input_peers_partial_signature(
+                    request.swap_tx_input_peers_partial_signature.try_proto_into()?);
+                trade_model.aggregate_swap_tx_partial_signatures()?;
+                trade_model.compute_swap_tx_input_signature()?
+            };
             let prv_key_share = trade_model.get_my_private_key_share_for_peer_output()
                 .ok_or_else(|| Status::internal("missing private key share"))?;
 
+            if !request.seller_ready_to_release {
+                return Ok(SwapTxSignatureResponse::default());
+            }
             Ok(SwapTxSignatureResponse {
                 // For now, just set 'swap_tx' to be the (final) swap tx signature, rather than the actual signed tx:
                 swap_tx: sig.serialize().into(),
