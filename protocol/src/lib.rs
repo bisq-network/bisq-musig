@@ -1,3 +1,6 @@
+// FIXME: Temporarily suppressed warnings from protocol crate in order to get a clean build:
+#![allow(warnings)]
+
 use bdk_electrum::bdk_core::bitcoin;
 use bdk_electrum::bdk_core::bitcoin::key::{Keypair, Secp256k1, TweakedKeypair};
 use bdk_electrum::bdk_core::bitcoin::secp256k1::Message;
@@ -6,6 +9,7 @@ use bdk_electrum::bdk_core::bitcoin::{TapSighashType, Witness};
 use bdk_wallet::bitcoin::key::TapTweak;
 use musig2::secp::{Point, Scalar};
 use musig2::KeyAggContext;
+
 pub mod protocol_musig_adaptor;
 pub mod nigiri;
 pub mod wallet_service;

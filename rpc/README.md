@@ -72,8 +72,8 @@ nigiri start && \
 mvn exec:java -Pwallet
 ```
 
-
 6. To run the `BmpClient`:
+
 ```bash
 mvn exec:java -P bmp
 ```
@@ -108,20 +108,21 @@ nigiri --datadir "$PWD/.nigiri" stop
 
 ### Java Integration Test
 
-To run the full Java integration test suite (`BmpServiceIntegrationTest.java`), which simulates a complete trade and verifies it on-chain, follow these steps. This requires `nigiri`, `cargo`, and `mvn` to be installed.
+To run the full Java integration test suite (`BmpServiceIntegrationTest.java`), which simulates a complete trade and
+verifies it on-chain, follow these steps. This requires `nigiri`, `cargo`, and `mvn` to be installed.
 
-1.  **Start Nigiri:**
+1. **Start Nigiri:**
 
-    This provides the local Bitcoin regtest network.
+   This provides the local Bitcoin regtest network.
 
-    ```sh
-    nigiri start
-    ```
+   ```sh
+   nigiri start
+   ```
 
-2.  **Start two `musigd` gRPC servers:**
+2. **Start two `musigd` gRPC servers:**
 
-The test requires two server instances to represent the two parties in the trade (Alice and Bob). Run these commands from the project's root directory.
-It's best to run them in separate terminal windows so you can monitor their output.
+The test requires two server instances to represent the two parties in the trade (Alice and Bob). Run these commands
+from the project's root directory. It's best to run them in separate terminal windows so you can monitor their output.
 
     *   Server for Bob (port 50051):
         ```sh
@@ -132,10 +133,10 @@ It's best to run them in separate terminal windows so you can monitor their outp
         cargo run --bin musigd --manifest-path rpc/Cargo.toml -- --port 50052
         ```
 
-3.  **Run the Maven test command:**
+3. **Run the Maven test command:**
 
-    This command will compile the Java code and execute the integration test. Run it from the project's root directory.
+   This command will compile the Java code and execute the integration test. Run it from the project's root directory.
 
-    ```sh
-    mvn -f rpc/pom.xml clean verify
-    ```
+   ```sh
+   mvn -f rpc/pom.xml clean verify
+   ```

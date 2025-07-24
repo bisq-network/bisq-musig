@@ -6,6 +6,7 @@ use rpc::wallet::WalletServiceImpl;
 use std::error::Error;
 use std::sync::Arc;
 use tonic::transport::Server;
+use tracing::info;
 use tracing_subscriber::filter::{EnvFilter, ParseError};
 use tracing_subscriber::fmt;
 use tracing_subscriber::layer::SubscriberExt as _;
@@ -44,7 +45,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     let bmp_protocol_impl = BmpServiceImpl::default();
 
-    println!("Starting RPC server on port {}", cli.port);
+    info!(port = cli.port, "Starting gRPC server.");
     Server::builder()
         .add_service(MusigServer::new(musig))
         .add_service(WalletServer::new(wallet))

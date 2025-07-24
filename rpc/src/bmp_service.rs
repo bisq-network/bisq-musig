@@ -43,8 +43,7 @@ impl BmpProtocolService for BmpServiceImpl {
             role,
             Amount::from_sat(req.seller_amount_sats),
             Amount::from_sat(req.buyer_amount_sats),
-        )
-        .map_err(|e| Status::internal(e.to_string()))?;
+        ).map_err(|e| Status::internal(e.to_string()))?;
 
         let protocol = BMPProtocol::new(context).map_err(|e| Status::internal(e.to_string()))?;
 
