@@ -10,14 +10,16 @@ bdk_wallet = { workspace = true }
 drop-stream = "0.3.2"
 futures-util = { version = "0.3.31", default-features = false, features = ["alloc"] }
 musig2 = { workspace = true }
-prost = "0.13.5"
+prost = "0.14.1"
 protocol = { path = "../protocol" }
+rand = { workspace = true }
 serde = { version = "1.0.219", features = ["derive"] }
 serde_with = { version = "3.14.0", features = ["hex"] }
 thiserror = "2.0.12"
-tokio = { version = "1.46.1", features = ["macros", "rt-multi-thread", "time"] }
+tokio = { version = "1.47.0", features = ["macros", "rt-multi-thread", "time"] }
 tokio-stream = "0.1.17"
-tonic = "0.13.1"
+tonic = "0.14.0"
+tonic-prost = "0.14.0"
 tracing = "0.1.41"
 unimock = { version = "0.6.7", optional = true }
 # Dependencies used only by the binary target(s):
@@ -26,11 +28,11 @@ clap = { version = "4.5.41", features = ["derive"] }
 tracing-subscriber = { version = "0.3.19", features = ["env-filter"] }
 
 [build-dependencies]
-tonic-build = "0.13.1"
+tonic-prost-build = "0.14.0"
 
 [dev-dependencies]
 rpc = { path = ".", features = ["unimock"] }
-anyhow = "1.0.98"
+anyhow = { workspace = true }
 assert_cmd = "2.0.17"
 const_format = "0.2.34"
 predicates = "3.1.3"

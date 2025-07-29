@@ -3,7 +3,6 @@ use bdk_wallet::bitcoin::hashes::Hash as _;
 use bdk_wallet::bitcoin::{Address, Amount, FeeRate, Network, Psbt, TapSighash};
 use musig2::adaptor::AdaptorSignature;
 use musig2::secp::{MaybePoint, MaybeScalar, Point, Scalar};
-use musig2::secp256k1::rand;
 use musig2::{
     AggNonce, KeyAggContext, LiftedSignature, NonceSeed, PartialSignature, PubNonce, SecNonce,
     SecNonceBuilder,
