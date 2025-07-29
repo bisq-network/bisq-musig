@@ -1,6 +1,8 @@
 use bdk_wallet::bitcoin::address::{NetworkChecked, NetworkUnchecked, NetworkValidation};
 use bdk_wallet::bitcoin::hashes::Hash as _;
-use bdk_wallet::bitcoin::{Address, Amount, FeeRate, Network, Psbt, TapSighash};
+use bdk_wallet::bitcoin::{
+    Address, Amount, FeeRate, Network, Psbt, PublicKey, TapNodeHash, TapSighash,
+};
 use musig2::adaptor::AdaptorSignature;
 use musig2::secp::{MaybePoint, MaybeScalar, Point, Scalar};
 use musig2::{
@@ -12,6 +14,7 @@ use std::sync::{Arc, LazyLock, Mutex};
 use thiserror::Error;
 
 use crate::storage::{ByOptVal, ByRef, ByVal, Storage, ValStorage};
+use crate::transaction::{warning_output_merkle_root, REGTEST_CLAIM_LOCK_TIME};
 
 pub trait TradeModelStore {
     fn add_trade_model(&self, trade_model: TradeModel);
@@ -124,6 +127,7 @@ struct KeyCtx {
 #[derive(Default)]
 struct SigCtx {
     am_buyer: bool,
+    merkle_root: Option<TapNodeHash>,
     adaptor_point: MaybePoint,
     my_nonce_share: Option<NoncePair>,
     peers_nonce_share: Option<PubNonce>,
@@ -180,9 +184,12 @@ impl TradeModel {
 
     pub fn init_my_key_shares(&mut self) {
         let buyer_output_pub_key = self.buyer_output_key_ctx.init_my_key_share().pub_key;
-        self.seller_output_key_ctx.init_my_key_share();
-        if !self.am_buyer() {
+        let seller_output_pub_key = self.seller_output_key_ctx.init_my_key_share().pub_key;
+        if self.am_buyer() {
+            self.buyers_redirect_tx_input_sig_ctx.set_warning_output_merkle_root(&seller_output_pub_key);
+        } else {
             self.swap_tx_input_sig_ctx.adaptor_point = MaybePoint::Valid(buyer_output_pub_key);
+            self.sellers_redirect_tx_input_sig_ctx.set_warning_output_merkle_root(&buyer_output_pub_key);
         }
     }
 
@@ -193,12 +200,15 @@ impl TradeModel {
         ])
     }
 
-    pub const fn set_peer_key_shares(&mut self, buyer_output_pub_key: Point, seller_output_pub_key: Point) {
+    pub fn set_peer_key_shares(&mut self, buyer_output_pub_key: Point, seller_output_pub_key: Point) {
         self.buyer_output_key_ctx.peers_key_share = Some(KeyPair::from_public(buyer_output_pub_key));
         self.seller_output_key_ctx.peers_key_share = Some(KeyPair::from_public(seller_output_pub_key));
         if self.am_buyer() {
             // TODO: Should check that signing hasn't already begun before setting an adaptor point.
             self.swap_tx_input_sig_ctx.adaptor_point = MaybePoint::Valid(buyer_output_pub_key);
+            self.sellers_redirect_tx_input_sig_ctx.set_warning_output_merkle_root(&buyer_output_pub_key);
+        } else {
+            self.buyers_redirect_tx_input_sig_ctx.set_warning_output_merkle_root(&seller_output_pub_key);
         }
     }
 
@@ -597,13 +607,34 @@ impl KeyCtx {
         }
         Ok(())
     }
+
+    fn compute_tweaked_key_agg_ctx(&self, merkle_root: Option<&TapNodeHash>) -> Result<KeyAggContext> {
+        let key_agg_ctx = self.key_agg_ctx.clone()
+            .ok_or(ProtocolErrorKind::MissingAggPubKey)?;
+        Ok(if let Some(merkle_root) = merkle_root {
+            key_agg_ctx.with_taproot_tweak(merkle_root.as_byte_array())?
+        } else {
+            key_agg_ctx.with_unspendable_taproot_tweak()?
+        })
+    }
 }
 
 impl SigCtx {
+    fn set_warning_output_merkle_root(&mut self, claim_pub_key: &Point) -> &TapNodeHash {
+        // NOTE: We have to round-trip the public key because 'musig2' & 'bitcoin' currently use
+        // different versions of the 'secp256k1' crate:
+        let claim_pub_key = PublicKey::from_slice(&claim_pub_key.serialize_uncompressed())
+            .expect("curve point should have a valid uncompressed DER encoding").into();
+
+        // TODO: Make the network used to decide the claim lock-time configurable:
+        self.merkle_root.insert(warning_output_merkle_root(&claim_pub_key, REGTEST_CLAIM_LOCK_TIME))
+    }
+
     fn init_my_nonce_share(&mut self, key_ctx: &KeyCtx) -> Result<()> {
         let aggregated_pub_key = key_ctx.aggregated_key.as_ref()
             .ok_or(ProtocolErrorKind::MissingAggPubKey)?.pub_key;
         // TODO: Make the RNG configurable, to aid unit testing:
+        // TODO: Are we supposed to salt with the tweaked key(s), if strictly following the standard?
         self.my_nonce_share = Some(NoncePair::new(&mut rand::rng(), aggregated_pub_key));
         Ok(())
     }
@@ -631,8 +662,8 @@ impl SigCtx {
     }
 
     fn sign_partial(&mut self, key_ctx: &KeyCtx, message: Vec<u8>) -> Result<&PartialSignature> {
-        let key_agg_ctx = key_ctx.key_agg_ctx.as_ref()
-            .ok_or(ProtocolErrorKind::MissingAggPubKey)?;
+        // TODO: It's wasteful not to cache the tweaked KeyAggCtx -- refactor:
+        let key_agg_ctx = key_ctx.compute_tweaked_key_agg_ctx(self.merkle_root.as_ref())?;
         let seckey = key_ctx.my_key_share.as_ref()
             .ok_or(ProtocolErrorKind::MissingKeyShare)?.prv_key;
         let secnonce = self.my_nonce_share.as_mut()
@@ -641,7 +672,7 @@ impl SigCtx {
         let aggregated_nonce = &self.aggregated_nonce.as_ref()
             .ok_or(ProtocolErrorKind::MissingAggNonce)?;
 
-        let sig = musig2::adaptor::sign_partial(key_agg_ctx, seckey, secnonce, aggregated_nonce,
+        let sig = musig2::adaptor::sign_partial(&key_agg_ctx, seckey, secnonce, aggregated_nonce,
             self.adaptor_point, &message[..])?;
         self.message = Some(message);
         Ok(self.my_partial_sig.insert(sig))
@@ -656,8 +687,8 @@ impl SigCtx {
     }
 
     fn aggregate_partial_signatures(&mut self, key_ctx: &KeyCtx) -> Result<&AdaptorSignature> {
-        let key_agg_ctx = key_ctx.key_agg_ctx.as_ref()
-            .ok_or(ProtocolErrorKind::MissingAggPubKey)?;
+        // TODO: It's wasteful not to cache the tweaked KeyAggCtx -- refactor:
+        let key_agg_ctx = key_ctx.compute_tweaked_key_agg_ctx(self.merkle_root.as_ref())?;
         let aggregated_nonce = &self.aggregated_nonce.as_ref()
             .ok_or(ProtocolErrorKind::MissingAggNonce)?;
         let partial_signatures = self.get_partial_signatures()
@@ -665,7 +696,7 @@ impl SigCtx {
         let message = &self.message.as_ref()
             .ok_or(ProtocolErrorKind::MissingPartialSig)?[..];
 
-        let sig = musig2::adaptor::aggregate_partial_signatures(key_agg_ctx, aggregated_nonce,
+        let sig = musig2::adaptor::aggregate_partial_signatures(&key_agg_ctx, aggregated_nonce,
             self.adaptor_point, partial_signatures, message)?;
         Ok(self.aggregated_sig.insert(sig))
     }
@@ -704,6 +735,7 @@ pub enum ProtocolErrorKind {
     KeyAgg(#[from] musig2::errors::KeyAggError),
     Signing(#[from] musig2::errors::SigningError),
     Verify(#[from] musig2::errors::VerifyError),
+    Tweak(#[from] musig2::errors::TweakError),
     InvalidSecretKeys(#[from] musig2::errors::InvalidSecretKeysError),
     ZeroScalar(#[from] musig2::secp::errors::ZeroScalarError),
     AddressParse(#[from] bdk_wallet::bitcoin::address::ParseError),
