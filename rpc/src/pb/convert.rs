@@ -16,8 +16,7 @@ use crate::pb::walletrpc::{
     ConfEvent, ConfidenceType, ConfirmationBlockTime, TransactionOutput, WalletBalanceResponse,
 };
 use crate::protocol::{
-    ExchangedAddresses, ExchangedNonces, ExchangedSigs, ProtocolErrorKind, RedirectionReceiver,
-    Role,
+    ExchangedAddresses, ExchangedNonces, ExchangedSigs, ProtocolErrorKind, Receiver, Role,
 };
 use crate::storage::{ByRef, ByVal};
 use crate::wallet::TxConfidence;
@@ -111,9 +110,9 @@ impl TryProtoInto<Address<NetworkUnchecked>> for &str {
     }
 }
 
-impl TryProtoInto<RedirectionReceiver<NetworkUnchecked>> for ReceiverAddressAndAmount {
-    fn try_proto_into(self) -> Result<RedirectionReceiver<NetworkUnchecked>> {
-        Ok(RedirectionReceiver {
+impl TryProtoInto<Receiver<NetworkUnchecked>> for ReceiverAddressAndAmount {
+    fn try_proto_into(self) -> Result<Receiver<NetworkUnchecked>> {
+        Ok(Receiver {
             address: self.address.try_proto_into()?,
             amount: Amount::from_sat(self.amount),
         })
@@ -206,8 +205,9 @@ impl From<musigrpc::Role> for Role {
 impl From<SentAddressesNoncesPair<'_>> for NonceSharesMessage {
     fn from((addresses, nonces): SentAddressesNoncesPair) -> Self {
         Self {
-            // Use default value for the half-deposit PSBT field. TODO: A little hacky; consider refactoring proto.
+            // Use default value for the PSBT & redirection amount fields. TODO: A little hacky; consider refactoring proto.
             half_deposit_psbt: Vec::default(),
+            redirection_amount_msat: 0,
             // Addresses...
             warning_tx_fee_bump_address: addresses.warning_tx_fee_bump_address.to_string(),
             redirect_tx_fee_bump_address: addresses.redirect_tx_fee_bump_address.to_string(),

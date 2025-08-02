@@ -1,7 +1,7 @@
 use bdk_wallet::bitcoin::address::{NetworkChecked, NetworkUnchecked, NetworkValidation};
 use bdk_wallet::bitcoin::hashes::Hash as _;
 use bdk_wallet::bitcoin::{
-    Address, Amount, FeeRate, Network, Psbt, PublicKey, TapNodeHash, TapSighash,
+    Address, Amount, FeeRate, Network, Psbt, PublicKey, TapNodeHash, TapSighash, Weight,
 };
 use musig2::adaptor::AdaptorSignature;
 use musig2::secp::{MaybePoint, MaybeScalar, Point, Scalar};
@@ -12,10 +12,13 @@ use musig2::{
 use std::collections::BTreeMap;
 use std::sync::{Arc, LazyLock, Mutex};
 use thiserror::Error;
-use tracing::{instrument, warn};
+use tracing::{error, instrument, warn};
 
 use crate::storage::{ByOptVal, ByRef, ByVal, Storage, ValStorage};
-use crate::transaction::{warning_output_merkle_root, REGTEST_CLAIM_LOCK_TIME};
+use crate::transaction::{
+    warning_output_merkle_root, ANCHOR_AMOUNT, REGTEST_CLAIM_LOCK_TIME,
+    SIGNED_REDIRECT_TX_BASE_WEIGHT, SIGNED_WARNING_TX_WEIGHT,
+};
 
 pub trait TradeModelStore {
     fn add_trade_model(&self, trade_model: TradeModel);
@@ -46,6 +49,7 @@ pub struct TradeModel {
     pub sellers_security_deposit: Option<Amount>,
     pub deposit_tx_fee_rate: Option<FeeRate>,
     pub prepared_tx_fee_rate: Option<FeeRate>,
+    pub trade_fee_receiver: Option<Receiver>,
     buyer_output_key_ctx: KeyCtx,
     seller_output_key_ctx: KeyCtx,
     buyers_warning_tx_fee_bump_address: Option<Address>,
@@ -56,7 +60,7 @@ pub struct TradeModel {
     sellers_claim_tx_payout_address: Option<Address>,
     buyers_half_deposit_psbt: Option<Psbt>,
     sellers_half_deposit_psbt: Option<Psbt>,
-    redirection_receivers: Option<Vec<RedirectionReceiver>>,
+    redirection_receivers: Option<Vec<Receiver>>,
     swap_tx_input_sighash: Option<TapSighash>,
     swap_tx_input_sig_ctx: SigCtx,
     buyers_warning_tx_buyer_input_sig_ctx: SigCtx,
@@ -119,14 +123,43 @@ pub struct ExchangedSigs<'a, S: Storage> {
     pub swap_tx_input_sighash: Option<S::Store<'a, TapSighash>>,
 }
 
-pub struct RedirectionReceiver<V: NetworkValidation = NetworkChecked> {
+pub struct Receiver<V: NetworkValidation = NetworkChecked> {
     pub address: Address<V>,
     pub amount: Amount,
 }
 
-impl RedirectionReceiver<NetworkUnchecked> {
-    fn require_network(self, required: Network) -> Result<RedirectionReceiver> {
-        Ok(RedirectionReceiver { address: self.address.require_network(required)?, amount: self.amount })
+impl Receiver<NetworkUnchecked> {
+    fn require_network(self, required: Network) -> Result<Receiver> {
+        Ok(Receiver { address: self.address.require_network(required)?, amount: self.amount })
+    }
+}
+
+impl Receiver {
+    fn output_weight(&self) -> Weight {
+        Weight::from_vb_unchecked(self.address.script_pubkey().len() as u64 + 9)
+    }
+
+    fn output_cost_msat(&self, fee_rate: FeeRate) -> Option<u64> {
+        let amount_msat = self.amount.to_sat().checked_mul(1000)?;
+        let fee_msat = fee_rate.to_sat_per_kwu().checked_mul(self.output_weight().to_wu())?;
+        amount_msat.checked_add(fee_msat)
+    }
+
+    fn total_output_cost_msat<'a, I>(receivers: I, fee_rate: FeeRate, extra_output_num: u16) -> Option<u64>
+        where I: IntoIterator<Item=&'a Self>
+    {
+        let mut cost = 0u64;
+        let mut num = extra_output_num;
+        for receiver in receivers {
+            cost = cost.checked_add(receiver.output_cost_msat(fee_rate)?)?;
+            // Fail if more than 65535 outputs, which will never happen for a standard tx:
+            num = num.checked_add(1)?;
+        }
+        if num > 252 {
+            // For more than 252 outputs, we get a 3-byte length encoding instead of 1, adding 8 wu.
+            cost = cost.checked_add(fee_rate.to_sat_per_kwu().checked_mul(8)?)?;
+        }
+        Some(cost)
     }
 }
 
@@ -212,6 +245,36 @@ impl TradeModel {
             return Err(ProtocolErrorKind::MissingDepositPsbt);
         }
         Ok(())
+    }
+
+    pub fn set_trade_fee_receiver(&mut self, receiver: Option<Receiver<NetworkUnchecked>>) -> Result<()> {
+        // TODO: Make the required network configurable:
+        self.trade_fee_receiver = receiver
+            .map(|r| r.require_network(Network::Signet)).transpose()?;
+        Ok(())
+    }
+
+    fn escrow_amount(&self) -> Option<Amount> {
+        self.trade_amount?
+            .checked_add(self.buyers_security_deposit?)?
+            .checked_add(self.sellers_security_deposit?)
+    }
+
+    fn warning_output_amount(&self) -> Option<Amount> {
+        let warning_tx_fee = self.prepared_tx_fee_rate?
+            .checked_mul_by_weight(SIGNED_WARNING_TX_WEIGHT)?;
+
+        self.escrow_amount()?.checked_sub(ANCHOR_AMOUNT)?.checked_sub(warning_tx_fee)
+    }
+
+    pub fn redirection_amount_msat(&self) -> Option<u64> {
+        let redirection_tx_base_fee = self.prepared_tx_fee_rate?.to_sat_per_kwu()
+            .checked_mul(SIGNED_REDIRECT_TX_BASE_WEIGHT.to_wu())?;
+
+        self.warning_output_amount()?
+            .checked_sub(ANCHOR_AMOUNT)?
+            .to_sat().checked_mul(1000)?
+            .checked_sub(redirection_tx_base_fee)
     }
 
     pub fn init_my_key_shares(&mut self) {
@@ -340,7 +403,7 @@ impl TradeModel {
     }
 
     pub fn set_redirection_receivers<I, E>(&mut self, receivers: I) -> Result<(), E>
-        where I: IntoIterator<Item=Result<RedirectionReceiver<NetworkUnchecked>, E>>,
+        where I: IntoIterator<Item=Result<Receiver<NetworkUnchecked>, E>>,
               E: From<ProtocolErrorKind>
     {
         // TODO: Make the required network configurable and enforced to match the ones above.
@@ -350,6 +413,31 @@ impl TradeModel {
         }
         vec.shrink_to_fit();
         self.redirection_receivers = Some(vec);
+        Ok(())
+    }
+
+    #[instrument(skip_all)]
+    pub fn check_redirect_tx_params(&self) -> Result<()> {
+        // FIXME: Don't falsely report overflows & invalid params as missing-param errors:
+        let receivers = self.redirection_receivers.as_ref()
+            .ok_or(ProtocolErrorKind::MissingTxParams)?;
+        let fee_rate = self.prepared_tx_fee_rate
+            .ok_or(ProtocolErrorKind::MissingTxParams)?;
+        let expected_redirection_amount_msat = self.redirection_amount_msat()
+            .ok_or(ProtocolErrorKind::MissingTxParams)?;
+        let actual_redirection_amount_msat = Receiver::total_output_cost_msat(receivers, fee_rate, 1)
+            .ok_or(ProtocolErrorKind::MissingTxParams)?;
+
+        // For now, just log the amount-check failures, to give the Bisq2 client a chance to update.
+        // TODO: Make these both hard errors:
+        if actual_redirection_amount_msat > expected_redirection_amount_msat {
+            error!(expected_redirection_amount_msat, actual_redirection_amount_msat,
+                "Insufficient redirection funds.");
+        }
+        if actual_redirection_amount_msat.saturating_add(999) < expected_redirection_amount_msat {
+            warn!(expected_redirection_amount_msat, actual_redirection_amount_msat,
+                "Excess redirection funds.");
+        }
         Ok(())
     }
 

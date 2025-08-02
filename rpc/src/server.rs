@@ -63,10 +63,13 @@ impl musig_server::Musig for MusigImpl {
             trade_model.sellers_security_deposit = Some(Amount::from_sat(request.sellers_security_deposit));
             trade_model.deposit_tx_fee_rate = Some(FeeRate::from_sat_per_kwu(request.deposit_tx_fee_rate));
             trade_model.prepared_tx_fee_rate = Some(FeeRate::from_sat_per_kwu(request.prepared_tx_fee_rate));
+            trade_model.set_trade_fee_receiver(request.trade_fee_receiver.try_proto_into()?)?;
             trade_model.init_my_addresses()?;
             trade_model.init_my_half_deposit_psbt()?;
             trade_model.init_my_nonce_shares()?;
 
+            let redirection_amount_msat = trade_model.redirection_amount_msat()
+                .ok_or_else(|| Status::internal("missing redirection amount"))?;
             let my_addresses = trade_model.get_my_addresses()
                 .ok_or_else(|| Status::internal("missing addresses"))?;
             let my_half_deposit_psbt = trade_model.get_my_half_deposit_psbt()
@@ -76,6 +79,7 @@ impl musig_server::Musig for MusigImpl {
 
             Ok(NonceSharesMessage {
                 half_deposit_psbt: my_half_deposit_psbt.serialize(),
+                redirection_amount_msat,
                 ..(my_addresses, my_nonce_shares).into()
             })
         })
@@ -93,7 +97,8 @@ impl musig_server::Musig for MusigImpl {
             let peer_nonce_shares = request.peers_nonce_shares
                 .ok_or_else(|| Status::not_found("missing request.peers_nonce_shares"))?;
             trade_model.set_peer_half_deposit_psbt((&peer_nonce_shares.half_deposit_psbt[..]).try_proto_into()?);
-            trade_model.set_redirection_receivers(request.receivers.into_iter().map(TryProtoInto::try_proto_into))?;
+            trade_model.set_redirection_receivers(request.redirection_receivers.into_iter().map(TryProtoInto::try_proto_into))?;
+            trade_model.check_redirect_tx_params()?;
             let (addresses, nonce_shares) = peer_nonce_shares.try_proto_into()?;
             trade_model.set_peer_addresses(addresses)?;
             trade_model.set_peer_nonce_shares(nonce_shares);

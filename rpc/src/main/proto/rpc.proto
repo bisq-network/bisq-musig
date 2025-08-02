@@ -47,6 +47,7 @@ message NonceSharesRequest {
   uint64 tradeAmount = 6;            // sats
   uint64 buyersSecurityDeposit = 7;  // sats
   uint64 sellersSecurityDeposit = 8; // sats
+  ReceiverAddressAndAmount tradeFeeReceiver = 9;
 }
 
 message NonceSharesMessage {
@@ -54,6 +55,7 @@ message NonceSharesMessage {
   string redirectTxFeeBumpAddress = 2;
   string claimTxPayoutAddress = 11;
   bytes halfDepositPsbt = 3;
+  uint64 redirectionAmountMsat = 14; // (millisatoshis)
   bytes swapTxInputNonceShare = 4;
   bytes buyersWarningTxBuyerInputNonceShare = 5;
   bytes buyersWarningTxSellerInputNonceShare = 6;
@@ -73,7 +75,7 @@ message ReceiverAddressAndAmount {
 message PartialSignaturesRequest {
   string tradeId = 1;
   NonceSharesMessage peersNonceShares = 2;
-  repeated ReceiverAddressAndAmount receivers = 3;
+  repeated ReceiverAddressAndAmount redirectionReceivers = 3;
   bool buyerReadyToRelease = 4;
 }
 

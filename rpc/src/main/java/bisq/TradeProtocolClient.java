@@ -1,5 +1,6 @@
 package bisq;
 
+import com.google.common.base.Preconditions;
 import com.google.common.collect.ImmutableMap;
 import io.grpc.Channel;
 import io.grpc.Grpc;
@@ -85,8 +86,8 @@ public class TradeProtocolClient {
                 .setTradeId(sellerTradeId)
                 .setBuyerOutputPeersPubKeyShare(buyerPubKeyShareResponse.getBuyerOutputPubKeyShare())
                 .setSellerOutputPeersPubKeyShare(buyerPubKeyShareResponse.getSellerOutputPubKeyShare())
-                .setDepositTxFeeRate(50_000)  // 12.5 sats per vbyte
-                .setPreparedTxFeeRate(40_000) // 10.0 sats per vbyte
+                .setDepositTxFeeRate(3_125)  // 12.5 sats per vbyte
+                .setPreparedTxFeeRate(2_500) // 10.0 sats per vbyte
                 .setTradeAmount(200_000)
                 .setBuyersSecurityDeposit(30_000)
                 .setSellersSecurityDeposit(30_000)
@@ -99,8 +100,8 @@ public class TradeProtocolClient {
                 .setTradeId(buyerTradeId)
                 .setBuyerOutputPeersPubKeyShare(sellerPubKeyShareResponse.getBuyerOutputPubKeyShare())
                 .setSellerOutputPeersPubKeyShare(sellerPubKeyShareResponse.getSellerOutputPubKeyShare())
-                .setDepositTxFeeRate(50_000)  // 12.5 sats per vbyte
-                .setPreparedTxFeeRate(40_000) // 10.0 sats per vbyte
+                .setDepositTxFeeRate(3_125)  // 12.5 sats per vbyte
+                .setPreparedTxFeeRate(2_500) // 10.0 sats per vbyte
                 .setTradeAmount(200_000)
                 .setBuyersSecurityDeposit(30_000)
                 .setSellersSecurityDeposit(30_000)
@@ -110,7 +111,7 @@ public class TradeProtocolClient {
         var buyerPartialSignatureMessage = stub.getPartialSignatures(PartialSignaturesRequest.newBuilder()
                 .setTradeId(buyerTradeId)
                 .setPeersNonceShares(sellerNonceShareMessage)
-                .addAllReceivers(mockReceivers())
+                .addAllRedirectionReceivers(mockRedirectionReceivers(buyerNonceShareMessage.getRedirectionAmountMsat()))
                 .build());
         System.out.println("Got reply: " + buyerPartialSignatureMessage);
 
@@ -119,7 +120,7 @@ public class TradeProtocolClient {
         var sellerPartialSignatureMessage = stub.getPartialSignatures(PartialSignaturesRequest.newBuilder()
                 .setTradeId(sellerTradeId)
                 .setPeersNonceShares(buyerNonceShareMessage)
-                .addAllReceivers(mockReceivers())
+                .addAllRedirectionReceivers(mockRedirectionReceivers(sellerNonceShareMessage.getRedirectionAmountMsat()))
                 .build());
         System.out.println("Got reply: " + sellerPartialSignatureMessage);
 
@@ -173,8 +174,8 @@ public class TradeProtocolClient {
                 .setTradeId(buyerTradeId)
                 .setBuyerOutputPeersPubKeyShare(sellerPubKeyShareResponse.getBuyerOutputPubKeyShare())
                 .setSellerOutputPeersPubKeyShare(sellerPubKeyShareResponse.getSellerOutputPubKeyShare())
-                .setDepositTxFeeRate(50_000)  // 12.5 sats per vbyte
-                .setPreparedTxFeeRate(40_000) // 10.0 sats per vbyte
+                .setDepositTxFeeRate(3_125)  // 12.5 sats per vbyte
+                .setPreparedTxFeeRate(2_500) // 10.0 sats per vbyte
                 .setTradeAmount(200_000)
                 .setBuyersSecurityDeposit(30_000)
                 .setSellersSecurityDeposit(30_000)
@@ -187,8 +188,8 @@ public class TradeProtocolClient {
                 .setTradeId(sellerTradeId)
                 .setBuyerOutputPeersPubKeyShare(buyerPubKeyShareResponse.getBuyerOutputPubKeyShare())
                 .setSellerOutputPeersPubKeyShare(buyerPubKeyShareResponse.getSellerOutputPubKeyShare())
-                .setDepositTxFeeRate(50_000)  // 12.5 sats per vbyte
-                .setPreparedTxFeeRate(40_000) // 10.0 sats per vbyte
+                .setDepositTxFeeRate(3_125)  // 12.5 sats per vbyte
+                .setPreparedTxFeeRate(2_500) // 10.0 sats per vbyte
                 .setTradeAmount(200_000)
                 .setBuyersSecurityDeposit(30_000)
                 .setSellersSecurityDeposit(30_000)
@@ -198,7 +199,7 @@ public class TradeProtocolClient {
         var sellerPartialSignatureMessage = stub.getPartialSignatures(PartialSignaturesRequest.newBuilder()
                 .setTradeId(sellerTradeId)
                 .setPeersNonceShares(buyerNonceShareMessage)
-                .addAllReceivers(mockReceivers())
+                .addAllRedirectionReceivers(mockRedirectionReceivers(sellerNonceShareMessage.getRedirectionAmountMsat()))
                 .build());
         System.out.println("Got reply: " + sellerPartialSignatureMessage);
 
@@ -207,7 +208,7 @@ public class TradeProtocolClient {
         var buyerPartialSignatureMessage = stub.getPartialSignatures(PartialSignaturesRequest.newBuilder()
                 .setTradeId(buyerTradeId)
                 .setPeersNonceShares(sellerNonceShareMessage)
-                .addAllReceivers(mockReceivers())
+                .addAllRedirectionReceivers(mockRedirectionReceivers(buyerNonceShareMessage.getRedirectionAmountMsat()))
                 .build());
         System.out.println("Got reply: " + buyerPartialSignatureMessage);
 
@@ -320,11 +321,25 @@ public class TradeProtocolClient {
     }
 
     @SuppressWarnings("SpellCheckingInspection")
-    private static List<ReceiverAddressAndAmount> mockReceivers() {
+    private static List<ReceiverAddressAndAmount> mockRedirectionReceivers(long redirectionAmountMsat) {
+        // We expect the server to come up with this particular amount in millisatoshis, from the above hardcoded mock
+        // trade params (that is, the given trade amount, security deposits and prepared tx feerate):
+        Preconditions.checkArgument(redirectionAmountMsat == 256_115_000);
+
+        // The mock receiver costs should add up to the above, including the contribution each output makes to the
+        // Redirect Tx mining fee (which depends on the feerate and the size of the given output field in the final tx;
+        // that is why millisatoshi precision is needed, as the network cost of each output is fractional in general).
+        //
+        // To be precise, the output-cost sum minus 'redirectionAmountMsat' should lie in the range 0..999 msat, where:
+        //   output-cost := amount + output-size * feerate;
+        //   output-size = 31vB for P2WPKH, 32vB for P2SH, 34vB for P2PKH, 43vB for P2TR & P2WSH.
+        //
+        // A one-sat-wide discrepancy range ensures fee overpay of less than 1 sat for the specified feerate, with
+        // underpay never allowed, as attaining an exact feerate (in sats per kwu) is impossible in general.
         return ImmutableMap.of(
-                        "tb1pwxlp4v9v7v03nx0e7vunlc87d4936wnyqegw0fuahudypan64wys5stxh7", 200_000,
+                        "tb1pwxlp4v9v7v03nx0e7vunlc87d4936wnyqegw0fuahudypan64wys5stxh7", 160_000,
                         "tb1qpg889v22f3gefuvwpe3963t5a00nvfmkhlgqw5", 80_000,
-                        "2N2x2bA28AsLZZEHss4SjFoyToQV5YYZsJM", 12_345
+                        "2N2x2bA28AsLZZEHss4SjFoyToQV5YYZsJM", 15_055
                 )
                 .entrySet().stream()
                 .map(e -> ReceiverAddressAndAmount.newBuilder().setAddress(e.getKey()).setAmount(e.getValue()).build())

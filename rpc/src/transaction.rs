@@ -1,9 +1,16 @@
 use bdk_wallet::bitcoin::opcodes::all::{OP_CHECKSIG, OP_CSV, OP_DROP};
 use bdk_wallet::bitcoin::taproot::TaprootBuilder;
-use bdk_wallet::bitcoin::{relative, script, ScriptBuf, TapNodeHash, XOnlyPublicKey};
+use bdk_wallet::bitcoin::{
+    relative, script, Amount, ScriptBuf, TapNodeHash, Weight, XOnlyPublicKey,
+};
 use relative::LockTime;
 
 pub const REGTEST_CLAIM_LOCK_TIME: LockTime = LockTime::from_height(5);
+pub const ANCHOR_AMOUNT: Amount = Amount::from_sat(330);
+pub const SIGNED_SWAP_TX_WEIGHT: Weight = Weight::from_wu(444);
+pub const SIGNED_WARNING_TX_WEIGHT: Weight = Weight::from_wu(846);
+pub const SIGNED_REDIRECT_TX_BASE_WEIGHT: Weight = SIGNED_SWAP_TX_WEIGHT;
+// pub const SIGNED_CLAIM_TX_WEIGHT: Weight = SIGNED_SWAP_TX_WEIGHT;
 
 fn claim_script(pub_key: &XOnlyPublicKey, lock_time: LockTime) -> ScriptBuf {
     script::Builder::new()
