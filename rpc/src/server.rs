@@ -61,8 +61,8 @@ impl musig_server::Musig for MusigImpl {
             trade_model.trade_amount = Some(Amount::from_sat(request.trade_amount));
             trade_model.buyers_security_deposit = Some(Amount::from_sat(request.buyers_security_deposit));
             trade_model.sellers_security_deposit = Some(Amount::from_sat(request.sellers_security_deposit));
-            trade_model.deposit_tx_fee_rate = Some(FeeRate::from_sat_per_kwu(request.deposit_tx_fee_rate));
-            trade_model.prepared_tx_fee_rate = Some(FeeRate::from_sat_per_kwu(request.prepared_tx_fee_rate));
+            trade_model.set_deposit_tx_fee_rate(FeeRate::from_sat_per_kwu(request.deposit_tx_fee_rate));
+            trade_model.set_prepared_tx_fee_rate(FeeRate::from_sat_per_kwu(request.prepared_tx_fee_rate));
             trade_model.set_trade_fee_receiver(request.trade_fee_receiver.try_proto_into()?)?;
             trade_model.init_my_addresses()?;
             trade_model.init_my_half_deposit_psbt()?;
@@ -97,10 +97,12 @@ impl musig_server::Musig for MusigImpl {
             let peer_nonce_shares = request.peers_nonce_shares
                 .ok_or_else(|| Status::not_found("missing request.peers_nonce_shares"))?;
             trade_model.set_peer_half_deposit_psbt((&peer_nonce_shares.half_deposit_psbt[..]).try_proto_into()?);
+            trade_model.compute_unsigned_deposit_tx()?;
             trade_model.set_redirection_receivers(request.redirection_receivers.into_iter().map(TryProtoInto::try_proto_into))?;
             trade_model.check_redirect_tx_params()?;
             let (addresses, nonce_shares) = peer_nonce_shares.try_proto_into()?;
             trade_model.set_peer_addresses(addresses)?;
+            trade_model.compute_unsigned_prepared_txs()?;
             trade_model.set_peer_nonce_shares(nonce_shares);
             trade_model.aggregate_nonce_shares()?;
             trade_model.sign_partial()?;

@@ -1,7 +1,9 @@
-use bdk_wallet::bitcoin::address::{NetworkChecked, NetworkUnchecked, NetworkValidation};
+use bdk_wallet::bitcoin::address::{KnownHrp, NetworkChecked, NetworkUnchecked, NetworkValidation};
 use bdk_wallet::bitcoin::hashes::Hash as _;
+use bdk_wallet::bitcoin::key::TweakedPublicKey;
 use bdk_wallet::bitcoin::{
-    Address, Amount, FeeRate, Network, Psbt, PublicKey, TapNodeHash, TapSighash, Weight,
+    Address, Amount, FeeRate, Network, OutPoint, Psbt, PublicKey, TapNodeHash, TapSighash, TxOut,
+    Weight,
 };
 use musig2::adaptor::AdaptorSignature;
 use musig2::secp::{MaybePoint, MaybeScalar, Point, Scalar};
@@ -16,8 +18,8 @@ use tracing::{error, instrument, warn};
 
 use crate::storage::{ByOptVal, ByRef, ByVal, Storage, ValStorage};
 use crate::transaction::{
-    warning_output_merkle_root, ANCHOR_AMOUNT, REGTEST_CLAIM_LOCK_TIME,
-    SIGNED_REDIRECT_TX_BASE_WEIGHT, SIGNED_WARNING_TX_WEIGHT,
+    warning_output_merkle_root, TxOutput, WarningTxBuilder, ANCHOR_AMOUNT, REGTEST_CLAIM_LOCK_TIME,
+    REGTEST_WARNING_LOCK_TIME, SIGNED_REDIRECT_TX_BASE_WEIGHT,
 };
 
 pub trait TradeModelStore {
@@ -47,13 +49,11 @@ pub struct TradeModel {
     pub trade_amount: Option<Amount>,
     pub buyers_security_deposit: Option<Amount>,
     pub sellers_security_deposit: Option<Amount>,
-    pub deposit_tx_fee_rate: Option<FeeRate>,
-    pub prepared_tx_fee_rate: Option<FeeRate>,
+    deposit_tx_fee_rate: Option<FeeRate>,
+    prepared_tx_fee_rate: Option<FeeRate>,
     pub trade_fee_receiver: Option<Receiver>,
     buyer_output_key_ctx: KeyCtx,
     seller_output_key_ctx: KeyCtx,
-    buyers_warning_tx_fee_bump_address: Option<Address>,
-    sellers_warning_tx_fee_bump_address: Option<Address>,
     buyers_redirect_tx_fee_bump_address: Option<Address>,
     sellers_redirect_tx_fee_bump_address: Option<Address>,
     buyers_claim_tx_payout_address: Option<Address>,
@@ -61,6 +61,8 @@ pub struct TradeModel {
     buyers_half_deposit_psbt: Option<Psbt>,
     sellers_half_deposit_psbt: Option<Psbt>,
     redirection_receivers: Option<Vec<Receiver>>,
+    buyers_warning_tx_builder: WarningTxBuilder,
+    sellers_warning_tx_builder: WarningTxBuilder,
     swap_tx_input_sighash: Option<TapSighash>,
     swap_tx_input_sig_ctx: SigCtx,
     buyers_warning_tx_buyer_input_sig_ctx: SigCtx,
@@ -213,6 +215,9 @@ impl TradeModel {
         trade_model.sellers_redirect_tx_input_sig_ctx.am_buyer = am_buyer;
         trade_model.buyers_claim_tx_input_sig_ctx.am_buyer = am_buyer;
         trade_model.sellers_claim_tx_input_sig_ctx.am_buyer = am_buyer;
+        // TODO: Make the network configurable:
+        trade_model.buyers_warning_tx_builder.set_warning_lock_time(REGTEST_WARNING_LOCK_TIME);
+        trade_model.sellers_warning_tx_builder.set_warning_lock_time(REGTEST_WARNING_LOCK_TIME);
         trade_model
     }
 
@@ -229,7 +234,7 @@ impl TradeModel {
     }
 
     fn check_prepared_tx_params_are_known(&self) -> Result<()> {
-        if self.buyers_warning_tx_fee_bump_address.is_none() || self.sellers_warning_tx_fee_bump_address.is_none() ||
+        if self.buyers_warning_tx_builder.anchor_address().is_err() || self.sellers_warning_tx_builder.anchor_address().is_err() ||
             self.buyers_redirect_tx_fee_bump_address.is_none() || self.sellers_redirect_tx_fee_bump_address.is_none() ||
             self.redirection_receivers.is_none() || self.prepared_tx_fee_rate.is_none() {
             return Err(ProtocolErrorKind::MissingTxParams);
@@ -240,11 +245,21 @@ impl TradeModel {
         Ok(())
     }
 
-    const fn check_unsigned_deposit_tx_is_known(&self) -> Result<()> {
+    const fn check_unsigned_deposit_tx_is_knowable(&self) -> Result<()> {
         if self.buyers_half_deposit_psbt.is_none() || self.sellers_half_deposit_psbt.is_none() {
             return Err(ProtocolErrorKind::MissingDepositPsbt);
         }
         Ok(())
+    }
+
+    pub fn set_deposit_tx_fee_rate(&mut self, fee_rate: FeeRate) {
+        self.deposit_tx_fee_rate.get_or_insert(fee_rate);
+    }
+
+    pub fn set_prepared_tx_fee_rate(&mut self, fee_rate: FeeRate) {
+        self.prepared_tx_fee_rate.get_or_insert(fee_rate);
+        self.buyers_warning_tx_builder.set_fee_rate(fee_rate);
+        self.sellers_warning_tx_builder.set_fee_rate(fee_rate);
     }
 
     pub fn set_trade_fee_receiver(&mut self, receiver: Option<Receiver<NetworkUnchecked>>) -> Result<()> {
@@ -254,24 +269,14 @@ impl TradeModel {
         Ok(())
     }
 
-    fn escrow_amount(&self) -> Option<Amount> {
-        self.trade_amount?
-            .checked_add(self.buyers_security_deposit?)?
-            .checked_add(self.sellers_security_deposit?)
-    }
-
-    fn warning_output_amount(&self) -> Option<Amount> {
-        let warning_tx_fee = self.prepared_tx_fee_rate?
-            .checked_mul_by_weight(SIGNED_WARNING_TX_WEIGHT)?;
-
-        self.escrow_amount()?.checked_sub(ANCHOR_AMOUNT)?.checked_sub(warning_tx_fee)
-    }
-
     pub fn redirection_amount_msat(&self) -> Option<u64> {
+        let split_input_amounts = [
+            self.trade_amount?, self.buyers_security_deposit?, self.sellers_security_deposit?,
+        ];
         let redirection_tx_base_fee = self.prepared_tx_fee_rate?.to_sat_per_kwu()
             .checked_mul(SIGNED_REDIRECT_TX_BASE_WEIGHT.to_wu())?;
 
-        self.warning_output_amount()?
+        WarningTxBuilder::escrow_amount(split_input_amounts, self.prepared_tx_fee_rate?)?
             .checked_sub(ANCHOR_AMOUNT)?
             .to_sat().checked_mul(1000)?
             .checked_sub(redirection_tx_base_fee)
@@ -314,6 +319,17 @@ impl TradeModel {
     pub fn aggregate_key_shares(&mut self) -> Result<()> {
         self.buyer_output_key_ctx.aggregate_key_shares()?;
         self.seller_output_key_ctx.aggregate_key_shares()?;
+
+        // FIXME: A little hacky to pull the merkle root from redirect tx SigCtx -- refactor:
+        let buyers_warning_output_merkle_root = self.sellers_redirect_tx_input_sig_ctx.merkle_root.as_ref();
+        let sellers_warning_output_merkle_root = self.buyers_redirect_tx_input_sig_ctx.merkle_root.as_ref();
+
+        let buyers_warning_escrow_address = self.seller_output_key_ctx.compute_p2tr_address(
+            buyers_warning_output_merkle_root)?;
+        let sellers_warning_escrow_address = self.buyer_output_key_ctx.compute_p2tr_address(
+            sellers_warning_output_merkle_root)?;
+        self.buyers_warning_tx_builder.set_escrow_address(buyers_warning_escrow_address);
+        self.sellers_warning_tx_builder.set_escrow_address(sellers_warning_escrow_address);
         Ok(())
     }
 
@@ -322,14 +338,14 @@ impl TradeModel {
         // TODO: Replace dummy addresses with real ones provided by a service, say by passing in a
         //  suitable service or context object. (Need to make the network configurable as well.)
         if self.am_buyer() {
-            self.buyers_warning_tx_fee_bump_address = Some("tb1pkar3gerekw8f9gef9vn9xz0qypytgacp9wa5saelpksdgct33qdqs257jl"
+            self.buyers_warning_tx_builder.set_anchor_address("tb1pkar3gerekw8f9gef9vn9xz0qypytgacp9wa5saelpksdgct33qdqs257jl"
                 .parse::<Address<_>>()?.require_network(Network::Signet)?);
             self.buyers_redirect_tx_fee_bump_address = Some("tb1pv537m7m6w0gdrcdn3mqqdpgrk3j400yrdrjwf5c9whyl2f8f4p6qg5eh2l"
                 .parse::<Address<_>>()?.require_network(Network::Signet)?);
             self.buyers_claim_tx_payout_address = Some("tb1pv537m7m6w0gdrcdn3mqqdpgrk3j400yrdrjwf5c9whyl2f8f4p6qg5eh2l"
                 .parse::<Address<_>>()?.require_network(Network::Signet)?);
         } else {
-            self.sellers_warning_tx_fee_bump_address = Some("tb1pzvynlely05x82u40cts3znctmvyskue74xa5zwy0t5ueuv92726s0cz8g8"
+            self.sellers_warning_tx_builder.set_anchor_address("tb1pzvynlely05x82u40cts3znctmvyskue74xa5zwy0t5ueuv92726s0cz8g8"
                 .parse::<Address<_>>()?.require_network(Network::Signet)?);
             self.sellers_redirect_tx_fee_bump_address = Some("tb1pt5xd4aqe9whmvlz78mt39rvdlgpp6hujs5ggwan5285zjnsf73rq8kunpq"
                 .parse::<Address<_>>()?.require_network(Network::Signet)?);
@@ -342,13 +358,13 @@ impl TradeModel {
     pub fn get_my_addresses(&self) -> Option<ExchangedAddresses<ByRef>> {
         Some(if self.am_buyer() {
             ExchangedAddresses {
-                warning_tx_fee_bump_address: self.buyers_warning_tx_fee_bump_address.as_ref()?,
+                warning_tx_fee_bump_address: self.buyers_warning_tx_builder.anchor_address().ok()?,
                 redirect_tx_fee_bump_address: self.buyers_redirect_tx_fee_bump_address.as_ref()?,
                 claim_tx_payout_address: self.buyers_claim_tx_payout_address.as_ref(),
             }
         } else {
             ExchangedAddresses {
-                warning_tx_fee_bump_address: self.sellers_warning_tx_fee_bump_address.as_ref()?,
+                warning_tx_fee_bump_address: self.sellers_warning_tx_builder.anchor_address().ok()?,
                 redirect_tx_fee_bump_address: self.sellers_redirect_tx_fee_bump_address.as_ref()?,
                 claim_tx_payout_address: self.sellers_claim_tx_payout_address.as_ref(),
             }
@@ -359,11 +375,11 @@ impl TradeModel {
         // TODO: Make the required network configurable and enforced to match the one above:
         let addresses = addresses.require_network(Network::Signet)?;
         if self.am_buyer() {
-            self.sellers_warning_tx_fee_bump_address = Some(addresses.warning_tx_fee_bump_address);
+            self.sellers_warning_tx_builder.set_anchor_address(addresses.warning_tx_fee_bump_address);
             self.sellers_redirect_tx_fee_bump_address = Some(addresses.redirect_tx_fee_bump_address);
             self.sellers_claim_tx_payout_address = addresses.claim_tx_payout_address;
         } else {
-            self.buyers_warning_tx_fee_bump_address = Some(addresses.warning_tx_fee_bump_address);
+            self.buyers_warning_tx_builder.set_anchor_address(addresses.warning_tx_fee_bump_address);
             self.buyers_redirect_tx_fee_bump_address = Some(addresses.redirect_tx_fee_bump_address);
             self.buyers_claim_tx_payout_address = addresses.claim_tx_payout_address;
         }
@@ -400,6 +416,39 @@ impl TradeModel {
         } else {
             self.buyers_half_deposit_psbt = Some(half_deposit_psbt);
         }
+    }
+
+    pub fn compute_unsigned_deposit_tx(&mut self) -> Result<()> {
+        self.check_unsigned_deposit_tx_is_knowable()?;
+        // TODO: These should really be computed earlier, at the point of key aggregation:
+        let buyer_payout_address = self.buyer_output_key_ctx.compute_p2tr_address(None)?;
+        let seller_payout_address = self.seller_output_key_ctx.compute_p2tr_address(None)?;
+
+        // TODO: Build a _real_ deposit tx, instead of just setting a null outpoint (txid:index) for
+        //  each of the buyer/seller payout TxOutputs passed to the warning tx builders. Only the
+        //  ScriptPubKeys and the payout amounts are correctly set here at present:
+        let buyer_payout = TxOutput(OutPoint::null(), TxOut {
+            value: self.buyers_security_deposit.ok_or(ProtocolErrorKind::MissingTxParams)?
+                .checked_add(self.trade_amount.ok_or(ProtocolErrorKind::MissingTxParams)?)
+                .ok_or(ProtocolErrorKind::MissingTxParams)?,
+            script_pubkey: buyer_payout_address.script_pubkey(),
+        });
+        let seller_payout = TxOutput(OutPoint::null(), TxOut {
+            value: self.sellers_security_deposit.ok_or(ProtocolErrorKind::MissingTxParams)?,
+            script_pubkey: seller_payout_address.script_pubkey(),
+        });
+
+        self.buyers_warning_tx_builder.set_buyer_input(buyer_payout.clone());
+        self.buyers_warning_tx_builder.set_seller_input(seller_payout.clone());
+        self.sellers_warning_tx_builder.set_buyer_input(buyer_payout);
+        self.sellers_warning_tx_builder.set_seller_input(seller_payout);
+        Ok(())
+    }
+
+    pub fn compute_unsigned_prepared_txs(&mut self) -> Result<()> {
+        self.buyers_warning_tx_builder.compute_unsigned_tx()?;
+        self.sellers_warning_tx_builder.compute_unsigned_tx()?;
+        Ok(())
     }
 
     pub fn set_redirection_receivers<I, E>(&mut self, receivers: I) -> Result<(), E>
@@ -524,15 +573,17 @@ impl TradeModel {
 
     #[instrument(skip_all)]
     pub fn sign_partial(&mut self) -> Result<()> {
-        self.check_unsigned_deposit_tx_is_known()?;
+        self.check_unsigned_deposit_tx_is_knowable()?;
         self.check_prepared_tx_params_are_known()?;
         // TODO: Make these dummy messages (sighashes for txs-to-sign) non-fixed, for greater realism:
         let [buyer_key_ctx, seller_key_ctx] = [&self.buyer_output_key_ctx, &self.seller_output_key_ctx];
 
         self.buyers_warning_tx_buyer_input_sig_ctx
-            .sign_partial(buyer_key_ctx, b"buyer's warning tx buyer input..".into())?;
+            .sign_partial(buyer_key_ctx, self.buyers_warning_tx_builder.buyer_input_sighash()?
+                .as_byte_array().into())?;
         self.sellers_warning_tx_buyer_input_sig_ctx
-            .sign_partial(buyer_key_ctx, b"seller's warning tx buyer input.".into())?;
+            .sign_partial(buyer_key_ctx, self.sellers_warning_tx_builder.buyer_input_sighash()?
+                .as_byte_array().into())?;
         self.buyers_redirect_tx_input_sig_ctx
             .sign_partial(buyer_key_ctx, b"buyer's redirect tx input.......".into())?;
         self.sellers_claim_tx_input_sig_ctx
@@ -540,9 +591,11 @@ impl TradeModel {
             .map_or_else(ProtocolErrorKind::skip_missing, |_| Ok(()))?;
 
         self.buyers_warning_tx_seller_input_sig_ctx
-            .sign_partial(seller_key_ctx, b"buyer's warning tx seller input.".into())?;
+            .sign_partial(seller_key_ctx, self.buyers_warning_tx_builder.seller_input_sighash()?
+                .as_byte_array().into())?;
         self.sellers_warning_tx_seller_input_sig_ctx
-            .sign_partial(seller_key_ctx, b"seller's warning tx seller input".into())?;
+            .sign_partial(seller_key_ctx, self.sellers_warning_tx_builder.seller_input_sighash()?
+                .as_byte_array().into())?;
         self.sellers_redirect_tx_input_sig_ctx
             .sign_partial(seller_key_ctx, b"seller's redirect tx input......".into())?;
         self.buyers_claim_tx_input_sig_ctx
@@ -785,6 +838,18 @@ impl KeyCtx {
             key_agg_ctx.with_unspendable_taproot_tweak()?
         })
     }
+
+    fn compute_p2tr_address(&self, merkle_root: Option<&TapNodeHash>) -> Result<Address> {
+        let pub_key: Point = self.compute_tweaked_key_agg_ctx(merkle_root)?.aggregated_pubkey();
+        // NOTE: We have to round-trip the public key because 'musig2' & 'bitcoin' currently use
+        // different versions of the 'secp256k1' crate:
+        let pub_key = PublicKey::from_slice(&pub_key.serialize_uncompressed())
+            .expect("curve point should have a valid uncompressed DER encoding").into();
+
+        // TODO: Make the network configurable:
+        // This is safe, as we just performed a Taproot tweak above (via the 'musig2::secp' crate):
+        Ok(Address::p2tr_tweaked(TweakedPublicKey::dangerous_assume_tweaked(pub_key), KnownHrp::Regtest))
+    }
 }
 
 impl SigCtx {
@@ -907,6 +972,7 @@ pub enum ProtocolErrorKind {
     InvalidSecretKeys(#[from] musig2::errors::InvalidSecretKeysError),
     ZeroScalar(#[from] musig2::secp::errors::ZeroScalarError),
     AddressParse(#[from] bdk_wallet::bitcoin::address::ParseError),
+    Transaction(#[from] crate::transaction::TransactionErrorKind),
 }
 
 impl ProtocolErrorKind {
