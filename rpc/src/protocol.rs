@@ -3,7 +3,6 @@ use bdk_wallet::bitcoin::hashes::Hash as _;
 use bdk_wallet::bitcoin::key::TweakedPublicKey;
 use bdk_wallet::bitcoin::{
     Address, Amount, FeeRate, Network, OutPoint, Psbt, PublicKey, TapNodeHash, TapSighash, TxOut,
-    Weight,
 };
 use musig2::adaptor::AdaptorSignature;
 use musig2::secp::{MaybePoint, MaybeScalar, Point, Scalar};
@@ -18,8 +17,8 @@ use tracing::{error, instrument, warn};
 
 use crate::storage::{ByOptVal, ByRef, ByVal, Storage, ValStorage};
 use crate::transaction::{
-    warning_output_merkle_root, TxOutput, WarningTxBuilder, ANCHOR_AMOUNT, REGTEST_CLAIM_LOCK_TIME,
-    REGTEST_WARNING_LOCK_TIME, SIGNED_REDIRECT_TX_BASE_WEIGHT,
+    warning_output_merkle_root, Receiver, TxOutput, WarningTxBuilder, ANCHOR_AMOUNT,
+    REGTEST_CLAIM_LOCK_TIME, REGTEST_WARNING_LOCK_TIME, SIGNED_REDIRECT_TX_BASE_WEIGHT,
 };
 
 pub trait TradeModelStore {
@@ -123,46 +122,6 @@ pub struct ExchangedSigs<'a, S: Storage> {
     pub peers_claim_tx_input_partial_signature: Option<S::Store<'a, PartialSignature>>,
     pub swap_tx_input_partial_signature: Option<S::Store<'a, PartialSignature>>,
     pub swap_tx_input_sighash: Option<S::Store<'a, TapSighash>>,
-}
-
-pub struct Receiver<V: NetworkValidation = NetworkChecked> {
-    pub address: Address<V>,
-    pub amount: Amount,
-}
-
-impl Receiver<NetworkUnchecked> {
-    fn require_network(self, required: Network) -> Result<Receiver> {
-        Ok(Receiver { address: self.address.require_network(required)?, amount: self.amount })
-    }
-}
-
-impl Receiver {
-    fn output_weight(&self) -> Weight {
-        Weight::from_vb_unchecked(self.address.script_pubkey().len() as u64 + 9)
-    }
-
-    fn output_cost_msat(&self, fee_rate: FeeRate) -> Option<u64> {
-        let amount_msat = self.amount.to_sat().checked_mul(1000)?;
-        let fee_msat = fee_rate.to_sat_per_kwu().checked_mul(self.output_weight().to_wu())?;
-        amount_msat.checked_add(fee_msat)
-    }
-
-    fn total_output_cost_msat<'a, I>(receivers: I, fee_rate: FeeRate, extra_output_num: u16) -> Option<u64>
-        where I: IntoIterator<Item=&'a Self>
-    {
-        let mut cost = 0u64;
-        let mut num = extra_output_num;
-        for receiver in receivers {
-            cost = cost.checked_add(receiver.output_cost_msat(fee_rate)?)?;
-            // Fail if more than 65535 outputs, which will never happen for a standard tx:
-            num = num.checked_add(1)?;
-        }
-        if num > 252 {
-            // For more than 252 outputs, we get a 3-byte length encoding instead of 1, adding 8 wu.
-            cost = cost.checked_add(fee_rate.to_sat_per_kwu().checked_mul(8)?)?;
-        }
-        Some(cost)
-    }
 }
 
 pub struct KeyPair<PrvKey: ValStorage = ByVal> {
@@ -458,7 +417,7 @@ impl TradeModel {
         // TODO: Make the required network configurable and enforced to match the ones above.
         let mut vec = Vec::new();
         for receiver in receivers {
-            vec.push(receiver?.require_network(Network::Signet)?);
+            vec.push(receiver?.require_network(Network::Signet).map_err(ProtocolErrorKind::from)?);
         }
         vec.shrink_to_fit();
         self.redirection_receivers = Some(vec);

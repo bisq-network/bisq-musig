@@ -16,9 +16,10 @@ use crate::pb::walletrpc::{
     ConfEvent, ConfidenceType, ConfirmationBlockTime, TransactionOutput, WalletBalanceResponse,
 };
 use crate::protocol::{
-    ExchangedAddresses, ExchangedNonces, ExchangedSigs, ProtocolErrorKind, Receiver, Role,
+    ExchangedAddresses, ExchangedNonces, ExchangedSigs, ProtocolErrorKind, Role,
 };
 use crate::storage::{ByRef, ByVal};
+use crate::transaction::Receiver;
 use crate::wallet::TxConfidence;
 
 pub(crate) mod hex {
