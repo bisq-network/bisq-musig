@@ -2,7 +2,7 @@ use bdk_wallet::bitcoin::address::{KnownHrp, NetworkChecked, NetworkUnchecked, N
 use bdk_wallet::bitcoin::hashes::Hash as _;
 use bdk_wallet::bitcoin::key::TweakedPublicKey;
 use bdk_wallet::bitcoin::{
-    Address, Amount, FeeRate, Network, OutPoint, Psbt, PublicKey, TapNodeHash, TapSighash, TxOut,
+    Address, Amount, FeeRate, Network, Psbt, PublicKey, TapNodeHash, TapSighash,
 };
 use musig2::adaptor::AdaptorSignature;
 use musig2::secp::{MaybePoint, MaybeScalar, Point, Scalar};
@@ -17,8 +17,9 @@ use tracing::{error, instrument, warn};
 
 use crate::storage::{ByOptVal, ByRef, ByVal, Storage, ValStorage};
 use crate::transaction::{
-    warning_output_merkle_root, Receiver, TxOutput, WarningTxBuilder, ANCHOR_AMOUNT,
-    REGTEST_CLAIM_LOCK_TIME, REGTEST_WARNING_LOCK_TIME, SIGNED_REDIRECT_TX_BASE_WEIGHT,
+    empty_dummy_psbt, warning_output_merkle_root, DepositTxBuilder, Receiver, WarningTxBuilder,
+    ANCHOR_AMOUNT, REGTEST_CLAIM_LOCK_TIME, REGTEST_WARNING_LOCK_TIME,
+    SIGNED_REDIRECT_TX_BASE_WEIGHT,
 };
 
 pub trait TradeModelStore {
@@ -45,20 +46,14 @@ pub static TRADE_MODELS: LazyLock<TradeModelMemoryStore> = LazyLock::new(|| Mute
 pub struct TradeModel {
     trade_id: String,
     my_role: Role,
-    pub trade_amount: Option<Amount>,
-    pub buyers_security_deposit: Option<Amount>,
-    pub sellers_security_deposit: Option<Amount>,
-    deposit_tx_fee_rate: Option<FeeRate>,
+    deposit_tx_builder: DepositTxBuilder,
     prepared_tx_fee_rate: Option<FeeRate>,
-    pub trade_fee_receiver: Option<Receiver>,
     buyer_output_key_ctx: KeyCtx,
     seller_output_key_ctx: KeyCtx,
     buyers_redirect_tx_fee_bump_address: Option<Address>,
     sellers_redirect_tx_fee_bump_address: Option<Address>,
     buyers_claim_tx_payout_address: Option<Address>,
     sellers_claim_tx_payout_address: Option<Address>,
-    buyers_half_deposit_psbt: Option<Psbt>,
-    sellers_half_deposit_psbt: Option<Psbt>,
     redirection_receivers: Option<Vec<Receiver>>,
     buyers_warning_tx_builder: WarningTxBuilder,
     sellers_warning_tx_builder: WarningTxBuilder,
@@ -184,9 +179,9 @@ impl TradeModel {
         matches!(self.my_role, Role::BuyerAsMaker | Role::BuyerAsTaker)
     }
 
-    const fn check_deposit_tx_params_are_known(&self) -> Result<()> {
-        if self.trade_amount.is_none() || self.buyers_security_deposit.is_none() ||
-            self.sellers_security_deposit.is_none() || self.deposit_tx_fee_rate.is_none() {
+    fn check_deposit_tx_params_are_known(&self) -> Result<()> {
+        if self.deposit_tx_builder.trade_amount().is_err() || self.deposit_tx_builder.buyers_security_deposit().is_err() ||
+            self.deposit_tx_builder.sellers_security_deposit().is_err() || self.deposit_tx_builder.fee_rate().is_err() {
             return Err(ProtocolErrorKind::MissingTxParams);
         }
         Ok(())
@@ -204,15 +199,20 @@ impl TradeModel {
         Ok(())
     }
 
-    const fn check_unsigned_deposit_tx_is_knowable(&self) -> Result<()> {
-        if self.buyers_half_deposit_psbt.is_none() || self.sellers_half_deposit_psbt.is_none() {
-            return Err(ProtocolErrorKind::MissingDepositPsbt);
-        }
-        Ok(())
+    pub fn set_trade_amount(&mut self, trade_amount: Amount) {
+        self.deposit_tx_builder.set_trade_amount(trade_amount);
+    }
+
+    pub fn set_buyers_security_deposit(&mut self, buyers_security_deposit: Amount) {
+        self.deposit_tx_builder.set_buyers_security_deposit(buyers_security_deposit);
+    }
+
+    pub fn set_sellers_security_deposit(&mut self, sellers_security_deposit: Amount) {
+        self.deposit_tx_builder.set_sellers_security_deposit(sellers_security_deposit);
     }
 
     pub fn set_deposit_tx_fee_rate(&mut self, fee_rate: FeeRate) {
-        self.deposit_tx_fee_rate.get_or_insert(fee_rate);
+        self.deposit_tx_builder.set_fee_rate(fee_rate);
     }
 
     pub fn set_prepared_tx_fee_rate(&mut self, fee_rate: FeeRate) {
@@ -223,14 +223,17 @@ impl TradeModel {
 
     pub fn set_trade_fee_receiver(&mut self, receiver: Option<Receiver<NetworkUnchecked>>) -> Result<()> {
         // TODO: Make the required network configurable:
-        self.trade_fee_receiver = receiver
-            .map(|r| r.require_network(Network::Signet)).transpose()?;
+        self.deposit_tx_builder.set_trade_fee_receivers(receiver
+            .map(|r| r.require_network(Network::Signet)).transpose()?
+            .into_iter().collect());
         Ok(())
     }
 
     pub fn redirection_amount_msat(&self) -> Option<u64> {
         let split_input_amounts = [
-            self.trade_amount?, self.buyers_security_deposit?, self.sellers_security_deposit?,
+            *self.deposit_tx_builder.trade_amount().ok()?,
+            *self.deposit_tx_builder.buyers_security_deposit().ok()?,
+            *self.deposit_tx_builder.sellers_security_deposit().ok()?,
         ];
         let redirection_tx_base_fee = self.prepared_tx_fee_rate?.to_sat_per_kwu()
             .checked_mul(SIGNED_REDIRECT_TX_BASE_WEIGHT.to_wu())?;
@@ -278,6 +281,11 @@ impl TradeModel {
     pub fn aggregate_key_shares(&mut self) -> Result<()> {
         self.buyer_output_key_ctx.aggregate_key_shares()?;
         self.seller_output_key_ctx.aggregate_key_shares()?;
+
+        let buyer_payout_address = self.buyer_output_key_ctx.compute_p2tr_address(None)?;
+        let seller_payout_address = self.seller_output_key_ctx.compute_p2tr_address(None)?;
+        self.deposit_tx_builder.set_buyer_payout_address(buyer_payout_address);
+        self.deposit_tx_builder.set_seller_payout_address(seller_payout_address);
 
         // FIXME: A little hacky to pull the merkle root from redirect tx SigCtx -- refactor:
         let buyers_warning_output_merkle_root = self.sellers_redirect_tx_input_sig_ctx.merkle_root.as_ref();
@@ -345,57 +353,36 @@ impl TradeModel {
         Ok(())
     }
 
-    //noinspection SpellCheckingInspection
     pub fn init_my_half_deposit_psbt(&mut self) -> Result<()> {
         self.check_deposit_tx_params_are_known()?;
-        // TODO: Replace dummy PSBT with real one provided by a service, say by passing in a
-        //  suitable service or context object.
-        let empty_psbt = "cHNidP8BAAoAAAAAAAAAAAAAAA==".parse()
-            .expect("hardcoded PSBT should be valid");
-
         if self.am_buyer() {
-            self.buyers_half_deposit_psbt = Some(empty_psbt);
+            self.deposit_tx_builder.set_buyers_half_psbt(empty_dummy_psbt());
         } else {
-            self.sellers_half_deposit_psbt = Some(empty_psbt);
+            self.deposit_tx_builder.set_sellers_half_psbt(empty_dummy_psbt());
         }
         Ok(())
     }
 
-    pub const fn get_my_half_deposit_psbt(&self) -> Option<&Psbt> {
+    pub fn get_my_half_deposit_psbt(&self) -> Option<&Psbt> {
         if self.am_buyer() {
-            self.buyers_half_deposit_psbt.as_ref()
+            self.deposit_tx_builder.buyers_half_psbt().ok()
         } else {
-            self.sellers_half_deposit_psbt.as_ref()
+            self.deposit_tx_builder.sellers_half_psbt().ok()
         }
     }
 
     pub fn set_peer_half_deposit_psbt(&mut self, half_deposit_psbt: Psbt) {
         if self.am_buyer() {
-            self.sellers_half_deposit_psbt = Some(half_deposit_psbt);
+            self.deposit_tx_builder.set_sellers_half_psbt(half_deposit_psbt);
         } else {
-            self.buyers_half_deposit_psbt = Some(half_deposit_psbt);
+            self.deposit_tx_builder.set_buyers_half_psbt(half_deposit_psbt);
         }
     }
 
     pub fn compute_unsigned_deposit_tx(&mut self) -> Result<()> {
-        self.check_unsigned_deposit_tx_is_knowable()?;
-        // TODO: These should really be computed earlier, at the point of key aggregation:
-        let buyer_payout_address = self.buyer_output_key_ctx.compute_p2tr_address(None)?;
-        let seller_payout_address = self.seller_output_key_ctx.compute_p2tr_address(None)?;
-
-        // TODO: Build a _real_ deposit tx, instead of just setting a null outpoint (txid:index) for
-        //  each of the buyer/seller payout TxOutputs passed to the warning tx builders. Only the
-        //  ScriptPubKeys and the payout amounts are correctly set here at present:
-        let buyer_payout = TxOutput(OutPoint::null(), TxOut {
-            value: self.buyers_security_deposit.ok_or(ProtocolErrorKind::MissingTxParams)?
-                .checked_add(self.trade_amount.ok_or(ProtocolErrorKind::MissingTxParams)?)
-                .ok_or(ProtocolErrorKind::MissingTxParams)?,
-            script_pubkey: buyer_payout_address.script_pubkey(),
-        });
-        let seller_payout = TxOutput(OutPoint::null(), TxOut {
-            value: self.sellers_security_deposit.ok_or(ProtocolErrorKind::MissingTxParams)?,
-            script_pubkey: seller_payout_address.script_pubkey(),
-        });
+        self.deposit_tx_builder.compute_unsigned_tx()?;
+        let buyer_payout = self.deposit_tx_builder.buyer_payout()?;
+        let seller_payout = self.deposit_tx_builder.seller_payout()?;
 
         self.buyers_warning_tx_builder.set_buyer_input(buyer_payout.clone());
         self.buyers_warning_tx_builder.set_seller_input(seller_payout.clone());
@@ -532,7 +519,6 @@ impl TradeModel {
 
     #[instrument(skip_all)]
     pub fn sign_partial(&mut self) -> Result<()> {
-        self.check_unsigned_deposit_tx_is_knowable()?;
         self.check_prepared_tx_params_are_known()?;
         // TODO: Make these dummy messages (sighashes for txs-to-sign) non-fixed, for greater realism:
         let [buyer_key_ctx, seller_key_ctx] = [&self.buyer_output_key_ctx, &self.seller_output_key_ctx];

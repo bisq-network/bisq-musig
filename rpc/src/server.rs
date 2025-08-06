@@ -58,9 +58,9 @@ impl musig_server::Musig for MusigImpl {
                 request.buyer_output_peers_pub_key_share.try_proto_into()?,
                 request.seller_output_peers_pub_key_share.try_proto_into()?);
             trade_model.aggregate_key_shares()?;
-            trade_model.trade_amount = Some(Amount::from_sat(request.trade_amount));
-            trade_model.buyers_security_deposit = Some(Amount::from_sat(request.buyers_security_deposit));
-            trade_model.sellers_security_deposit = Some(Amount::from_sat(request.sellers_security_deposit));
+            trade_model.set_trade_amount(Amount::from_sat(request.trade_amount));
+            trade_model.set_buyers_security_deposit(Amount::from_sat(request.buyers_security_deposit));
+            trade_model.set_sellers_security_deposit(Amount::from_sat(request.sellers_security_deposit));
             trade_model.set_deposit_tx_fee_rate(FeeRate::from_sat_per_kwu(request.deposit_tx_fee_rate));
             trade_model.set_prepared_tx_fee_rate(FeeRate::from_sat_per_kwu(request.prepared_tx_fee_rate));
             trade_model.set_trade_fee_receiver(request.trade_fee_receiver.try_proto_into()?)?;
