@@ -17,9 +17,9 @@ use tracing::{error, instrument, warn};
 
 use crate::storage::{ByOptVal, ByRef, ByVal, Storage, ValStorage};
 use crate::transaction::{
-    empty_dummy_psbt, warning_output_merkle_root, DepositTxBuilder, Receiver, WarningTxBuilder,
-    ANCHOR_AMOUNT, REGTEST_CLAIM_LOCK_TIME, REGTEST_WARNING_LOCK_TIME,
-    SIGNED_REDIRECT_TX_BASE_WEIGHT,
+    empty_dummy_psbt, warning_output_merkle_root, DepositTxBuilder, Receiver, ReceiverList,
+    RedirectTxBuilder, WarningTxBuilder, ANCHOR_AMOUNT, REGTEST_CLAIM_LOCK_TIME,
+    REGTEST_WARNING_LOCK_TIME, SIGNED_REDIRECT_TX_BASE_WEIGHT,
 };
 
 pub trait TradeModelStore {
@@ -50,13 +50,13 @@ pub struct TradeModel {
     prepared_tx_fee_rate: Option<FeeRate>,
     buyer_output_key_ctx: KeyCtx,
     seller_output_key_ctx: KeyCtx,
-    buyers_redirect_tx_fee_bump_address: Option<Address>,
-    sellers_redirect_tx_fee_bump_address: Option<Address>,
     buyers_claim_tx_payout_address: Option<Address>,
     sellers_claim_tx_payout_address: Option<Address>,
-    redirection_receivers: Option<Vec<Receiver>>,
+    redirection_receivers: Option<ReceiverList>,
     buyers_warning_tx_builder: WarningTxBuilder,
     sellers_warning_tx_builder: WarningTxBuilder,
+    buyers_redirect_tx_builder: RedirectTxBuilder,
+    sellers_redirect_tx_builder: RedirectTxBuilder,
     swap_tx_input_sighash: Option<TapSighash>,
     swap_tx_input_sig_ctx: SigCtx,
     buyers_warning_tx_buyer_input_sig_ctx: SigCtx,
@@ -189,7 +189,7 @@ impl TradeModel {
 
     fn check_prepared_tx_params_are_known(&self) -> Result<()> {
         if self.buyers_warning_tx_builder.anchor_address().is_err() || self.sellers_warning_tx_builder.anchor_address().is_err() ||
-            self.buyers_redirect_tx_fee_bump_address.is_none() || self.sellers_redirect_tx_fee_bump_address.is_none() ||
+            self.buyers_redirect_tx_builder.anchor_address().is_err() || self.sellers_redirect_tx_builder.anchor_address().is_err() ||
             self.redirection_receivers.is_none() || self.prepared_tx_fee_rate.is_none() {
             return Err(ProtocolErrorKind::MissingTxParams);
         }
@@ -307,14 +307,14 @@ impl TradeModel {
         if self.am_buyer() {
             self.buyers_warning_tx_builder.set_anchor_address("tb1pkar3gerekw8f9gef9vn9xz0qypytgacp9wa5saelpksdgct33qdqs257jl"
                 .parse::<Address<_>>()?.require_network(Network::Signet)?);
-            self.buyers_redirect_tx_fee_bump_address = Some("tb1pv537m7m6w0gdrcdn3mqqdpgrk3j400yrdrjwf5c9whyl2f8f4p6qg5eh2l"
+            self.buyers_redirect_tx_builder.set_anchor_address("tb1pv537m7m6w0gdrcdn3mqqdpgrk3j400yrdrjwf5c9whyl2f8f4p6qg5eh2l"
                 .parse::<Address<_>>()?.require_network(Network::Signet)?);
             self.buyers_claim_tx_payout_address = Some("tb1pv537m7m6w0gdrcdn3mqqdpgrk3j400yrdrjwf5c9whyl2f8f4p6qg5eh2l"
                 .parse::<Address<_>>()?.require_network(Network::Signet)?);
         } else {
             self.sellers_warning_tx_builder.set_anchor_address("tb1pzvynlely05x82u40cts3znctmvyskue74xa5zwy0t5ueuv92726s0cz8g8"
                 .parse::<Address<_>>()?.require_network(Network::Signet)?);
-            self.sellers_redirect_tx_fee_bump_address = Some("tb1pt5xd4aqe9whmvlz78mt39rvdlgpp6hujs5ggwan5285zjnsf73rq8kunpq"
+            self.sellers_redirect_tx_builder.set_anchor_address("tb1pt5xd4aqe9whmvlz78mt39rvdlgpp6hujs5ggwan5285zjnsf73rq8kunpq"
                 .parse::<Address<_>>()?.require_network(Network::Signet)?);
             self.sellers_claim_tx_payout_address = Some("tb1pt5xd4aqe9whmvlz78mt39rvdlgpp6hujs5ggwan5285zjnsf73rq8kunpq"
                 .parse::<Address<_>>()?.require_network(Network::Signet)?);
@@ -326,13 +326,13 @@ impl TradeModel {
         Some(if self.am_buyer() {
             ExchangedAddresses {
                 warning_tx_fee_bump_address: self.buyers_warning_tx_builder.anchor_address().ok()?,
-                redirect_tx_fee_bump_address: self.buyers_redirect_tx_fee_bump_address.as_ref()?,
+                redirect_tx_fee_bump_address: self.buyers_redirect_tx_builder.anchor_address().ok()?,
                 claim_tx_payout_address: self.buyers_claim_tx_payout_address.as_ref(),
             }
         } else {
             ExchangedAddresses {
                 warning_tx_fee_bump_address: self.sellers_warning_tx_builder.anchor_address().ok()?,
-                redirect_tx_fee_bump_address: self.sellers_redirect_tx_fee_bump_address.as_ref()?,
+                redirect_tx_fee_bump_address: self.sellers_redirect_tx_builder.anchor_address().ok()?,
                 claim_tx_payout_address: self.sellers_claim_tx_payout_address.as_ref(),
             }
         })
@@ -343,11 +343,11 @@ impl TradeModel {
         let addresses = addresses.require_network(Network::Signet)?;
         if self.am_buyer() {
             self.sellers_warning_tx_builder.set_anchor_address(addresses.warning_tx_fee_bump_address);
-            self.sellers_redirect_tx_fee_bump_address = Some(addresses.redirect_tx_fee_bump_address);
+            self.sellers_redirect_tx_builder.set_anchor_address(addresses.redirect_tx_fee_bump_address);
             self.sellers_claim_tx_payout_address = addresses.claim_tx_payout_address;
         } else {
             self.buyers_warning_tx_builder.set_anchor_address(addresses.warning_tx_fee_bump_address);
-            self.buyers_redirect_tx_fee_bump_address = Some(addresses.redirect_tx_fee_bump_address);
+            self.buyers_redirect_tx_builder.set_anchor_address(addresses.redirect_tx_fee_bump_address);
             self.buyers_claim_tx_payout_address = addresses.claim_tx_payout_address;
         }
         Ok(())
@@ -394,6 +394,14 @@ impl TradeModel {
     pub fn compute_unsigned_prepared_txs(&mut self) -> Result<()> {
         self.buyers_warning_tx_builder.compute_unsigned_tx()?;
         self.sellers_warning_tx_builder.compute_unsigned_tx()?;
+        let buyers_warning_escrow = self.buyers_warning_tx_builder.escrow()?;
+        let sellers_warning_escrow = self.sellers_warning_tx_builder.escrow()?;
+
+        self.buyers_redirect_tx_builder.set_input(sellers_warning_escrow);
+        self.sellers_redirect_tx_builder.set_input(buyers_warning_escrow);
+
+        self.buyers_redirect_tx_builder.compute_unsigned_tx()?;
+        self.sellers_redirect_tx_builder.compute_unsigned_tx()?;
         Ok(())
     }
 
@@ -406,16 +414,18 @@ impl TradeModel {
         for receiver in receivers {
             vec.push(receiver?.require_network(Network::Signet).map_err(ProtocolErrorKind::from)?);
         }
-        vec.shrink_to_fit();
-        self.redirection_receivers = Some(vec);
+        let receivers: ReceiverList = vec.into();
+        self.redirection_receivers = Some(receivers.clone());
+        self.buyers_redirect_tx_builder.set_receivers(receivers.clone());
+        self.sellers_redirect_tx_builder.set_receivers(receivers);
         Ok(())
     }
 
     #[instrument(skip_all)]
     pub fn check_redirect_tx_params(&self) -> Result<()> {
         // FIXME: Don't falsely report overflows & invalid params as missing-param errors:
-        let receivers = self.redirection_receivers.as_ref()
-            .ok_or(ProtocolErrorKind::MissingTxParams)?;
+        let receivers = &self.redirection_receivers.as_ref()
+            .ok_or(ProtocolErrorKind::MissingTxParams)?[..];
         let fee_rate = self.prepared_tx_fee_rate
             .ok_or(ProtocolErrorKind::MissingTxParams)?;
         let expected_redirection_amount_msat = self.redirection_amount_msat()
@@ -530,7 +540,8 @@ impl TradeModel {
             .sign_partial(buyer_key_ctx, self.sellers_warning_tx_builder.buyer_input_sighash()?
                 .as_byte_array().into())?;
         self.buyers_redirect_tx_input_sig_ctx
-            .sign_partial(buyer_key_ctx, b"buyer's redirect tx input.......".into())?;
+            .sign_partial(buyer_key_ctx, self.buyers_redirect_tx_builder.input_sighash()?
+                .as_byte_array().into())?;
         self.sellers_claim_tx_input_sig_ctx
             .sign_partial(buyer_key_ctx, b"seller's claim tx input.........".into())
             .map_or_else(ProtocolErrorKind::skip_missing, |_| Ok(()))?;
@@ -542,7 +553,8 @@ impl TradeModel {
             .sign_partial(seller_key_ctx, self.sellers_warning_tx_builder.seller_input_sighash()?
                 .as_byte_array().into())?;
         self.sellers_redirect_tx_input_sig_ctx
-            .sign_partial(seller_key_ctx, b"seller's redirect tx input......".into())?;
+            .sign_partial(seller_key_ctx, self.sellers_redirect_tx_builder.input_sighash()?
+                .as_byte_array().into())?;
         self.buyers_claim_tx_input_sig_ctx
             .sign_partial(seller_key_ctx, b"buyers's claim tx input.........".into())
             .map_or_else(ProtocolErrorKind::skip_missing, |_| Ok(()))?;

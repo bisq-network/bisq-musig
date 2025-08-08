@@ -6,11 +6,12 @@ use bdk_wallet::bitcoin::taproot::TaprootBuilder;
 use bdk_wallet::bitcoin::transaction::Version;
 use bdk_wallet::bitcoin::{
     absolute, relative, script, Address, Amount, FeeRate, Network, OutPoint, Psbt, ScriptBuf,
-    TapNodeHash, TapSighash, TapSighashType, Transaction, TxIn, TxOut, Txid, Weight,
+    Sequence, TapNodeHash, TapSighash, TapSighashType, Transaction, TxIn, TxOut, Txid, Weight,
     XOnlyPublicKey,
 };
 use paste::paste;
 use relative::LockTime;
+use std::sync::Arc;
 use thiserror::Error;
 
 pub const REGTEST_WARNING_LOCK_TIME: LockTime = LockTime::from_height(5);
@@ -59,9 +60,7 @@ impl Receiver<NetworkUnchecked> {
 }
 
 impl Receiver {
-    fn output_weight(&self) -> Weight {
-        Weight::from_vb_unchecked(self.address.script_pubkey().len() as u64 + 9)
-    }
+    fn output_weight(&self) -> Weight { TxOut::from(self).weight() }
 
     fn output_cost_msat(&self, fee_rate: FeeRate) -> Option<u64> {
         let amount_msat = self.amount.to_sat().checked_mul(1000)?;
@@ -84,6 +83,12 @@ impl Receiver {
             cost = cost.checked_add(fee_rate.to_sat_per_kwu().checked_mul(8)?)?;
         }
         Some(cost)
+    }
+}
+
+impl From<&Receiver> for TxOut {
+    fn from(value: &Receiver) -> Self {
+        Self { value: value.amount, script_pubkey: value.address.script_pubkey() }
     }
 }
 
@@ -118,7 +123,7 @@ macro_rules! make_getter_setter {
 #[derive(Clone)]
 pub struct TxOutput(OutPoint, TxOut);
 
-type ReceiverList = Vec<Receiver>;
+pub type ReceiverList = Arc<[Receiver]>;
 
 //noinspection SpellCheckingInspection
 const MOCK_DEPOSIT_TXID: &str = "ea824fbd25dfaf768d2a4d2de11090063fb79b4950b1bc4f5f47aabe9d929040";
@@ -250,6 +255,13 @@ impl WarningTxBuilder {
         Ok(self)
     }
 
+    pub fn escrow(&self) -> Result<TxOutput> {
+        let txid = self.unsigned_tx()?.compute_txid();
+        let output = self.unsigned_tx()?.tx_out(0)
+            .expect("warning tx output list should be nonempty");
+        Ok(TxOutput(OutPoint::new(txid, 0), output.clone()))
+    }
+
     fn sighash(&self, input_index: usize) -> Result<TapSighash> {
         let prevouts = [&self.buyer_input()?.1, &self.seller_input()?.1];
         let prevouts = Prevouts::All(&prevouts);
@@ -260,6 +272,52 @@ impl WarningTxBuilder {
     pub fn buyer_input_sighash(&self) -> Result<TapSighash> { self.sighash(0) }
 
     pub fn seller_input_sighash(&self) -> Result<TapSighash> { self.sighash(1) }
+}
+
+#[derive(Default)]
+pub struct RedirectTxBuilder {
+    // Supplied fields:
+    input: Option<TxOutput>,
+    receivers: Option<ReceiverList>,
+    anchor_address: Option<Address>,
+    // Derived fields:
+    unsigned_tx: Option<Transaction>,
+}
+
+impl RedirectTxBuilder {
+    make_getter_setter!(input: TxOutput);
+    make_getter_setter!(receivers: ReceiverList);
+    make_getter_setter!(anchor_address: Address);
+    make_getter!(unsigned_tx: Transaction);
+
+    pub fn compute_unsigned_tx(&mut self) -> Result<&mut Self> {
+        let input = vec![TxIn {
+            previous_output: self.input()?.0,
+            sequence: Sequence::ENABLE_RBF_NO_LOCKTIME,
+            ..TxIn::default()
+        }];
+        let mut output = Vec::with_capacity(self.receivers()?.len() + 1);
+        output.extend(self.receivers()?.iter().map(TxOut::from));
+        output.push(TxOut {
+            value: ANCHOR_AMOUNT,
+            script_pubkey: self.anchor_address()?.script_pubkey(),
+        });
+        let tx = Transaction {
+            version: Version::TWO,
+            lock_time: absolute::LockTime::ZERO,
+            input,
+            output,
+        };
+        self.unsigned_tx.get_or_insert(tx);
+        Ok(self)
+    }
+
+    pub fn input_sighash(&self) -> Result<TapSighash> {
+        let prevouts = [&self.input()?.1];
+        let prevouts = Prevouts::All(&prevouts);
+        let mut cache = SighashCache::new(self.unsigned_tx()?);
+        Ok(cache.taproot_key_spend_signature_hash(0, &prevouts, TapSighashType::All)?)
+    }
 }
 
 type Result<T, E = TransactionErrorKind> = std::result::Result<T, E>;
@@ -346,14 +404,12 @@ mod tests {
     fn test_warning_tx_builder() -> Result<()> {
         let deposit_tx = tx!(SIGNED_DEPOSIT_TX);
         let warning_tx = tx!(SIGNED_SELLERS_WARNING_TX);
-        let redirect_tx = tx!(SIGNED_BUYERS_REDIRECT_TX);
 
-        let [deposit_txid, warning_txid, redirect_txid] = [&deposit_tx, &warning_tx, &redirect_tx]
+        let [deposit_txid, warning_txid] = [&deposit_tx, &warning_tx]
             .map(Transaction::compute_txid);
 
         assert_eq!(MOCK_DEPOSIT_TXID, deposit_txid.to_string());
         assert_eq!("ea08112e10458e6ebc101bd10e926740aff260d03f94fc4401377d128e4d6349", warning_txid.to_string());
-        assert_eq!("8f0901c700f1692d56cdd0e059b822d0ee5e983fc5897f69eba3592a4728ba30", redirect_txid.to_string());
 
         let builder = filled_warning_tx_builder(&filled_deposit_tx_builder()?)?;
         let unsigned_tx = builder.unsigned_tx()?;
@@ -362,6 +418,24 @@ mod tests {
         assert_eq!(warning_txid, unsigned_tx.compute_txid());
         // TODO: Check that the sighashes are correct.
         dbg!(sighashes);
+        Ok(())
+    }
+
+    //noinspection SpellCheckingInspection
+    #[test]
+    fn test_redirect_tx_builder() -> Result<()> {
+        let redirect_tx = tx!(SIGNED_BUYERS_REDIRECT_TX);
+        let redirect_txid = redirect_tx.compute_txid();
+        assert_eq!("8f0901c700f1692d56cdd0e059b822d0ee5e983fc5897f69eba3592a4728ba30", redirect_txid.to_string());
+
+        let builder = filled_redirect_tx_builder(
+            &filled_warning_tx_builder(&filled_deposit_tx_builder()?)?)?;
+        let unsigned_tx = builder.unsigned_tx()?;
+        let sighash = builder.input_sighash()?;
+
+        assert_eq!(redirect_txid, unsigned_tx.compute_txid());
+        // TODO: Check that the sighash is correct.
+        dbg!(sighash);
         Ok(())
     }
 
@@ -379,7 +453,7 @@ mod tests {
             .set_sellers_security_deposit(Amount::from_sat(20_000_000))
             .set_buyer_payout_address(buyer_payout_address.clone())
             .set_seller_payout_address(seller_payout_address.clone())
-            .set_trade_fee_receivers(vec![])
+            .set_trade_fee_receivers(ReceiverList::default())
             .set_fee_rate(FeeRate::from_sat_per_kwu(5158)) // gives 7325-sat absolute fee
             .set_buyers_half_psbt(empty_dummy_psbt())
             .set_sellers_half_psbt(empty_dummy_psbt())
@@ -402,6 +476,28 @@ mod tests {
             .set_anchor_address(anchor_address)
             .set_warning_lock_time(LockTime::from_height(2))
             .set_fee_rate(FeeRate::from_sat_per_kwu(1182)) // gives 1000-sat absolute fee
+            .compute_unsigned_tx()?;
+        Ok(builder)
+    }
+
+    //noinspection SpellCheckingInspection
+    fn filled_redirect_tx_builder(warning_tx_builder: &WarningTxBuilder) -> Result<RedirectTxBuilder> {
+        let receiver_address1 = "bcrt1p88h9s6lq8jw3ehdlljp7sa85kwpp9lvyrl077twvjnackk4lxt0sffnlrk"
+            .parse::<Address<_>>()?.require_network(Network::Regtest)?;
+        let receiver_address2 = "bcrt1phhl8d90r9haqwtvw2cv4ryjl8tlnqrv48nhpy7yyks5du6mr66xq5nlwhz"
+            .parse::<Address<_>>()?.require_network(Network::Regtest)?;
+        let anchor_address = "bcrt1pu3ukrwj0y6ltt5teax86k6gasyyl398932qjwxytr9zww4q4w96q8thzu9"
+            .parse::<Address<_>>()?.require_network(Network::Regtest)?;
+        let receivers = [
+            Receiver { address: receiver_address1, amount: Amount::from_sat(95_998_600) },
+            Receiver { address: receiver_address2, amount: Amount::from_sat(63_999_068) },
+        ];
+
+        let mut builder = RedirectTxBuilder::default();
+        builder
+            .set_input(warning_tx_builder.escrow()?)
+            .set_receivers(Arc::new(receivers))
+            .set_anchor_address(anchor_address)
             .compute_unsigned_tx()?;
         Ok(builder)
     }
