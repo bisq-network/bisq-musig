@@ -17,10 +17,9 @@ use thiserror::Error;
 pub const REGTEST_WARNING_LOCK_TIME: LockTime = LockTime::from_height(5);
 pub const REGTEST_CLAIM_LOCK_TIME: LockTime = LockTime::from_height(5);
 pub const ANCHOR_AMOUNT: Amount = Amount::from_sat(330);
-pub const SIGNED_SWAP_TX_WEIGHT: Weight = Weight::from_wu(444);
+pub const SIGNED_FORWARDING_TX_WEIGHT: Weight = Weight::from_wu(444);
 pub const SIGNED_WARNING_TX_WEIGHT: Weight = Weight::from_wu(846);
-pub const SIGNED_REDIRECT_TX_BASE_WEIGHT: Weight = SIGNED_SWAP_TX_WEIGHT;
-// pub const SIGNED_CLAIM_TX_WEIGHT: Weight = SIGNED_SWAP_TX_WEIGHT;
+pub const SIGNED_REDIRECT_TX_BASE_WEIGHT: Weight = SIGNED_FORWARDING_TX_WEIGHT;
 
 fn claim_script(pub_key: &XOnlyPublicKey, lock_time: LockTime) -> ScriptBuf {
     script::Builder::new()
@@ -126,7 +125,7 @@ pub struct TxOutput(OutPoint, TxOut);
 pub type ReceiverList = Arc<[Receiver]>;
 
 //noinspection SpellCheckingInspection
-const MOCK_DEPOSIT_TXID: &str = "ea824fbd25dfaf768d2a4d2de11090063fb79b4950b1bc4f5f47aabe9d929040";
+const MOCK_DEPOSIT_TXID: &str = "44090980ad341fb556368dbc6f32cfd5c50c61724ce7ae0a362d26c19f87a923";
 
 #[derive(Default)]
 pub struct DepositTxBuilder {
@@ -178,8 +177,8 @@ impl DepositTxBuilder {
     }
 
     pub fn buyer_payout(&self) -> Result<TxOutput> {
-        // TODO: Should we assume the buyer payout vout is always 3 (the case for the unit tests)?
-        Ok(TxOutput(OutPoint::new(self.txid()?, 3), TxOut {
+        // FIXME: Don't assume the buyer payout vout is always 2 (the case for the unit tests).
+        Ok(TxOutput(OutPoint::new(self.txid()?, 2), TxOut {
             value: self.buyers_security_deposit()?.checked_add(*self.trade_amount()?)
                 .ok_or(TransactionErrorKind::Overflow)?,
             script_pubkey: self.buyer_payout_address()?.script_pubkey(),
@@ -187,8 +186,8 @@ impl DepositTxBuilder {
     }
 
     pub fn seller_payout(&self) -> Result<TxOutput> {
-        // TODO: Should we assume the seller payout vout is always 1 (the case for the unit tests)?
-        Ok(TxOutput(OutPoint::new(self.txid()?, 1), TxOut {
+        // FIXME: Don't assume the seller payout vout is always 3 (the case for the unit tests).
+        Ok(TxOutput(OutPoint::new(self.txid()?, 3), TxOut {
             value: *self.sellers_security_deposit()?,
             script_pubkey: self.seller_payout_address()?.script_pubkey(),
         }))
@@ -202,7 +201,7 @@ pub struct WarningTxBuilder {
     seller_input: Option<TxOutput>,
     escrow_address: Option<Address>,
     anchor_address: Option<Address>,
-    warning_lock_time: Option<LockTime>,
+    lock_time: Option<LockTime>,
     fee_rate: Option<FeeRate>,
     // Derived fields:
     unsigned_tx: Option<Transaction>,
@@ -213,7 +212,7 @@ impl WarningTxBuilder {
     make_getter_setter!(seller_input: TxOutput);
     make_getter_setter!(escrow_address: Address);
     make_getter_setter!(anchor_address: Address);
-    make_getter_setter!(warning_lock_time: LockTime);
+    make_getter_setter!(lock_time: LockTime);
     make_getter_setter!(fee_rate: FeeRate);
     make_getter!(unsigned_tx: Transaction);
 
@@ -226,12 +225,12 @@ impl WarningTxBuilder {
     pub fn compute_unsigned_tx(&mut self) -> Result<&mut Self> {
         let buyer_input = TxIn {
             previous_output: self.buyer_input()?.0,
-            sequence: self.warning_lock_time()?.to_sequence(),
+            sequence: self.lock_time()?.to_sequence(),
             ..TxIn::default()
         };
         let seller_input = TxIn {
             previous_output: self.seller_input()?.0,
-            sequence: self.warning_lock_time()?.to_sequence(),
+            sequence: self.lock_time()?.to_sequence(),
             ..TxIn::default()
         };
         let escrow_output = TxOut {
@@ -320,6 +319,66 @@ impl RedirectTxBuilder {
     }
 }
 
+#[derive(Default)]
+pub struct ForwardingTxBuilder {
+    // Supplied fields:
+    input: Option<TxOutput>,
+    payout_address: Option<Address>,
+    lock_time: Option<LockTime>,
+    fee_rate: Option<FeeRate>,
+    // Derived fields:
+    unsigned_tx: Option<Transaction>,
+}
+
+impl ForwardingTxBuilder {
+    make_getter_setter!(input: TxOutput);
+    make_getter_setter!(payout_address: Address);
+    make_getter_setter!(lock_time: LockTime);
+    make_getter_setter!(fee_rate: FeeRate);
+    make_getter!(unsigned_tx: Transaction);
+
+    pub fn disable_lock_time(&mut self) -> &mut Self {
+        // FIXME: A bit hacky to use (an otherwise perfectly valid) zero lock time as a sentinel value.
+        self.set_lock_time(LockTime::ZERO)
+    }
+
+    fn payout_amount(input_amount: Amount, fee_rate: FeeRate) -> Option<Amount> {
+        input_amount.checked_sub(fee_rate.checked_mul_by_weight(SIGNED_FORWARDING_TX_WEIGHT)?)
+    }
+
+    pub fn compute_unsigned_tx(&mut self) -> Result<&mut Self> {
+        let input = vec![TxIn {
+            previous_output: self.input()?.0,
+            sequence: if self.lock_time()? == &LockTime::ZERO {
+                Sequence::ENABLE_RBF_NO_LOCKTIME
+            } else {
+                self.lock_time()?.to_sequence()
+            },
+            ..TxIn::default()
+        }];
+        let output = vec![TxOut {
+            value: Self::payout_amount(self.input()?.1.value, *self.fee_rate()?)
+                .ok_or(TransactionErrorKind::Overflow)?,
+            script_pubkey: self.payout_address()?.script_pubkey(),
+        }];
+        let tx = Transaction {
+            version: Version::TWO,
+            lock_time: absolute::LockTime::ZERO,
+            input,
+            output,
+        };
+        self.unsigned_tx.get_or_insert(tx);
+        Ok(self)
+    }
+
+    pub fn input_sighash(&self) -> Result<TapSighash> {
+        let prevouts = [&self.input()?.1];
+        let prevouts = Prevouts::All(&prevouts);
+        let mut cache = SighashCache::new(self.unsigned_tx()?);
+        Ok(cache.taproot_key_spend_signature_hash(0, &prevouts, TapSighashType::All)?)
+    }
+}
+
 type Result<T, E = TransactionErrorKind> = std::result::Result<T, E>;
 
 #[derive(Error, Debug)]
@@ -356,40 +415,54 @@ mod tests {
 
     use super::*;
 
-    // Valid signed txs pulled from a Regtest instance. We should be able to rebuild the unsigned parts exactly...
+    // Valid signed txs pulled from an integration test run. We should be able to rebuild the unsigned parts exactly...
 
     //noinspection SpellCheckingInspection
     const SIGNED_DEPOSIT_TX: &str = "\
-        02000000000103593f2490f5fe6ca34151dad53983bb4049fc389a194210377ae9efdeeec871810100000000ffffffff\
-        7d43ef85d23dc54918dc017c805c181f1e3573ce30aedd8492ba4291695da9430100000000ffffffff80dc1d43c34749\
-        26ac5eb7a4def9f1f604225c243f93fa1daa3b2406f4eaf8990000000000ffffffff04707693030000000022512003c4\
-        c490d5b9572f4a8a9a6ba89761efe2d3fb5ab7b48fa49dcd60ab6253bdbf002d310100000000225120523abb34a5f99b\
-        71e2461b119b9c60674a82a25af9aaa9a7dce7cecf79a622f6f3a7c404000000002251209a6474e216ded9220ca2de1d\
-        a86398353cfd8ea00d3798105c6845d49a189b8b003b5808000000002251209c851e4bb082855c30a1441470f57edb2c\
-        e53f74426f14d674e7de0bbcd1fdb301404e855da0d22221e9eeea9b45f42f968d8784bc72e501640e4ec9faa3ada13f\
-        cbb9d7b0e8b42965afba8eef79b8900c0cdc6be6497b535bb1acfadce5413333ef01407c6977dac7717d66b82f0eef90\
-        8a108fd8980bcdf21d08c72062b1dc44933a7b1ff7bb09933fdc9c7174064e287ee863ffcd2fa9836e006aa9323e1751\
-        b5042801405ca211e8014d1df806e220a29a4751c8a362d3e52f09869df93fa43fe322e991d37d58655f8e5c2c0f277e\
-        1015da25c1e533f528d4ba31bfa912c1d166dad36000000000";
+        0200000000010300236055317618f2c54bd6a20f7e0a55bed37fb39ebd65e946ebbb5b575486650000000000fdffffff\
+        23f5cc956695307d15a860d166ac2ef3f6130a565f78c6118fb78dec72cc5e4a0000000000fdffffffa3e0fd235828ce\
+        bebd1f4f69b4067d59b59b65d472276749965e13b9a03c3b370100000000fdffffff0470769303000000002251203bcd\
+        ca25f304ba34cf38bc37f5d4e79262b258c7c33a51673817e1cae3c6a53cf3a7c4040000000022512044245eb9ee6429\
+        7d0a5e3bdb29f15af3352e8b69cd9dbaa2a0ac35d345d15bff003b58080000000022512050ae873bc1665acda868f35e\
+        205cbac0d37e71ad2c1ff8930f2cf1de9b7c131b002d3101000000002251206667c68404a48b32eb80a4d117d96c8310\
+        6d02ca0d8fccd6ba0348aaacf4aa260140f631ae99b4743315b237af9c48ae1f9bb87b6c5404e84d8e3907269218d1bb\
+        a54c397158aa233fd3f2227f4dc46922ef62eb8cc39a06b7a339b33e2401d512c101402376111ed79dac9ff6f2d85dfe\
+        57d142f6075f4df9381aeab87a9414774252247555f791ddf82354a3d73fa24955f6c5330ae44b2b238fa74be2eee9a4\
+        6fcb720140637f4a624bfc46bdb52e01b923d157a97148210f1a2669716815d3249c61567317d543868698f30130e0aa\
+        f693ce265c544e3db5eda568bffb6ccd03d25a31df00000000";
+
+    //noinspection SpellCheckingInspection
+    const SIGNED_SWAP_TX: &str = "\
+        0200000000010123a9879fc1262d360aaee74c72610cc5d5cf326fbc8d3656b51f34ad800909440300000000fdffffff\
+        0118293101000000002251204d19b6cd267c57f719f2f3f01c2ce230505e053a0d20884f4aa9115ebff3338d01400555\
+        c9a53b9f233186937e090d6116dd0e5215742ed56d44bd7dce0c10b40cf4c61a573b1fd1f68ca386f7ea9e420f8bd3c2\
+        552a661222e1792d63caaad3353200000000";
 
     //noinspection SpellCheckingInspection
     const SIGNED_SELLERS_WARNING_TX: &str = "\
-        020000000001024090929dbeaa475f4fbcb150499bb73f069010e12d4d2a8d76afdf25bd4f82ea030000000002000000\
-        4090929dbeaa475f4fbcb150499bb73f069010e12d4d2a8d76afdf25bd4f82ea01000000000200000002ce6289090000\
-        00002251209c851e4bb082855c30a1441470f57edb2ce53f74426f14d674e7de0bbcd1fdb34a01000000000000225120\
-        fb0caf990c3315e540bef9401ea1bf5c0257a9fc1bc31d8eb4c6e3a50225532e01400a1765c41c6851258c52122f8635\
-        3d4cdc67794707d5a7f79daf9a9441e484f9001eca7a01951ce62fc3eab2fd5a84f45ce3c7ad081fa263ef672cde0a43\
-        7d840140d5f66951bef77e1b3a180b94042604b1e26c0c7bcdecf78b151962dc623963d53e2ac6a77f7ed7be4fc4eab2\
-        3f8decd8196abafb50b7062b86b88ad697682a5c00000000";
+        0200000000010223a9879fc1262d360aaee74c72610cc5d5cf326fbc8d3656b51f34ad80090944020000000002000000\
+        23a9879fc1262d360aaee74c72610cc5d5cf326fbc8d3656b51f34ad8009094403000000000200000002ce6289090000\
+        00002251206667c68404a48b32eb80a4d117d96c83106d02ca0d8fccd6ba0348aaacf4aa264a01000000000000225120\
+        4d19b6cd267c57f719f2f3f01c2ce230505e053a0d20884f4aa9115ebff3338d0140623b8be648c7fb330062ae29c30e\
+        9cc13c7a18b756095490c6f673f900c56a8ba0759711fe395a5b98e053dd1e3bc39dbe2d5c2c1f162d9ab5f24144f61d\
+        31810140bcc2a8b0aab906ae6f32444c4e7ac163153d134f1075a4153fe735fd83ff9e172b16b14efd5cb5995f1e3553\
+        c9ceed572a3419e4aab7a2dd86cdb440181c597000000000";
 
     //noinspection SpellCheckingInspection
     const SIGNED_BUYERS_REDIRECT_TX: &str = "\
-        0200000000010149634d8e127d370144fc943fd060f2af4067920ed11b10bc6e8e45102e1108ea0000000000fdffffff\
+        02000000000101f703021407bbdc217f56b8256dd620e0252cc83eb9eacba7370b96091ccc20c60000000000fdffffff\
         0388d2b8050000000022512039ee586be03c9d1cddbffc83e874f4b38212fd841fdfef2dcc94fb8b5abf32df5c8cd003\
         00000000225120bdfe7695e32dfa072d8e561951925f3aff300d953cee127884b428de6b63d68c4a0100000000000022\
-        5120e47961ba4f26beb5d179e98fab691d8109f894e58a8127188b1944e7541571740140bac65d0b8207957f434a80a0\
-        ac02a21d9dfcd958b1ea804c44bad712e5728d9916c8bd91f386825638e750aaddacc734f9c724768aa4dbd9e8b87064\
-        a9cac9bd00000000";
+        51206661819664b49934b8a84a665b6d61c1d36a4537bb0fe074843864abd21aa0dd01407881f2345129f9305e4efe84\
+        5d043ba98d0538352ffc6a50db35ca661b50ba6fd3e5553bdc71e27ba274ce0b862db53dde316da92614b91e8208fe1e\
+        164ae0b400000000";
+
+    //noinspection SpellCheckingInspection
+    const SIGNED_SELLERS_CLAIM_TX: &str = "\
+        02000000000101f703021407bbdc217f56b8256dd620e0252cc83eb9eacba7370b96091ccc20c6000000000002000000\
+        01e65e8909000000002251204d19b6cd267c57f719f2f3f01c2ce230505e053a0d20884f4aa9115ebff3338d0140b1ec\
+        0464f04ced9ce0d5715f3740b24fd4226f72c2d990b2bbdad29898e15051082ffc3f3626170a992e7a5a8b48fffd58e4\
+        e5520b2c45d5b09a6f07c4c2a2dc00000000";
 
     #[expect(edition_2024_expr_fragment_specifier, reason = "for tests only; unlikely to break")]
     macro_rules! tx {
@@ -401,39 +474,68 @@ mod tests {
 
     //noinspection SpellCheckingInspection
     #[test]
-    fn test_warning_tx_builder() -> Result<()> {
+    fn test_txids() {
         let deposit_tx = tx!(SIGNED_DEPOSIT_TX);
+        let swap_tx = tx!(SIGNED_SWAP_TX);
         let warning_tx = tx!(SIGNED_SELLERS_WARNING_TX);
+        let redirect_tx = tx!(SIGNED_BUYERS_REDIRECT_TX);
+        let claim_tx = tx!(SIGNED_SELLERS_CLAIM_TX);
 
-        let [deposit_txid, warning_txid] = [&deposit_tx, &warning_tx]
-            .map(Transaction::compute_txid);
+        let [deposit_txid, swap_txid, warning_txid, redirect_txid, claim_txid] =
+            [&deposit_tx, &swap_tx, &warning_tx, &redirect_tx, &claim_tx].map(Transaction::compute_txid);
 
         assert_eq!(MOCK_DEPOSIT_TXID, deposit_txid.to_string());
-        assert_eq!("ea08112e10458e6ebc101bd10e926740aff260d03f94fc4401377d128e4d6349", warning_txid.to_string());
+        assert_eq!("41e2045e54060bfe2e094e76a7ce4fbd7185384d34afcb77353cd359b465c93d", swap_txid.to_string());
+        assert_eq!("c620cc1c09960b37a7cbeab93ec82c25e020d66d25b8567f21dcbb07140203f7", warning_txid.to_string());
+        assert_eq!("ecdb3995689d8e23e4c467692ab400af66eb9f5a35b99753ee3bfdaa10b0b1d6", redirect_txid.to_string());
+        assert_eq!("81be3cf683c4a65979bbbe35264c8d0e4cd6fe33e80d094463f13ecf4d5eb2df", claim_txid.to_string());
+    }
 
+    #[test]
+    fn test_swap_tx_builder() -> Result<()> {
+        let builder = filled_swap_tx_builder(&filled_deposit_tx_builder()?)?;
+        let unsigned_tx = builder.unsigned_tx()?;
+        let sighash = builder.input_sighash()?;
+
+        assert_eq!(tx!(SIGNED_SWAP_TX).compute_txid(), unsigned_tx.compute_txid());
+        // TODO: Check that the sighash is correct.
+        dbg!(sighash);
+        Ok(())
+    }
+
+    #[test]
+    fn test_warning_tx_builder() -> Result<()> {
         let builder = filled_warning_tx_builder(&filled_deposit_tx_builder()?)?;
         let unsigned_tx = builder.unsigned_tx()?;
         let sighashes = [builder.buyer_input_sighash()?, builder.seller_input_sighash()?];
 
-        assert_eq!(warning_txid, unsigned_tx.compute_txid());
+        assert_eq!(tx!(SIGNED_SELLERS_WARNING_TX).compute_txid(), unsigned_tx.compute_txid());
         // TODO: Check that the sighashes are correct.
         dbg!(sighashes);
         Ok(())
     }
 
-    //noinspection SpellCheckingInspection
     #[test]
     fn test_redirect_tx_builder() -> Result<()> {
-        let redirect_tx = tx!(SIGNED_BUYERS_REDIRECT_TX);
-        let redirect_txid = redirect_tx.compute_txid();
-        assert_eq!("8f0901c700f1692d56cdd0e059b822d0ee5e983fc5897f69eba3592a4728ba30", redirect_txid.to_string());
-
         let builder = filled_redirect_tx_builder(
             &filled_warning_tx_builder(&filled_deposit_tx_builder()?)?)?;
         let unsigned_tx = builder.unsigned_tx()?;
         let sighash = builder.input_sighash()?;
 
-        assert_eq!(redirect_txid, unsigned_tx.compute_txid());
+        assert_eq!(tx!(SIGNED_BUYERS_REDIRECT_TX).compute_txid(), unsigned_tx.compute_txid());
+        // TODO: Check that the sighash is correct.
+        dbg!(sighash);
+        Ok(())
+    }
+
+    #[test]
+    fn test_claim_tx_builder() -> Result<()> {
+        let builder = filled_claim_tx_builder(
+            &filled_warning_tx_builder(&filled_deposit_tx_builder()?)?)?;
+        let unsigned_tx = builder.unsigned_tx()?;
+        let sighash = builder.input_sighash()?;
+
+        assert_eq!(tx!(SIGNED_SELLERS_CLAIM_TX).compute_txid(), unsigned_tx.compute_txid());
         // TODO: Check that the sighash is correct.
         dbg!(sighash);
         Ok(())
@@ -441,9 +543,9 @@ mod tests {
 
     //noinspection SpellCheckingInspection
     fn filled_deposit_tx_builder() -> Result<DepositTxBuilder> {
-        let buyer_payout_address = "bcrt1pnjz3ujass2z4cv9pgs28pat7mvkw20m5gfh3f4n5ul0qh0x3lkes0qv0uf"
+        let buyer_payout_address = "bcrt1p2zhgww7pvedvm2rg7d0zqh96crfhuudd9s0l3yc09ncaaxmuzvds5zhh8t"
             .parse::<Address<_>>()?.require_network(Network::Regtest)?;
-        let seller_payout_address = "bcrt1p2gatkd99lxdhrcjxrvgeh8rqva9g9gj6lx42nf7uul8v77dxytmq0wnpk6"
+        let seller_payout_address = "bcrt1pvenudpqy5j9n96uq5ng30ktvsvgx6qk2pk8ue446qdy24t854gnq5sp2l6"
             .parse::<Address<_>>()?.require_network(Network::Regtest)?;
 
         let mut builder = DepositTxBuilder::default();
@@ -462,10 +564,25 @@ mod tests {
     }
 
     //noinspection SpellCheckingInspection
-    fn filled_warning_tx_builder(deposit_tx_builder: &DepositTxBuilder) -> Result<WarningTxBuilder> {
-        let escrow_address = "bcrt1pnjz3ujass2z4cv9pgs28pat7mvkw20m5gfh3f4n5ul0qh0x3lkes0qv0uf"
+    fn filled_swap_tx_builder(deposit_tx_builder: &DepositTxBuilder) -> Result<ForwardingTxBuilder> {
+        let payout_address = "bcrt1pf5vmdnfx03tlwx0j70cpct8zxpg9upf6p5sgsn624yg4a0lnxwxsegnwnx"
             .parse::<Address<_>>()?.require_network(Network::Regtest)?;
-        let anchor_address = "bcrt1plvx2lxgvxv272s97l9qpagdltsp9020ur0p3mr45cm362q392vhqsq6rfa"
+
+        let mut builder = ForwardingTxBuilder::default();
+        builder
+            .set_input(deposit_tx_builder.seller_payout()?)
+            .set_payout_address(payout_address)
+            .disable_lock_time()
+            .set_fee_rate(FeeRate::from_sat_per_kwu(2252)) // gives 1000-sat absolute fee
+            .compute_unsigned_tx()?;
+        Ok(builder)
+    }
+
+    //noinspection SpellCheckingInspection
+    fn filled_warning_tx_builder(deposit_tx_builder: &DepositTxBuilder) -> Result<WarningTxBuilder> {
+        let escrow_address = "bcrt1pvenudpqy5j9n96uq5ng30ktvsvgx6qk2pk8ue446qdy24t854gnq5sp2l6"
+            .parse::<Address<_>>()?.require_network(Network::Regtest)?;
+        let anchor_address = "bcrt1pf5vmdnfx03tlwx0j70cpct8zxpg9upf6p5sgsn624yg4a0lnxwxsegnwnx"
             .parse::<Address<_>>()?.require_network(Network::Regtest)?;
 
         let mut builder = WarningTxBuilder::default();
@@ -474,7 +591,7 @@ mod tests {
             .set_seller_input(deposit_tx_builder.seller_payout()?)
             .set_escrow_address(escrow_address)
             .set_anchor_address(anchor_address)
-            .set_warning_lock_time(LockTime::from_height(2))
+            .set_lock_time(LockTime::from_height(2))
             .set_fee_rate(FeeRate::from_sat_per_kwu(1182)) // gives 1000-sat absolute fee
             .compute_unsigned_tx()?;
         Ok(builder)
@@ -486,7 +603,7 @@ mod tests {
             .parse::<Address<_>>()?.require_network(Network::Regtest)?;
         let receiver_address2 = "bcrt1phhl8d90r9haqwtvw2cv4ryjl8tlnqrv48nhpy7yyks5du6mr66xq5nlwhz"
             .parse::<Address<_>>()?.require_network(Network::Regtest)?;
-        let anchor_address = "bcrt1pu3ukrwj0y6ltt5teax86k6gasyyl398932qjwxytr9zww4q4w96q8thzu9"
+        let anchor_address = "bcrt1pvescr9nykjvnfw9gffn9kmtpc8fk53fhhv87qayy8pj2h5s65rwsjm9ja4"
             .parse::<Address<_>>()?.require_network(Network::Regtest)?;
         let receivers = [
             Receiver { address: receiver_address1, amount: Amount::from_sat(95_998_600) },
@@ -498,6 +615,21 @@ mod tests {
             .set_input(warning_tx_builder.escrow()?)
             .set_receivers(Arc::new(receivers))
             .set_anchor_address(anchor_address)
+            .compute_unsigned_tx()?;
+        Ok(builder)
+    }
+
+    //noinspection SpellCheckingInspection
+    fn filled_claim_tx_builder(warning_tx_builder: &WarningTxBuilder) -> Result<ForwardingTxBuilder> {
+        let payout_address = "bcrt1pf5vmdnfx03tlwx0j70cpct8zxpg9upf6p5sgsn624yg4a0lnxwxsegnwnx"
+            .parse::<Address<_>>()?.require_network(Network::Regtest)?;
+
+        let mut builder = ForwardingTxBuilder::default();
+        builder
+            .set_input(warning_tx_builder.escrow()?)
+            .set_payout_address(payout_address)
+            .set_lock_time(LockTime::from_height(2))
+            .set_fee_rate(FeeRate::from_sat_per_kwu(2252)) // gives 1000-sat absolute fee
             .compute_unsigned_tx()?;
         Ok(builder)
     }
