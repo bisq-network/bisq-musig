@@ -124,6 +124,28 @@ pub struct TxOutput(OutPoint, TxOut);
 
 pub type ReceiverList = Arc<[Receiver]>;
 
+trait WithFixedInputs<const N: usize> {
+    fn inputs(&self) -> Result<[&TxOutput; N]>;
+
+    fn tx_ins(&self, lock_time: LockTime) -> Result<[TxIn; N]> {
+        // FIXME: A bit hacky to use (an otherwise perfectly valid) zero lock time as a sentinel value.
+        let sequence = if lock_time == LockTime::ZERO {
+            Sequence::ENABLE_RBF_NO_LOCKTIME
+        } else {
+            lock_time.to_sequence()
+        };
+        Ok(self.inputs()?.map(|input|
+            TxIn { previous_output: input.0, sequence, ..TxIn::default() }))
+    }
+
+    fn key_spend_sighash(&self, tx: &Transaction, input_index: usize) -> Result<TapSighash> {
+        let prevouts = self.inputs()?.map(|input| &input.1);
+        let prevouts = Prevouts::All(&prevouts);
+        let mut cache = SighashCache::new(tx);
+        Ok(cache.taproot_key_spend_signature_hash(input_index, &prevouts, TapSighashType::All)?)
+    }
+}
+
 //noinspection SpellCheckingInspection
 const MOCK_DEPOSIT_TXID: &str = "44090980ad341fb556368dbc6f32cfd5c50c61724ce7ae0a362d26c19f87a923";
 
@@ -223,16 +245,6 @@ impl WarningTxBuilder {
     }
 
     pub fn compute_unsigned_tx(&mut self) -> Result<&mut Self> {
-        let buyer_input = TxIn {
-            previous_output: self.buyer_input()?.0,
-            sequence: self.lock_time()?.to_sequence(),
-            ..TxIn::default()
-        };
-        let seller_input = TxIn {
-            previous_output: self.seller_input()?.0,
-            sequence: self.lock_time()?.to_sequence(),
-            ..TxIn::default()
-        };
         let escrow_output = TxOut {
             value: Self::escrow_amount(
                 [self.buyer_input()?.1.value, self.seller_input()?.1.value],
@@ -247,7 +259,7 @@ impl WarningTxBuilder {
         let tx = Transaction {
             version: Version::TWO,
             lock_time: absolute::LockTime::ZERO,
-            input: vec![buyer_input, seller_input],
+            input: self.tx_ins(*self.lock_time()?)?.to_vec(),
             output: vec![escrow_output, anchor_output],
         };
         self.unsigned_tx.get_or_insert(tx);
@@ -261,16 +273,17 @@ impl WarningTxBuilder {
         Ok(TxOutput(OutPoint::new(txid, 0), output.clone()))
     }
 
-    fn sighash(&self, input_index: usize) -> Result<TapSighash> {
-        let prevouts = [&self.buyer_input()?.1, &self.seller_input()?.1];
-        let prevouts = Prevouts::All(&prevouts);
-        let mut cache = SighashCache::new(self.unsigned_tx()?);
-        Ok(cache.taproot_key_spend_signature_hash(input_index, &prevouts, TapSighashType::All)?)
+    pub fn buyer_input_sighash(&self) -> Result<TapSighash> {
+        self.key_spend_sighash(self.unsigned_tx()?, 0)
     }
 
-    pub fn buyer_input_sighash(&self) -> Result<TapSighash> { self.sighash(0) }
+    pub fn seller_input_sighash(&self) -> Result<TapSighash> {
+        self.key_spend_sighash(self.unsigned_tx()?, 1)
+    }
+}
 
-    pub fn seller_input_sighash(&self) -> Result<TapSighash> { self.sighash(1) }
+impl WithFixedInputs<2> for WarningTxBuilder {
+    fn inputs(&self) -> Result<[&TxOutput; 2]> { Ok([self.buyer_input()?, self.seller_input()?]) }
 }
 
 #[derive(Default)]
@@ -290,11 +303,6 @@ impl RedirectTxBuilder {
     make_getter!(unsigned_tx: Transaction);
 
     pub fn compute_unsigned_tx(&mut self) -> Result<&mut Self> {
-        let input = vec![TxIn {
-            previous_output: self.input()?.0,
-            sequence: Sequence::ENABLE_RBF_NO_LOCKTIME,
-            ..TxIn::default()
-        }];
         let mut output = Vec::with_capacity(self.receivers()?.len() + 1);
         output.extend(self.receivers()?.iter().map(TxOut::from));
         output.push(TxOut {
@@ -304,7 +312,7 @@ impl RedirectTxBuilder {
         let tx = Transaction {
             version: Version::TWO,
             lock_time: absolute::LockTime::ZERO,
-            input,
+            input: self.tx_ins(LockTime::ZERO)?.to_vec(),
             output,
         };
         self.unsigned_tx.get_or_insert(tx);
@@ -312,11 +320,12 @@ impl RedirectTxBuilder {
     }
 
     pub fn input_sighash(&self) -> Result<TapSighash> {
-        let prevouts = [&self.input()?.1];
-        let prevouts = Prevouts::All(&prevouts);
-        let mut cache = SighashCache::new(self.unsigned_tx()?);
-        Ok(cache.taproot_key_spend_signature_hash(0, &prevouts, TapSighashType::All)?)
+        self.key_spend_sighash(self.unsigned_tx()?, 0)
     }
+}
+
+impl WithFixedInputs<1> for RedirectTxBuilder {
+    fn inputs(&self) -> Result<[&TxOutput; 1]> { Ok([self.input()?]) }
 }
 
 #[derive(Default)]
@@ -337,25 +346,13 @@ impl ForwardingTxBuilder {
     make_getter_setter!(fee_rate: FeeRate);
     make_getter!(unsigned_tx: Transaction);
 
-    pub fn disable_lock_time(&mut self) -> &mut Self {
-        // FIXME: A bit hacky to use (an otherwise perfectly valid) zero lock time as a sentinel value.
-        self.set_lock_time(LockTime::ZERO)
-    }
+    pub fn disable_lock_time(&mut self) -> &mut Self { self.set_lock_time(LockTime::ZERO) }
 
     fn payout_amount(input_amount: Amount, fee_rate: FeeRate) -> Option<Amount> {
         input_amount.checked_sub(fee_rate.checked_mul_by_weight(SIGNED_FORWARDING_TX_WEIGHT)?)
     }
 
     pub fn compute_unsigned_tx(&mut self) -> Result<&mut Self> {
-        let input = vec![TxIn {
-            previous_output: self.input()?.0,
-            sequence: if self.lock_time()? == &LockTime::ZERO {
-                Sequence::ENABLE_RBF_NO_LOCKTIME
-            } else {
-                self.lock_time()?.to_sequence()
-            },
-            ..TxIn::default()
-        }];
         let output = vec![TxOut {
             value: Self::payout_amount(self.input()?.1.value, *self.fee_rate()?)
                 .ok_or(TransactionErrorKind::Overflow)?,
@@ -364,7 +361,7 @@ impl ForwardingTxBuilder {
         let tx = Transaction {
             version: Version::TWO,
             lock_time: absolute::LockTime::ZERO,
-            input,
+            input: self.tx_ins(*self.lock_time()?)?.to_vec(),
             output,
         };
         self.unsigned_tx.get_or_insert(tx);
@@ -372,11 +369,12 @@ impl ForwardingTxBuilder {
     }
 
     pub fn input_sighash(&self) -> Result<TapSighash> {
-        let prevouts = [&self.input()?.1];
-        let prevouts = Prevouts::All(&prevouts);
-        let mut cache = SighashCache::new(self.unsigned_tx()?);
-        Ok(cache.taproot_key_spend_signature_hash(0, &prevouts, TapSighashType::All)?)
+        self.key_spend_sighash(self.unsigned_tx()?, 0)
     }
+}
+
+impl WithFixedInputs<1> for ForwardingTxBuilder {
+    fn inputs(&self) -> Result<[&TxOutput; 1]> { Ok([self.input()?]) }
 }
 
 type Result<T, E = TransactionErrorKind> = std::result::Result<T, E>;
