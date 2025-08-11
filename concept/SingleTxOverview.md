@@ -25,7 +25,8 @@ A Schnorr based 2of2 multisignature, makes use of the additivity of the keys and
 the
 taproot transaction output in a key spend path.
 
-The details of the MuSig2 protocol (and adaptive signatures) are [here](./MuSig2adaptor-rust.md) described in length.
+The details of the MuSig2 protocol (and adaptive signatures) are described in length [here locally](./MuSig2adaptor-rust.md)
+or [here on the web](https://html-preview.github.io/?url=https://github.com/bisq-network/bisq-musig/blob/main/concept/renderedForWeb/MuSig2adaptor-rust.html).
 
 The 2 public key from Alice and Bob can be combined to a aggregated public key.
 > $P' := P_a + P_b$ \
