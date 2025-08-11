@@ -118,7 +118,7 @@ s \cdot G + T &=& R+e \cdot P \\
 
 so with the discrete logarithm (DLOG) of $T$, which is  $t$, we would have a valid signature.
 
-This is being verified ba calling `musig2::adaptor::aggregate_partial_signatures()`.
+This is being verified by calling `musig2::adaptor::aggregate_partial_signatures()`.
 
 Alice
 has the knowledge of $t$ and can make this a valid signature.
