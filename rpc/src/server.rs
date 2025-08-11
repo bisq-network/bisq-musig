@@ -58,27 +58,29 @@ impl musig_server::Musig for MusigImpl {
                 request.buyer_output_peers_pub_key_share.try_proto_into()?,
                 request.seller_output_peers_pub_key_share.try_proto_into()?);
             trade_model.aggregate_key_shares()?;
-            trade_model.trade_amount = Some(Amount::from_sat(request.trade_amount));
-            trade_model.buyers_security_deposit = Some(Amount::from_sat(request.buyers_security_deposit));
-            trade_model.sellers_security_deposit = Some(Amount::from_sat(request.sellers_security_deposit));
-            trade_model.deposit_tx_fee_rate = Some(FeeRate::from_sat_per_kwu(request.deposit_tx_fee_rate));
-            trade_model.prepared_tx_fee_rate = Some(FeeRate::from_sat_per_kwu(request.prepared_tx_fee_rate));
-            trade_model.init_my_fee_bump_addresses()?;
+            trade_model.set_trade_amount(Amount::from_sat(request.trade_amount));
+            trade_model.set_buyers_security_deposit(Amount::from_sat(request.buyers_security_deposit));
+            trade_model.set_sellers_security_deposit(Amount::from_sat(request.sellers_security_deposit));
+            trade_model.set_deposit_tx_fee_rate(FeeRate::from_sat_per_kwu(request.deposit_tx_fee_rate));
+            trade_model.set_prepared_tx_fee_rate(FeeRate::from_sat_per_kwu(request.prepared_tx_fee_rate));
+            trade_model.set_trade_fee_receiver(request.trade_fee_receiver.try_proto_into()?)?;
+            trade_model.init_my_addresses()?;
             trade_model.init_my_half_deposit_psbt()?;
             trade_model.init_my_nonce_shares()?;
 
-            let my_fee_bump_addresses = trade_model.get_my_fee_bump_addresses()
-                .ok_or_else(|| Status::internal("missing fee bump addresses"))?;
+            let redirection_amount_msat = trade_model.redirection_amount_msat()
+                .ok_or_else(|| Status::internal("missing redirection amount"))?;
+            let my_addresses = trade_model.get_my_addresses()
+                .ok_or_else(|| Status::internal("missing addresses"))?;
             let my_half_deposit_psbt = trade_model.get_my_half_deposit_psbt()
                 .ok_or_else(|| Status::internal("missing half deposit PSBT"))?;
             let my_nonce_shares = trade_model.get_my_nonce_shares()
                 .ok_or_else(|| Status::internal("missing nonce shares"))?;
 
             Ok(NonceSharesMessage {
-                warning_tx_fee_bump_address: my_fee_bump_addresses[0].to_string(),
-                redirect_tx_fee_bump_address: my_fee_bump_addresses[1].to_string(),
                 half_deposit_psbt: my_half_deposit_psbt.serialize(),
-                ..my_nonce_shares.into()
+                redirection_amount_msat,
+                ..(my_addresses, my_nonce_shares).into()
             })
         })
     }
@@ -94,13 +96,14 @@ impl musig_server::Musig for MusigImpl {
             }
             let peer_nonce_shares = request.peers_nonce_shares
                 .ok_or_else(|| Status::not_found("missing request.peers_nonce_shares"))?;
-            trade_model.set_peer_fee_bump_addresses([
-                (&peer_nonce_shares.warning_tx_fee_bump_address).try_proto_into()?,
-                (&peer_nonce_shares.redirect_tx_fee_bump_address).try_proto_into()?
-            ])?;
             trade_model.set_peer_half_deposit_psbt((&peer_nonce_shares.half_deposit_psbt[..]).try_proto_into()?);
-            trade_model.set_redirection_receivers(request.receivers.into_iter().map(TryProtoInto::try_proto_into))?;
-            trade_model.set_peer_nonce_shares(peer_nonce_shares.try_proto_into()?);
+            trade_model.compute_unsigned_deposit_tx()?;
+            trade_model.set_redirection_receivers(request.redirection_receivers.into_iter().map(TryProtoInto::try_proto_into))?;
+            trade_model.check_redirect_tx_params()?;
+            let (addresses, nonce_shares) = peer_nonce_shares.try_proto_into()?;
+            trade_model.set_peer_addresses(addresses)?;
+            trade_model.compute_unsigned_prepared_txs()?;
+            trade_model.set_peer_nonce_shares(nonce_shares);
             trade_model.aggregate_nonce_shares()?;
             trade_model.sign_partial()?;
             let my_partial_signatures = trade_model

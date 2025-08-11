@@ -1,3 +1,0 @@
-# For Rust 1.87 until fixed: Prevent perf warnings due to `tonic::Result::Err`-variant >=176 bytes.
-# See: https://github.com/hyperium/tonic/issues/2253
-large-error-threshold = 256

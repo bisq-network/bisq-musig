@@ -16,9 +16,10 @@ use crate::pb::walletrpc::{
     ConfEvent, ConfidenceType, ConfirmationBlockTime, TransactionOutput, WalletBalanceResponse,
 };
 use crate::protocol::{
-    ExchangedNonces, ExchangedSigs, ProtocolErrorKind, RedirectionReceiver, Role,
+    ExchangedAddresses, ExchangedNonces, ExchangedSigs, ProtocolErrorKind, Role,
 };
 use crate::storage::{ByRef, ByVal};
+use crate::transaction::Receiver;
 use crate::wallet::TxConfidence;
 
 pub(crate) mod hex {
@@ -52,6 +53,18 @@ macro_rules! impl_try_proto_into_for_slice {
                     Status::invalid_argument(format!("could not decode {}: {e}", $err_msg))
                 })
             }
+        }
+    };
+}
+
+macro_rules! empty_to_none {
+    ($self:ident.$field:ident) => {
+        if $self.$field.is_empty() {
+            let name = stringify!($field);
+            tracing::warn!(name, "Empty proto field.");
+            None
+        } else {
+            Some($self.$field)
         }
     };
 }
@@ -98,9 +111,9 @@ impl TryProtoInto<Address<NetworkUnchecked>> for &str {
     }
 }
 
-impl TryProtoInto<RedirectionReceiver<NetworkUnchecked>> for ReceiverAddressAndAmount {
-    fn try_proto_into(self) -> Result<RedirectionReceiver<NetworkUnchecked>> {
-        Ok(RedirectionReceiver {
+impl TryProtoInto<Receiver<NetworkUnchecked>> for ReceiverAddressAndAmount {
+    fn try_proto_into(self) -> Result<Receiver<NetworkUnchecked>> {
+        Ok(Receiver {
             address: self.address.try_proto_into()?,
             amount: Amount::from_sat(self.amount),
         })
@@ -108,6 +121,10 @@ impl TryProtoInto<RedirectionReceiver<NetworkUnchecked>> for ReceiverAddressAndA
 }
 
 impl<T> TryProtoInto<T> for Vec<u8> where for<'a> &'a [u8]: TryProtoInto<T> {
+    fn try_proto_into(self) -> Result<T> { (&self[..]).try_proto_into() }
+}
+
+impl<T> TryProtoInto<T> for String where for<'a> &'a str: TryProtoInto<T> {
     fn try_proto_into(self) -> Result<T> { (&self[..]).try_proto_into() }
 }
 
@@ -120,9 +137,20 @@ impl<T, S: TryProtoInto<T>> TryProtoInto<Option<T>> for Option<S> {
     }
 }
 
-impl<'a> TryProtoInto<ExchangedNonces<'a, ByVal>> for NonceSharesMessage {
-    fn try_proto_into(self) -> Result<ExchangedNonces<'a, ByVal>> {
-        Ok(ExchangedNonces {
+type SentAddressesNoncesPair<'a> = (ExchangedAddresses<'a, ByRef>, ExchangedNonces<'a, ByRef>);
+
+type ReceivedAddressesNoncesPair<'a> = (ExchangedAddresses<'a, ByVal, NetworkUnchecked>, ExchangedNonces<'a, ByVal>);
+
+impl<'a> TryProtoInto<ReceivedAddressesNoncesPair<'a>> for NonceSharesMessage {
+    fn try_proto_into(self) -> Result<ReceivedAddressesNoncesPair<'a>> {
+        Ok((ExchangedAddresses {
+            warning_tx_fee_bump_address:
+            self.warning_tx_fee_bump_address.try_proto_into()?,
+            redirect_tx_fee_bump_address:
+            self.redirect_tx_fee_bump_address.try_proto_into()?,
+            claim_tx_payout_address:
+            empty_to_none!(self.claim_tx_payout_address).try_proto_into()?,
+        }, ExchangedNonces {
             swap_tx_input_nonce_share:
             self.swap_tx_input_nonce_share.try_proto_into()?,
             buyers_warning_tx_buyer_input_nonce_share:
@@ -137,7 +165,11 @@ impl<'a> TryProtoInto<ExchangedNonces<'a, ByVal>> for NonceSharesMessage {
             self.buyers_redirect_tx_input_nonce_share.try_proto_into()?,
             sellers_redirect_tx_input_nonce_share:
             self.sellers_redirect_tx_input_nonce_share.try_proto_into()?,
-        })
+            buyers_claim_tx_input_nonce_share:
+            empty_to_none!(self.buyers_claim_tx_input_nonce_share).try_proto_into()?,
+            sellers_claim_tx_input_nonce_share:
+            empty_to_none!(self.sellers_claim_tx_input_nonce_share).try_proto_into()?,
+        }))
     }
 }
 
@@ -150,6 +182,8 @@ impl<'a> TryProtoInto<ExchangedSigs<'a, ByVal>> for PartialSignaturesMessage {
             self.peers_warning_tx_seller_input_partial_signature.try_proto_into()?,
             peers_redirect_tx_input_partial_signature:
             self.peers_redirect_tx_input_partial_signature.try_proto_into()?,
+            peers_claim_tx_input_partial_signature:
+            empty_to_none!(self.peers_claim_tx_input_partial_signature).try_proto_into()?,
             swap_tx_input_partial_signature:
             self.swap_tx_input_partial_signature.try_proto_into()?,
             swap_tx_input_sighash:
@@ -169,28 +203,35 @@ impl From<musigrpc::Role> for Role {
     }
 }
 
-impl From<ExchangedNonces<'_, ByRef>> for NonceSharesMessage {
-    fn from(value: ExchangedNonces<ByRef>) -> Self {
+impl From<SentAddressesNoncesPair<'_>> for NonceSharesMessage {
+    fn from((addresses, nonces): SentAddressesNoncesPair) -> Self {
         Self {
-            // Use default values for proto fields besides the nonce shares. TODO: A little hacky; consider refactoring proto.
-            warning_tx_fee_bump_address: String::default(),
-            redirect_tx_fee_bump_address: String::default(),
+            // Use default value for the PSBT & redirection amount fields. TODO: A little hacky; consider refactoring proto.
             half_deposit_psbt: Vec::default(),
+            redirection_amount_msat: 0,
+            // Addresses...
+            warning_tx_fee_bump_address: addresses.warning_tx_fee_bump_address.to_string(),
+            redirect_tx_fee_bump_address: addresses.redirect_tx_fee_bump_address.to_string(),
+            claim_tx_payout_address: addresses.claim_tx_payout_address.map(Address::to_string).unwrap_or_default(),
             // Actual nonce shares...
             swap_tx_input_nonce_share:
-            value.swap_tx_input_nonce_share.serialize().into(),
+            nonces.swap_tx_input_nonce_share.serialize().into(),
             buyers_warning_tx_buyer_input_nonce_share:
-            value.buyers_warning_tx_buyer_input_nonce_share.serialize().into(),
+            nonces.buyers_warning_tx_buyer_input_nonce_share.serialize().into(),
             buyers_warning_tx_seller_input_nonce_share:
-            value.buyers_warning_tx_seller_input_nonce_share.serialize().into(),
+            nonces.buyers_warning_tx_seller_input_nonce_share.serialize().into(),
             sellers_warning_tx_buyer_input_nonce_share:
-            value.sellers_warning_tx_buyer_input_nonce_share.serialize().into(),
+            nonces.sellers_warning_tx_buyer_input_nonce_share.serialize().into(),
             sellers_warning_tx_seller_input_nonce_share:
-            value.sellers_warning_tx_seller_input_nonce_share.serialize().into(),
+            nonces.sellers_warning_tx_seller_input_nonce_share.serialize().into(),
             buyers_redirect_tx_input_nonce_share:
-            value.buyers_redirect_tx_input_nonce_share.serialize().into(),
+            nonces.buyers_redirect_tx_input_nonce_share.serialize().into(),
             sellers_redirect_tx_input_nonce_share:
-            value.sellers_redirect_tx_input_nonce_share.serialize().into(),
+            nonces.sellers_redirect_tx_input_nonce_share.serialize().into(),
+            buyers_claim_tx_input_nonce_share:
+            nonces.buyers_claim_tx_input_nonce_share.map(|n| n.serialize().into()).unwrap_or_default(),
+            sellers_claim_tx_input_nonce_share:
+            nonces.sellers_claim_tx_input_nonce_share.map(|n| n.serialize().into()).unwrap_or_default(),
         }
     }
 }
@@ -204,6 +245,8 @@ impl From<ExchangedSigs<'_, ByRef>> for PartialSignaturesMessage {
             value.peers_warning_tx_seller_input_partial_signature.serialize().into(),
             peers_redirect_tx_input_partial_signature:
             value.peers_redirect_tx_input_partial_signature.serialize().into(),
+            peers_claim_tx_input_partial_signature:
+            value.peers_claim_tx_input_partial_signature.map(|s| s.serialize().into()).unwrap_or_default(),
             swap_tx_input_partial_signature:
             value.swap_tx_input_partial_signature.map(|s| s.serialize().into()),
             swap_tx_input_sighash:

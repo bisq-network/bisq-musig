@@ -11,4 +11,5 @@ mod observable;
 mod protocol;
 pub mod server;
 mod storage;
+mod transaction;
 pub mod wallet;

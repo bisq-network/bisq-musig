@@ -1,7 +1,7 @@
 use std::borrow::Cow;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    tonic_build::configure()
+    tonic_prost_build::configure()
         .serde_serialized_types(&["WalletBalanceResponse", "NewAddressResponse", "ListUnspentResponse"])
         .serde_serialized_type("TransactionOutput", &[
             rev_hex("txId"), hex("scriptPubKey")
@@ -51,7 +51,7 @@ trait BuilderEx {
     }
 }
 
-impl BuilderEx for tonic_build::Builder {
+impl BuilderEx for tonic_prost_build::Builder {
     fn serde_serialized_enum(self, path: &str) -> Self {
         self.enum_attribute(path, "#[derive(::serde::Serialize)]")
             .enum_attribute(path, "#[serde(rename_all = \"SCREAMING_SNAKE_CASE\")]")
