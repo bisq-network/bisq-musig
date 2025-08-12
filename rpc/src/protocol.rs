@@ -319,7 +319,7 @@ impl TradeModel {
         Ok(())
     }
 
-    pub fn get_my_addresses(&self) -> Option<ExchangedAddresses<ByRef>> {
+    pub fn get_my_addresses(&self) -> Option<ExchangedAddresses<'_, ByRef>> {
         Some(if self.am_buyer() {
             ExchangedAddresses {
                 warning_tx_fee_bump_address: self.buyers_warning_tx_builder.anchor_address().ok()?,
@@ -482,7 +482,7 @@ impl TradeModel {
         Ok(())
     }
 
-    pub fn get_my_nonce_shares(&self) -> Option<ExchangedNonces<ByRef>> {
+    pub fn get_my_nonce_shares(&self) -> Option<ExchangedNonces<'_, ByRef>> {
         Some(ExchangedNonces {
             swap_tx_input_nonce_share:
             &(self.swap_tx_input_sig_ctx.my_nonce_share.as_ref()?.pub_nonce),
@@ -582,7 +582,7 @@ impl TradeModel {
         Ok(())
     }
 
-    pub fn get_my_partial_signatures_on_peer_txs(&self, buyer_ready_to_release: bool) -> Option<ExchangedSigs<ByRef>> {
+    pub fn get_my_partial_signatures_on_peer_txs(&self, buyer_ready_to_release: bool) -> Option<ExchangedSigs<'_, ByRef>> {
         Some(if self.am_buyer() {
             ExchangedSigs {
                 peers_warning_tx_buyer_input_partial_signature: self.sellers_warning_tx_buyer_input_sig_ctx.my_partial_sig.as_ref()?,

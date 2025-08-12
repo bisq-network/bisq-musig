@@ -22,15 +22,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 type CustomField<'a> = (&'a str, Cow<'static, str>);
 
-const fn hex(field: &str) -> CustomField {
+const fn hex(field: &str) -> CustomField<'_> {
     (field, Cow::Borrowed("#[serde_as(as = \"::serde_with::hex::Hex\")]"))
 }
 
-const fn rev_hex(field: &str) -> CustomField {
+const fn rev_hex(field: &str) -> CustomField<'_> {
     (field, Cow::Borrowed("#[serde_as(as = \"crate::pb::convert::hex::ByteReversedHex\")]"))
 }
 
-const fn opt_hex(field: &str) -> CustomField {
+const fn opt_hex(field: &str) -> CustomField<'_> {
     (field, Cow::Borrowed("#[serde_as(as = \"::core::option::Option<::serde_with::hex::Hex>\")]"))
 }
 
