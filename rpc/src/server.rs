@@ -1,7 +1,9 @@
 use bdk_wallet::bitcoin::{Amount, FeeRate};
+use bdk_wallet::serde_json;
 use drop_stream::DropStreamExt as _;
 use futures_util::stream::{self, BoxStream, Stream, StreamExt as _};
-use std::fmt::Debug;
+use serde::Serialize;
+use std::fmt::{Debug, Formatter};
 use std::marker::{Send, Sync};
 use std::sync::Arc;
 use tokio::time::{self, Duration};
@@ -269,7 +271,20 @@ impl wallet_server::Wallet for WalletImpl {
     }
 }
 
-trait MusigRequest: Debug {
+struct LazyJson<T>(T);
+
+impl<T: Serialize> Debug for LazyJson<T> {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        let s = if f.alternate() {
+            serde_json::to_string_pretty(&self.0)
+        } else {
+            serde_json::to_string(&self.0)
+        };
+        write!(f, "{}", s.as_deref().unwrap_or("<<SERIALIZATION ERROR>>"))
+    }
+}
+
+trait MusigRequest: Serialize {
     fn trade_id(&self) -> &str;
 }
 
@@ -304,9 +319,10 @@ fn handle_musig_request<Req, Res, F>(request: Request<Req>, handler: F) -> Resul
 }
 
 fn handle_request<Req, Res, F>(request: Request<Req>, handler: F) -> Result<Response<Res>>
-    where Req: Debug,
+    where Req: Serialize,
           F: FnOnce(Req) -> Result<Res> {
-    debug!("Got a request: {request:?}");
+    let message = LazyJson(request.get_ref());
+    debug!(?message, "Got a request.");
 
     let response = handler(request.into_inner())
         .inspect_err(|e| error!("Error response: {e}"))?;
