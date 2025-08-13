@@ -5,9 +5,9 @@ members = ["protocol", "rpc"]
 exclude = ["adaptor", "bdktest"]
 
 [workspace.dependencies]
-anyhow = "1.0.98"
-bdk_bitcoind_rpc = "0.20.0"
-bdk_electrum = { version = "0.23.0", default-features = false, features = ["use-rustls-ring"] }
-bdk_wallet = "2.0.0"
+anyhow = "1.0.99"
+bdk_bitcoind_rpc = "0.21.0"
+bdk_electrum = { version = "0.23.1", default-features = false, features = ["use-rustls-ring"] }
+bdk_wallet = "2.1.0"
 musig2 = { version = "0.3.1", features = ["rand"] }
 rand = "0.9.2"
