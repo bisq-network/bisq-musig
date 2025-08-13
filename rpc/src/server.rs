@@ -8,7 +8,7 @@ use tokio::time::{self, Duration};
 use tonic::{Request, Response, Result, Status};
 use tracing::{debug, error, info, instrument};
 
-use crate::pb::convert::TryProtoInto;
+use crate::pb::convert::{CheckInSignedRange as _, TryProtoInto};
 use crate::pb::musigrpc::musig_server;
 use crate::pb::musigrpc::{
     CloseTradeRequest, CloseTradeResponse, DepositPsbt, DepositTxSignatureRequest,
@@ -58,17 +58,23 @@ impl musig_server::Musig for MusigImpl {
                 request.buyer_output_peers_pub_key_share.try_proto_into()?,
                 request.seller_output_peers_pub_key_share.try_proto_into()?);
             trade_model.aggregate_key_shares()?;
-            trade_model.set_trade_amount(Amount::from_sat(request.trade_amount));
-            trade_model.set_buyers_security_deposit(Amount::from_sat(request.buyers_security_deposit));
-            trade_model.set_sellers_security_deposit(Amount::from_sat(request.sellers_security_deposit));
-            trade_model.set_deposit_tx_fee_rate(FeeRate::from_sat_per_kwu(request.deposit_tx_fee_rate));
-            trade_model.set_prepared_tx_fee_rate(FeeRate::from_sat_per_kwu(request.prepared_tx_fee_rate));
+            trade_model.set_trade_amount(
+                Amount::from_sat(request.trade_amount.check_in_signed_range()?));
+            trade_model.set_buyers_security_deposit(
+                Amount::from_sat(request.buyers_security_deposit.check_in_signed_range()?));
+            trade_model.set_sellers_security_deposit(
+                Amount::from_sat(request.sellers_security_deposit.check_in_signed_range()?));
+            trade_model.set_deposit_tx_fee_rate(
+                FeeRate::from_sat_per_kwu(request.deposit_tx_fee_rate.check_in_signed_range()?));
+            trade_model.set_prepared_tx_fee_rate(
+                FeeRate::from_sat_per_kwu(request.prepared_tx_fee_rate.check_in_signed_range()?));
             trade_model.set_trade_fee_receiver(request.trade_fee_receiver.try_proto_into()?)?;
             trade_model.init_my_addresses()?;
             trade_model.init_my_half_deposit_psbt()?;
             trade_model.init_my_nonce_shares()?;
 
             let redirection_amount_msat = trade_model.redirection_amount_msat()
+                .and_then(|amount| amount.check_in_signed_range().ok())
                 .ok_or_else(|| Status::internal("missing redirection amount"))?;
             let my_addresses = trade_model.get_my_addresses()
                 .ok_or_else(|| Status::internal("missing addresses"))?;
