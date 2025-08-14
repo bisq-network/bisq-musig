@@ -57,6 +57,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         ])
         .serde_serialized_enum("Role")
 
+        // Add Serde serialization for musigrpc response types...
+        .serde_serialized_type("PubKeySharesResponse", &[
+            base64("buyerOutputPubKeyShare"), base64("sellerOutputPubKeyShare")
+        ])
+        .serde_serialized_type("TxConfirmationStatus", &[
+            hex("tx")
+        ])
+        .serde_serialized_type("SwapTxSignatureResponse", &[
+            hex("swapTx"), base64("peerOutputPrvKeyShare")
+        ])
+        .serde_serialized_type("CloseTradeResponse", &[
+            base64("peerOutputPrvKeyShare")
+        ])
+
         // Now compile all the protos...
         .compile_protos(
             &["src/main/proto/rpc.proto", "src/main/proto/wallet.proto", "src/main/proto/bmp_protocol.proto"],
