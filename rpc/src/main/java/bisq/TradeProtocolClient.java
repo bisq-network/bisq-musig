@@ -91,6 +91,7 @@ public class TradeProtocolClient {
                 .setTradeAmount(200_000)
                 .setBuyersSecurityDeposit(30_000)
                 .setSellersSecurityDeposit(30_000)
+                .setTradeFeeReceiver(mockTradeFeeReceiver())
                 .build());
         System.out.println("Got reply: " + sellerNonceShareMessage);
 
@@ -105,6 +106,7 @@ public class TradeProtocolClient {
                 .setTradeAmount(200_000)
                 .setBuyersSecurityDeposit(30_000)
                 .setSellersSecurityDeposit(30_000)
+                .setTradeFeeReceiver(mockTradeFeeReceiver())
                 .build());
         System.out.println("Got reply: " + buyerNonceShareMessage);
 
@@ -146,6 +148,7 @@ public class TradeProtocolClient {
         // *** BUYER BROADCASTS DEPOSIT TX ***
         var buyerDepositTxConfirmationIter = stub.publishDepositTx(PublishDepositTxRequest.newBuilder()
                 .setTradeId(buyerTradeId)
+                .setPeersDepositPsbt(sellerDepositPsbt)
                 .build());
         // ***********************************
 
@@ -179,6 +182,7 @@ public class TradeProtocolClient {
                 .setTradeAmount(200_000)
                 .setBuyersSecurityDeposit(30_000)
                 .setSellersSecurityDeposit(30_000)
+                .setTradeFeeReceiver(mockTradeFeeReceiver())
                 .build());
         System.out.println("Got reply: " + buyerNonceShareMessage);
 
@@ -193,6 +197,7 @@ public class TradeProtocolClient {
                 .setTradeAmount(200_000)
                 .setBuyersSecurityDeposit(30_000)
                 .setSellersSecurityDeposit(30_000)
+                .setTradeFeeReceiver(mockTradeFeeReceiver())
                 .build());
         System.out.println("Got reply: " + sellerNonceShareMessage);
 
@@ -234,6 +239,7 @@ public class TradeProtocolClient {
         // *** SELLER BROADCASTS DEPOSIT TX ***
         var sellerDepositTxConfirmationIter = stub.publishDepositTx(PublishDepositTxRequest.newBuilder()
                 .setTradeId(sellerTradeId)
+                .setPeersDepositPsbt(buyerDepositPsbt)
                 .build());
         // ***********************************
 
@@ -318,6 +324,14 @@ public class TradeProtocolClient {
             System.out.println("Got reply: " + buyersCloseTradeResponse);
             // **************************
         }
+    }
+
+    @SuppressWarnings("SpellCheckingInspection")
+    private static ReceiverAddressAndAmount mockTradeFeeReceiver() {
+        return ReceiverAddressAndAmount.newBuilder()
+                .setAddress("tb1qpg889v22f3gefuvwpe3963t5a00nvfmkhlgqw5")
+                .setAmount(5_000)
+                .build();
     }
 
     @SuppressWarnings("SpellCheckingInspection")

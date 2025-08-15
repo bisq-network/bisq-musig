@@ -99,12 +99,11 @@ message DepositPsbt {
 
 message PublishDepositTxRequest {
   string tradeId = 1;
-  DepositPsbt depositPsbt = 2;
+  DepositPsbt peersDepositPsbt = 2;
 }
 
 message SubscribeTxConfirmationStatusRequest {
   string tradeId = 1;
-  DepositPsbt depositPsbt = 2;
 }
 
 message TxConfirmationStatus {

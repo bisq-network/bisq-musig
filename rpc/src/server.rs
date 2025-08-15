@@ -1,4 +1,4 @@
-use bdk_wallet::bitcoin::{Amount, FeeRate};
+use bdk_wallet::bitcoin::{Amount, FeeRate, Psbt};
 use bdk_wallet::serde_json;
 use drop_stream::DropStreamExt as _;
 use futures_util::stream::{self, BoxStream, Stream, StreamExt as _, TryStream, TryStreamExt as _};
@@ -27,6 +27,7 @@ use crate::pb::walletrpc::{
     NewAddressResponse, WalletBalanceRequest, WalletBalanceResponse,
 };
 use crate::protocol::{TradeModel, TradeModelStore as _, TRADE_MODELS};
+use crate::transaction::empty_dummy_psbt;
 use crate::wallet::WalletService;
 
 pub use musig_server::MusigServer;
@@ -137,7 +138,7 @@ impl musig_server::Musig for MusigImpl {
             trade_model.set_peer_partial_signatures_on_my_txs(&peers_partial_signatures.try_proto_into()?);
             trade_model.aggregate_partial_signatures()?;
 
-            Ok(DepositPsbt { deposit_psbt: b"deposit_psbt".into() })
+            Ok(DepositPsbt { deposit_psbt: empty_dummy_psbt().serialize() })
         })
     }
 
@@ -146,9 +147,13 @@ impl musig_server::Musig for MusigImpl {
     #[instrument(skip_all)]
     async fn publish_deposit_tx(&self, request: Request<PublishDepositTxRequest>) -> Result<Response<Self::PublishDepositTxStream>> {
         handle_musig_request(request, move |request, _trade_model| {
+            let peers_deposit_psbt = request.peers_deposit_psbt
+                .ok_or_else(|| Status::not_found("missing request.peers_deposit_psbt"))?;
+            TryProtoInto::<Psbt>::try_proto_into(peers_deposit_psbt.deposit_psbt)?;
+
             info!("*** BROADCAST DEPOSIT TX ***"); // TODO: Implement broadcast.
 
-            Ok(mock_tx_confirmation_status_stream(request.trade_id().to_owned()).box_traced())
+            Ok(mock_tx_confirmation_status_stream(request.trade_id).box_traced())
         })
     }
 
@@ -158,7 +163,7 @@ impl musig_server::Musig for MusigImpl {
     async fn subscribe_tx_confirmation_status(&self, request: Request<SubscribeTxConfirmationStatusRequest>)
                                               -> Result<Response<Self::SubscribeTxConfirmationStatusStream>> {
         handle_musig_request(request, move |request, _trade_model| {
-            Ok(mock_tx_confirmation_status_stream(request.trade_id().to_owned()).box_traced())
+            Ok(mock_tx_confirmation_status_stream(request.trade_id).box_traced())
         })
     }
 
