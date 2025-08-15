@@ -96,8 +96,8 @@ impl WalletServiceImpl {
         {
             let mempool_emissions = task::block_in_place(|| emitter.mempool())?;
             let mut wallet = self.wallet.write().unwrap();
-            wallet.apply_evicted_txs(mempool_emissions.evicted_ats());
-            wallet.apply_unconfirmed_txs(mempool_emissions.new_txs);
+            wallet.apply_evicted_txs(mempool_emissions.evicted);
+            wallet.apply_unconfirmed_txs(mempool_emissions.update);
         }
 
         trace!("Syncing tx confidence map with wallet.");
@@ -112,9 +112,9 @@ impl Default for WalletServiceImpl {
     fn default() -> Self { Self::new() }
 }
 
-fn unconfirmed_txids(wallet: &Wallet) -> impl Iterator<Item=Txid> + '_ {
+fn unconfirmed_txs(wallet: &Wallet) -> impl Iterator<Item=Arc<Transaction>> + '_ {
     tx_confidence_entries(wallet)
-        .filter_map(|(txid, conf)| (conf.num_confirmations == 0).then_some(txid))
+        .filter_map(|(_, conf)| (conf.num_confirmations == 0).then_some(conf.wallet_tx.tx))
 }
 
 fn tx_confidence_entries(wallet: &Wallet) -> impl Iterator<Item=(Txid, TxConfidence)> + '_ {
@@ -145,7 +145,7 @@ impl WalletService for WalletServiceImpl {
         info!(start_hash = %wallet_tip.hash(), start_height, "Fetched latest wallet checkpoint.");
 
         let mut emitter = Emitter::new(&rpc_client, wallet_tip, start_height,
-            unconfirmed_txids(&self.wallet.read().unwrap()));
+            unconfirmed_txs(&self.wallet.read().unwrap()));
         self.sync_from_rpc_emitter(&mut emitter)?;
         info!(wallet_balance_total = %self.balance().total(), "Finished initial sync.");
 

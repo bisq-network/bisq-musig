@@ -7,6 +7,7 @@ use std::error::Error;
 use std::sync::Arc;
 use tonic::transport::Server;
 use tracing::info;
+use tracing_subscriber::field::MakeExt;
 use tracing_subscriber::filter::{EnvFilter, ParseError};
 use tracing_subscriber::fmt;
 use tracing_subscriber::layer::SubscriberExt as _;
@@ -35,6 +36,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     tracing_subscriber::registry()
         .with(filter)
         .with(fmt::layer()
+            .map_fmt_fields(MakeExt::debug_alt)
             .with_writer(std::io::stderr))
         .init();
 

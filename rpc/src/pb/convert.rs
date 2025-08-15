@@ -39,6 +39,21 @@ pub(crate) mod hex {
     }
 }
 
+pub trait CheckInSignedRange: Sized {
+    /// # Errors
+    /// Will return `Err` if casting to a signed integer of the same size would overflow
+    fn check_in_signed_range(self) -> Result<Self>;
+}
+
+impl CheckInSignedRange for u64 {
+    fn check_in_signed_range(self) -> Result<Self> {
+        if self > i64::MAX as Self {
+            return Err(Status::invalid_argument(format!("out of signed range: {self}")));
+        }
+        Ok(self)
+    }
+}
+
 pub trait TryProtoInto<T> {
     /// # Errors
     /// Will return `Err` if conversion from proto fails
@@ -115,7 +130,7 @@ impl TryProtoInto<Receiver<NetworkUnchecked>> for ReceiverAddressAndAmount {
     fn try_proto_into(self) -> Result<Receiver<NetworkUnchecked>> {
         Ok(Receiver {
             address: self.address.try_proto_into()?,
-            amount: Amount::from_sat(self.amount),
+            amount: Amount::from_sat(self.amount.check_in_signed_range()?),
         })
     }
 }

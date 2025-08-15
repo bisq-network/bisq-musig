@@ -1,14 +1,18 @@
-use bdk_wallet::bitcoin::{Amount, FeeRate};
+use bdk_wallet::bitcoin::{Amount, FeeRate, Psbt};
+use bdk_wallet::serde_json;
 use drop_stream::DropStreamExt as _;
-use futures_util::stream::{self, BoxStream, Stream, StreamExt as _};
-use std::fmt::Debug;
+use futures_util::stream::{self, BoxStream, Stream, StreamExt as _, TryStream, TryStreamExt as _};
+use serde::Serialize;
+use std::fmt::{Display, Formatter};
 use std::marker::{Send, Sync};
+use std::pin::Pin;
 use std::sync::Arc;
+use std::task::{Context, Poll};
 use tokio::time::{self, Duration};
 use tonic::{Request, Response, Result, Status};
-use tracing::{debug, error, info, instrument};
+use tracing::{debug, error, info, instrument, trace, Span};
 
-use crate::pb::convert::TryProtoInto;
+use crate::pb::convert::{CheckInSignedRange as _, TryProtoInto};
 use crate::pb::musigrpc::musig_server;
 use crate::pb::musigrpc::{
     CloseTradeRequest, CloseTradeResponse, DepositPsbt, DepositTxSignatureRequest,
@@ -23,6 +27,7 @@ use crate::pb::walletrpc::{
     NewAddressResponse, WalletBalanceRequest, WalletBalanceResponse,
 };
 use crate::protocol::{TradeModel, TradeModelStore as _, TRADE_MODELS};
+use crate::transaction::empty_dummy_psbt;
 use crate::wallet::WalletService;
 
 pub use musig_server::MusigServer;
@@ -58,17 +63,23 @@ impl musig_server::Musig for MusigImpl {
                 request.buyer_output_peers_pub_key_share.try_proto_into()?,
                 request.seller_output_peers_pub_key_share.try_proto_into()?);
             trade_model.aggregate_key_shares()?;
-            trade_model.set_trade_amount(Amount::from_sat(request.trade_amount));
-            trade_model.set_buyers_security_deposit(Amount::from_sat(request.buyers_security_deposit));
-            trade_model.set_sellers_security_deposit(Amount::from_sat(request.sellers_security_deposit));
-            trade_model.set_deposit_tx_fee_rate(FeeRate::from_sat_per_kwu(request.deposit_tx_fee_rate));
-            trade_model.set_prepared_tx_fee_rate(FeeRate::from_sat_per_kwu(request.prepared_tx_fee_rate));
+            trade_model.set_trade_amount(
+                Amount::from_sat(request.trade_amount.check_in_signed_range()?));
+            trade_model.set_buyers_security_deposit(
+                Amount::from_sat(request.buyers_security_deposit.check_in_signed_range()?));
+            trade_model.set_sellers_security_deposit(
+                Amount::from_sat(request.sellers_security_deposit.check_in_signed_range()?));
+            trade_model.set_deposit_tx_fee_rate(
+                FeeRate::from_sat_per_kwu(request.deposit_tx_fee_rate.check_in_signed_range()?));
+            trade_model.set_prepared_tx_fee_rate(
+                FeeRate::from_sat_per_kwu(request.prepared_tx_fee_rate.check_in_signed_range()?));
             trade_model.set_trade_fee_receiver(request.trade_fee_receiver.try_proto_into()?)?;
             trade_model.init_my_addresses()?;
             trade_model.init_my_half_deposit_psbt()?;
             trade_model.init_my_nonce_shares()?;
 
             let redirection_amount_msat = trade_model.redirection_amount_msat()
+                .and_then(|amount| amount.check_in_signed_range().ok())
                 .ok_or_else(|| Status::internal("missing redirection amount"))?;
             let my_addresses = trade_model.get_my_addresses()
                 .ok_or_else(|| Status::internal("missing addresses"))?;
@@ -127,28 +138,32 @@ impl musig_server::Musig for MusigImpl {
             trade_model.set_peer_partial_signatures_on_my_txs(&peers_partial_signatures.try_proto_into()?);
             trade_model.aggregate_partial_signatures()?;
 
-            Ok(DepositPsbt { deposit_psbt: b"deposit_psbt".into() })
+            Ok(DepositPsbt { deposit_psbt: empty_dummy_psbt().serialize() })
         })
     }
 
-    type PublishDepositTxStream = BoxStream<'static, Result<TxConfirmationStatus>>;
+    type PublishDepositTxStream = TracedResultStream<TxConfirmationStatus>;
 
     #[instrument(skip_all)]
     async fn publish_deposit_tx(&self, request: Request<PublishDepositTxRequest>) -> Result<Response<Self::PublishDepositTxStream>> {
         handle_musig_request(request, move |request, _trade_model| {
+            let peers_deposit_psbt = request.peers_deposit_psbt
+                .ok_or_else(|| Status::not_found("missing request.peers_deposit_psbt"))?;
+            TryProtoInto::<Psbt>::try_proto_into(peers_deposit_psbt.deposit_psbt)?;
+
             info!("*** BROADCAST DEPOSIT TX ***"); // TODO: Implement broadcast.
 
-            Ok(mock_tx_confirmation_status_stream(request.trade_id().to_owned()).boxed())
+            Ok(mock_tx_confirmation_status_stream(request.trade_id).box_traced())
         })
     }
 
-    type SubscribeTxConfirmationStatusStream = BoxStream<'static, Result<TxConfirmationStatus>>;
+    type SubscribeTxConfirmationStatusStream = TracedResultStream<TxConfirmationStatus>;
 
     #[instrument(skip_all)]
     async fn subscribe_tx_confirmation_status(&self, request: Request<SubscribeTxConfirmationStatusRequest>)
                                               -> Result<Response<Self::SubscribeTxConfirmationStatusStream>> {
         handle_musig_request(request, move |request, _trade_model| {
-            Ok(mock_tx_confirmation_status_stream(request.trade_id().to_owned()).boxed())
+            Ok(mock_tx_confirmation_status_stream(request.trade_id).box_traced())
         })
     }
 
@@ -211,7 +226,7 @@ fn mock_tx_confirmation_status_stream(trade_id: String) -> impl Stream<Item=Resu
     stream::once(async {
         time::sleep(Duration::from_secs(5)).await;
         Ok(confirmation_event)
-    }).on_drop(move || debug!(trade_id, "Deposit tx status confirmation stream has been dropped."))
+    }).on_drop(move || debug!(trade_id, "Deposit tx confirmation status stream has been dropped."))
 }
 
 pub struct WalletImpl {
@@ -248,7 +263,7 @@ impl wallet_server::Wallet for WalletImpl {
         })
     }
 
-    type RegisterConfidenceNtfnStream = BoxStream<'static, Result<ConfEvent>>;
+    type RegisterConfidenceNtfnStream = TracedResultStream<ConfEvent>;
 
     #[instrument(skip_all)]
     async fn register_confidence_ntfn(&self, request: Request<ConfRequest>) -> Result<Response<Self::RegisterConfidenceNtfnStream>> {
@@ -256,14 +271,61 @@ impl wallet_server::Wallet for WalletImpl {
             let txid = request.tx_id.try_proto_into()?;
             let conf_events = self.wallet_service.get_tx_confidence_stream(txid)
                 .map(|o| Ok(o.map(Into::into).unwrap_or_default()))
-                .boxed();
+                .box_traced();
 
             Ok(conf_events)
         })
     }
 }
 
-trait MusigRequest: Debug {
+struct LazyJson<T>(T);
+
+impl<T: Serialize> Display for LazyJson<T> {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        let s = if f.alternate() {
+            serde_json::to_string_pretty(&self.0)
+        } else {
+            serde_json::to_string(&self.0)
+        };
+        write!(f, "{}", s.as_deref().unwrap_or("<<SERIALIZATION ERROR>>"))
+    }
+}
+
+#[derive(Serialize)]
+pub struct TracedResultStream<T> {
+    #[serde(skip)]
+    inner: BoxStream<'static, Result<T>>,
+    #[serde(skip)]
+    span: Span,
+}
+
+impl<T> Stream for TracedResultStream<T> {
+    type Item = Result<T>;
+
+    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        let this = self.get_mut();
+        let _enter = this.span.enter();
+        Pin::new(&mut this.inner).poll_next(cx)
+    }
+}
+
+pub trait TracedResultStreamExt<T: Serialize>: TryStream<Ok=T, Error=Status> + Sized + Send + 'static {
+    fn box_traced(self) -> TracedResultStream<T> {
+        TracedResultStream {
+            inner: Box::pin(self.inspect_ok(move |event| {
+                let message = LazyJson(event);
+                trace!(%message, "Streaming event.");
+            })),
+            span: Span::current(),
+        }
+    }
+}
+
+impl<S> TracedResultStreamExt<S::Ok> for S
+    where S: TryStream<Error=Status> + Sized + Send + 'static,
+          S::Ok: Serialize {}
+
+trait MusigRequest: Serialize {
     fn trade_id(&self) -> &str;
 }
 
@@ -287,6 +349,7 @@ impl_musig_req!(CloseTradeRequest);
 
 fn handle_musig_request<Req, Res, F>(request: Request<Req>, handler: F) -> Result<Response<Res>>
     where Req: MusigRequest,
+          Res: Serialize,
           F: FnOnce(Req, &mut TradeModel) -> Result<Res> {
     handle_request(request, move |request| {
         let trade_model = TRADE_MODELS.get_trade_model(request.trade_id())
@@ -298,12 +361,16 @@ fn handle_musig_request<Req, Res, F>(request: Request<Req>, handler: F) -> Resul
 }
 
 fn handle_request<Req, Res, F>(request: Request<Req>, handler: F) -> Result<Response<Res>>
-    where Req: Debug,
+    where Req: Serialize,
+          Res: Serialize,
           F: FnOnce(Req) -> Result<Res> {
-    debug!("Got a request: {request:?}");
+    let message = LazyJson(request.get_ref());
+    debug!(%message, "Got a request.");
 
     let response = handler(request.into_inner())
         .inspect_err(|e| error!("Error response: {e}"))?;
 
+    let message = LazyJson(&response);
+    trace!(%message, "Sending response.");
     Ok(Response::new(response))
 }
