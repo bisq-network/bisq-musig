@@ -12,6 +12,8 @@ use tracing_subscriber::filter::{EnvFilter, ParseError};
 use tracing_subscriber::fmt;
 use tracing_subscriber::layer::SubscriberExt as _;
 use tracing_subscriber::util::SubscriberInitExt as _;
+use rpc::bmp_wallet_service::BmpWalletServiceImpl;
+use rpc::pb::bmp_wallet::wallet_server::WalletServer as BmpWalletServer;
 
 #[derive(Debug, Parser)]
 #[command(version, about, long_about = None)]
@@ -46,12 +48,14 @@ async fn main() -> Result<(), Box<dyn Error>> {
     wallet.wallet_service.clone().spawn_connection();
 
     let bmp_protocol_impl = BmpServiceImpl::default();
+    let bmp_wallet_service = BmpWalletServiceImpl::default();
 
     info!(port = cli.port, "Starting gRPC server.");
     Server::builder()
         .add_service(MusigServer::new(musig))
         .add_service(WalletServer::new(wallet))
         .add_service(BmpProtocolServiceServer::new(bmp_protocol_impl))
+        .add_service(BmpWalletServer::new(bmp_wallet_service))
         .serve(addr)
         .await?;
 
