@@ -49,9 +49,9 @@ impl Wallet for BmpWalletServiceImpl {
             inputs: vec![],
             outputs: vec![],
             lock_time: 0,
-            height: 123456,
+            block_height: 123456,
             date: 1678886400,
-            confirmations: 10,
+            num_confirmations: 10,
             amount: 100000,
             incoming: true,
         }];
@@ -70,7 +70,7 @@ impl Wallet for BmpWalletServiceImpl {
             vout: 0,
             amount: 100000,
             address: "bc1qvyw2m3f2y2p2l42jm2q5j2j2q2j2q2j2q2j2q2".to_string(),
-            confirmations: 10,
+            num_confirmations: 10,
         }];
         Ok(Response::new(bmp_wallet::ListUtxosResponse { utxos }))
     }
