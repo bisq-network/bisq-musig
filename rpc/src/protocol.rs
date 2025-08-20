@@ -1,8 +1,9 @@
 use bdk_wallet::bitcoin::address::{KnownHrp, NetworkChecked, NetworkUnchecked, NetworkValidation};
 use bdk_wallet::bitcoin::hashes::Hash as _;
 use bdk_wallet::bitcoin::key::TweakedPublicKey;
+use bdk_wallet::bitcoin::taproot::Signature;
 use bdk_wallet::bitcoin::{
-    Address, Amount, FeeRate, Network, Psbt, PublicKey, TapNodeHash, TapSighash,
+    Address, Amount, FeeRate, Network, Psbt, PublicKey, TapNodeHash, TapSighash, Transaction,
 };
 use musig2::adaptor::AdaptorSignature;
 use musig2::secp::{MaybePoint, MaybeScalar, Point, Scalar};
@@ -18,8 +19,8 @@ use tracing::{error, instrument, warn};
 use crate::storage::{ByOptVal, ByRef, ByVal, Storage, ValStorage};
 use crate::transaction::{
     empty_dummy_psbt, warning_output_merkle_root, DepositTxBuilder, ForwardingTxBuilder, Receiver,
-    ReceiverList, RedirectTxBuilder, WarningTxBuilder, ANCHOR_AMOUNT, REGTEST_CLAIM_LOCK_TIME,
-    REGTEST_WARNING_LOCK_TIME, SIGNED_REDIRECT_TX_BASE_WEIGHT,
+    ReceiverList, RedirectTxBuilder, WarningTxBuilder, WithWitnesses as _, ANCHOR_AMOUNT,
+    REGTEST_CLAIM_LOCK_TIME, REGTEST_WARNING_LOCK_TIME, SIGNED_REDIRECT_TX_BASE_WEIGHT,
 };
 
 pub trait TradeModelStore {
@@ -644,6 +645,39 @@ impl TradeModel {
         Ok(())
     }
 
+    #[instrument(skip_all)]
+    pub fn compute_my_signed_prepared_txs(&mut self) -> Result<()> {
+        use MaybeScalar::Zero;
+        if self.am_buyer() {
+            self.buyers_warning_tx_builder
+                .set_buyer_input_signature(self.buyers_warning_tx_buyer_input_sig_ctx.compute_taproot_signature(Zero)?)
+                .set_seller_input_signature(self.buyers_warning_tx_seller_input_sig_ctx.compute_taproot_signature(Zero)?)
+                .compute_signed_tx()?;
+            self.buyers_redirect_tx_builder
+                .set_input_signature(self.buyers_redirect_tx_input_sig_ctx.compute_taproot_signature(Zero)?)
+                .compute_signed_tx()?;
+            self.buyers_claim_tx_input_sig_ctx.compute_taproot_signature(Zero)
+                .map_or_else(ProtocolErrorKind::skip_missing, |sig| {
+                    self.buyers_claim_tx_builder.set_input_signature(sig).compute_signed_tx()?;
+                    Ok(())
+                })?;
+        } else {
+            self.sellers_warning_tx_builder
+                .set_buyer_input_signature(self.sellers_warning_tx_buyer_input_sig_ctx.compute_taproot_signature(Zero)?)
+                .set_seller_input_signature(self.sellers_warning_tx_seller_input_sig_ctx.compute_taproot_signature(Zero)?)
+                .compute_signed_tx()?;
+            self.sellers_redirect_tx_builder
+                .set_input_signature(self.sellers_redirect_tx_input_sig_ctx.compute_taproot_signature(Zero)?)
+                .compute_signed_tx()?;
+            self.sellers_claim_tx_input_sig_ctx.compute_taproot_signature(Zero)
+                .map_or_else(ProtocolErrorKind::skip_missing, |sig| {
+                    self.sellers_claim_tx_builder.set_input_signature(sig).compute_signed_tx()?;
+                    Ok(())
+                })?;
+        }
+        Ok(())
+    }
+
     pub const fn set_swap_tx_input_peers_partial_signature(&mut self, sig: PartialSignature) {
         self.swap_tx_input_sig_ctx.peers_partial_sig = Some(sig);
     }
@@ -687,18 +721,26 @@ impl TradeModel {
         self.get_my_key_ctx_mut().aggregate_prv_key_shares()
     }
 
-    pub fn compute_swap_tx_input_signature(&self) -> Result<LiftedSignature> {
-        let adaptor_sig = self.swap_tx_input_sig_ctx.aggregated_sig
-            .ok_or(ProtocolErrorKind::MissingAggSig)?;
+    pub fn compute_signed_swap_tx(&mut self) -> Result<()> {
         let adaptor_secret = self.buyer_output_key_ctx.get_sellers_prv_key()
-            .ok_or(ProtocolErrorKind::MissingKeyShare)?;
-        adaptor_sig.adapt(adaptor_secret).ok_or(ProtocolErrorKind::ZeroNonce)
+            .ok_or(ProtocolErrorKind::MissingKeyShare)?.into();
+        self.swap_tx_builder
+            .set_input_signature(self.swap_tx_input_sig_ctx.compute_taproot_signature(adaptor_secret)?)
+            .compute_signed_tx()?;
+        Ok(())
     }
 
-    pub fn recover_seller_private_key_share_for_buyer_output(&mut self, swap_tx_input_signature: &LiftedSignature) -> Result<()> {
+    pub fn get_signed_swap_tx(&self) -> Option<&Transaction> {
+        self.swap_tx_builder.signed_tx().ok()
+    }
+
+    pub fn recover_seller_private_key_share_for_buyer_output(&mut self, swap_tx: &Transaction) -> Result<()> {
+        let swap_tx_input = self.deposit_tx_builder.seller_payout()?;
+        let final_sig = LiftedSignature::from_bytes(
+            &swap_tx.find_key_spend_signature(&swap_tx_input)?.serialize())?;
         let adaptor_sig = self.swap_tx_input_sig_ctx.aggregated_sig
             .ok_or(ProtocolErrorKind::MissingAggSig)?;
-        let adaptor_secret: MaybeScalar = adaptor_sig.reveal_secret(swap_tx_input_signature)
+        let adaptor_secret: MaybeScalar = adaptor_sig.reveal_secret(&final_sig)
             .ok_or(ProtocolErrorKind::MismatchedSigs)?;
         self.buyer_output_key_ctx.set_sellers_prv_key_if_buyer(adaptor_secret.try_into()?)
     }
@@ -900,6 +942,14 @@ impl SigCtx {
             self.adaptor_point, partial_signatures, message)?;
         Ok(self.aggregated_sig.insert(sig))
     }
+
+    fn compute_taproot_signature(&self, adaptor_secret: MaybeScalar) -> Result<Signature> {
+        let adaptor_sig = self.aggregated_sig
+            .ok_or(ProtocolErrorKind::MissingAggSig)?;
+        let sig_bytes: [u8; 64] = adaptor_sig.adapt(adaptor_secret)
+            .ok_or(ProtocolErrorKind::ZeroNonce)?;
+        Ok(Signature::from_slice(&sig_bytes).expect("len = 64"))
+    }
 }
 
 type Result<T, E = ProtocolErrorKind> = std::result::Result<T, E>;
@@ -937,6 +987,7 @@ pub enum ProtocolErrorKind {
     Verify(#[from] musig2::errors::VerifyError),
     Tweak(#[from] musig2::errors::TweakError),
     InvalidSecretKeys(#[from] musig2::errors::InvalidSecretKeysError),
+    DecodeLiftedSignature(#[from] musig2::errors::DecodeError<LiftedSignature>),
     ZeroScalar(#[from] musig2::secp::errors::ZeroScalarError),
     AddressParse(#[from] bdk_wallet::bitcoin::address::ParseError),
     Transaction(#[from] crate::transaction::TransactionErrorKind),

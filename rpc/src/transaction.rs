@@ -2,12 +2,12 @@ use bdk_wallet::bitcoin::address::{NetworkChecked, NetworkUnchecked, NetworkVali
 use bdk_wallet::bitcoin::amount::CheckedSum as _;
 use bdk_wallet::bitcoin::opcodes::all::{OP_CHECKSIG, OP_CSV, OP_DROP};
 use bdk_wallet::bitcoin::sighash::{Prevouts, SighashCache};
-use bdk_wallet::bitcoin::taproot::TaprootBuilder;
+use bdk_wallet::bitcoin::taproot::{Signature, TaprootBuilder, TAPROOT_ANNEX_PREFIX};
 use bdk_wallet::bitcoin::transaction::Version;
 use bdk_wallet::bitcoin::{
     absolute, relative, script, Address, Amount, FeeRate, Network, OutPoint, Psbt, ScriptBuf,
     Sequence, TapNodeHash, TapSighash, TapSighashType, Transaction, TxIn, TxOut, Txid, Weight,
-    XOnlyPublicKey,
+    Witness, XOnlyPublicKey,
 };
 use paste::paste;
 use relative::LockTime;
@@ -124,6 +124,45 @@ pub struct TxOutput(OutPoint, TxOut);
 
 pub type ReceiverList = Arc<[Receiver]>;
 
+pub trait WithWitnesses: Sized {
+    /// # Panics
+    /// Will panic if `input_index` is out of bounds
+    fn with_key_spend_witness(self, input_index: usize, signature: &Signature) -> Self;
+
+    fn key_spend_signature(&self, input_index: usize) -> Result<Signature>;
+
+    fn find_key_spend_signature(&self, input: &TxOutput) -> Result<Signature>;
+}
+
+impl WithWitnesses for Transaction {
+    fn with_key_spend_witness(mut self, input_index: usize, signature: &Signature) -> Self {
+        self.input[input_index].witness = Witness::p2tr_key_spend(signature);
+        self
+    }
+
+    fn key_spend_signature(&self, input_index: usize) -> Result<Signature> {
+        let witness = &self.tx_in(input_index)?.witness;
+        match (witness.len(), witness.last()) {
+            (1, Some(sl)) => {
+                Ok(Signature::from_slice(sl)?)
+            }
+            (2, Some(sl)) if sl.starts_with(&[TAPROOT_ANNEX_PREFIX]) => {
+                Ok(Signature::from_slice(witness.second_to_last().expect("len > 1"))?)
+            }
+            _ => Err(TransactionErrorKind::InvalidWitness)
+        }
+    }
+
+    fn find_key_spend_signature(&self, input: &TxOutput) -> Result<Signature> {
+        for (input_index, TxIn { previous_output, .. }) in self.input.iter().enumerate() {
+            if previous_output == &input.0 {
+                return self.key_spend_signature(input_index);
+            }
+        }
+        Err(TransactionErrorKind::MissingSignature)
+    }
+}
+
 trait WithFixedInputs<const N: usize> {
     fn inputs(&self) -> Result<[&TxOutput; N]>;
 
@@ -225,8 +264,11 @@ pub struct WarningTxBuilder {
     anchor_address: Option<Address>,
     lock_time: Option<LockTime>,
     fee_rate: Option<FeeRate>,
+    buyer_input_signature: Option<Signature>,
+    seller_input_signature: Option<Signature>,
     // Derived fields:
     unsigned_tx: Option<Transaction>,
+    signed_tx: Option<Transaction>,
 }
 
 impl WarningTxBuilder {
@@ -236,7 +278,11 @@ impl WarningTxBuilder {
     make_getter_setter!(anchor_address: Address);
     make_getter_setter!(lock_time: LockTime);
     make_getter_setter!(fee_rate: FeeRate);
+    make_getter_setter!(buyer_input_signature: Signature);
+    make_getter_setter!(seller_input_signature: Signature);
     make_getter!(unsigned_tx: Transaction);
+    #[cfg(test)]
+    make_getter!(signed_tx: Transaction);
 
     pub fn escrow_amount(input_amounts: impl IntoIterator<Item=Amount>, fee_rate: FeeRate) -> Option<Amount> {
         input_amounts.into_iter().checked_sum()?
@@ -280,6 +326,14 @@ impl WarningTxBuilder {
     pub fn seller_input_sighash(&self) -> Result<TapSighash> {
         self.key_spend_sighash(self.unsigned_tx()?, 1)
     }
+
+    pub fn compute_signed_tx(&mut self) -> Result<&mut Self> {
+        let tx = self.unsigned_tx()?.clone()
+            .with_key_spend_witness(0, self.buyer_input_signature()?)
+            .with_key_spend_witness(1, self.seller_input_signature()?);
+        self.signed_tx.get_or_insert(tx);
+        Ok(self)
+    }
 }
 
 impl WithFixedInputs<2> for WarningTxBuilder {
@@ -292,15 +346,20 @@ pub struct RedirectTxBuilder {
     input: Option<TxOutput>,
     receivers: Option<ReceiverList>,
     anchor_address: Option<Address>,
+    input_signature: Option<Signature>,
     // Derived fields:
     unsigned_tx: Option<Transaction>,
+    signed_tx: Option<Transaction>,
 }
 
 impl RedirectTxBuilder {
     make_getter_setter!(input: TxOutput);
     make_getter_setter!(receivers: ReceiverList);
     make_getter_setter!(anchor_address: Address);
+    make_getter_setter!(input_signature: Signature);
     make_getter!(unsigned_tx: Transaction);
+    #[cfg(test)]
+    make_getter!(signed_tx: Transaction);
 
     pub fn compute_unsigned_tx(&mut self) -> Result<&mut Self> {
         let mut output = Vec::with_capacity(self.receivers()?.len() + 1);
@@ -322,6 +381,12 @@ impl RedirectTxBuilder {
     pub fn input_sighash(&self) -> Result<TapSighash> {
         self.key_spend_sighash(self.unsigned_tx()?, 0)
     }
+
+    pub fn compute_signed_tx(&mut self) -> Result<&mut Self> {
+        let tx = self.unsigned_tx()?.clone().with_key_spend_witness(0, self.input_signature()?);
+        self.signed_tx.get_or_insert(tx);
+        Ok(self)
+    }
 }
 
 impl WithFixedInputs<1> for RedirectTxBuilder {
@@ -335,8 +400,10 @@ pub struct ForwardingTxBuilder {
     payout_address: Option<Address>,
     lock_time: Option<LockTime>,
     fee_rate: Option<FeeRate>,
+    input_signature: Option<Signature>,
     // Derived fields:
     unsigned_tx: Option<Transaction>,
+    signed_tx: Option<Transaction>,
 }
 
 impl ForwardingTxBuilder {
@@ -344,7 +411,9 @@ impl ForwardingTxBuilder {
     make_getter_setter!(payout_address: Address);
     make_getter_setter!(lock_time: LockTime);
     make_getter_setter!(fee_rate: FeeRate);
+    make_getter_setter!(input_signature: Signature);
     make_getter!(unsigned_tx: Transaction);
+    make_getter!(signed_tx: Transaction);
 
     pub fn disable_lock_time(&mut self) -> &mut Self { self.set_lock_time(LockTime::ZERO) }
 
@@ -370,6 +439,12 @@ impl ForwardingTxBuilder {
 
     pub fn input_sighash(&self) -> Result<TapSighash> {
         self.key_spend_sighash(self.unsigned_tx()?, 0)
+    }
+
+    pub fn compute_signed_tx(&mut self) -> Result<&mut Self> {
+        let tx = self.unsigned_tx()?.clone().with_key_spend_witness(0, self.input_signature()?);
+        self.signed_tx.get_or_insert(tx);
+        Ok(self)
     }
 }
 
@@ -399,21 +474,28 @@ pub enum TransactionErrorKind {
     MissingPsbt,
     #[error("missing transaction")]
     MissingTransaction,
+    #[error("missing signature")]
+    MissingSignature,
     #[error("overflow")]
     Overflow,
+    #[error("invalid witness")]
+    InvalidWitness,
     AddressParse(#[from] bdk_wallet::bitcoin::address::ParseError),
     Taproot(#[from] bdk_wallet::bitcoin::sighash::TaprootError),
+    InputsIndex(#[from] bdk_wallet::bitcoin::transaction::InputsIndexError),
+    SigFromSlice(#[from] bdk_wallet::bitcoin::taproot::SigFromSliceError),
 }
 
 #[cfg(test)]
 mod tests {
-    use bdk_wallet::bitcoin::consensus::Decodable as _;
+    use bdk_wallet::bitcoin::consensus;
     use bdk_wallet::bitcoin::hex::test_hex_unwrap as hex;
     use bdk_wallet::bitcoin::Network;
+    use const_format::str_index;
 
     use super::*;
 
-    // Valid signed txs pulled from an integration test run. We should be able to rebuild the unsigned parts exactly...
+    // Valid signed txs pulled from an integration test run. We should be able to rebuild them exactly...
 
     //noinspection SpellCheckingInspection
     const SIGNED_DEPOSIT_TX: &str = "\
@@ -462,22 +544,20 @@ mod tests {
         0464f04ced9ce0d5715f3740b24fd4226f72c2d990b2bbdad29898e15051082ffc3f3626170a992e7a5a8b48fffd58e4\
         e5520b2c45d5b09a6f07c4c2a2dc00000000";
 
-    #[expect(edition_2024_expr_fragment_specifier, reason = "for tests only; unlikely to break")]
-    macro_rules! tx {
-        ($hex:expr) => {{
-            let raw_tx = hex!($hex);
-            Transaction::consensus_decode(&mut raw_tx.as_slice()).unwrap()
-        }};
-    }
+    const SWAP_TX_SIGNATURE: &str = str_index!(SIGNED_SWAP_TX, 188..316);
+    const SELLERS_WARNING_TX_BUYER_INPUT_SIGNATURE: &str = str_index!(SIGNED_SELLERS_WARNING_TX, 356..484);
+    const SELLERS_WARNING_TX_SELLER_INPUT_SIGNATURE: &str = str_index!(SIGNED_SELLERS_WARNING_TX, 488..616);
+    const BUYERS_REDIRECT_TX_SIGNATURE: &str = str_index!(SIGNED_BUYERS_REDIRECT_TX, 360..488);
+    const SELLERS_CLAIM_TX_SIGNATURE: &str = str_index!(SIGNED_SELLERS_CLAIM_TX, 188..316);
 
     //noinspection SpellCheckingInspection
     #[test]
     fn test_txids() {
-        let deposit_tx = tx!(SIGNED_DEPOSIT_TX);
-        let swap_tx = tx!(SIGNED_SWAP_TX);
-        let warning_tx = tx!(SIGNED_SELLERS_WARNING_TX);
-        let redirect_tx = tx!(SIGNED_BUYERS_REDIRECT_TX);
-        let claim_tx = tx!(SIGNED_SELLERS_CLAIM_TX);
+        let deposit_tx = tx(SIGNED_DEPOSIT_TX);
+        let swap_tx = tx(SIGNED_SWAP_TX);
+        let warning_tx = tx(SIGNED_SELLERS_WARNING_TX);
+        let redirect_tx = tx(SIGNED_BUYERS_REDIRECT_TX);
+        let claim_tx = tx(SIGNED_SELLERS_CLAIM_TX);
 
         let [deposit_txid, swap_txid, warning_txid, redirect_txid, claim_txid] =
             [&deposit_tx, &swap_tx, &warning_tx, &redirect_tx, &claim_tx].map(Transaction::compute_txid);
@@ -492,10 +572,10 @@ mod tests {
     #[test]
     fn test_swap_tx_builder() -> Result<()> {
         let builder = filled_swap_tx_builder(&filled_deposit_tx_builder()?)?;
-        let unsigned_tx = builder.unsigned_tx()?;
+        let signed_tx = builder.signed_tx()?;
         let sighash = builder.input_sighash()?;
 
-        assert_eq!(tx!(SIGNED_SWAP_TX).compute_txid(), unsigned_tx.compute_txid());
+        assert_eq!(&tx(SIGNED_SWAP_TX), signed_tx);
         // TODO: Check that the sighash is correct.
         dbg!(sighash);
         Ok(())
@@ -504,10 +584,10 @@ mod tests {
     #[test]
     fn test_warning_tx_builder() -> Result<()> {
         let builder = filled_warning_tx_builder(&filled_deposit_tx_builder()?)?;
-        let unsigned_tx = builder.unsigned_tx()?;
+        let signed_tx = builder.signed_tx()?;
         let sighashes = [builder.buyer_input_sighash()?, builder.seller_input_sighash()?];
 
-        assert_eq!(tx!(SIGNED_SELLERS_WARNING_TX).compute_txid(), unsigned_tx.compute_txid());
+        assert_eq!(&tx(SIGNED_SELLERS_WARNING_TX), signed_tx);
         // TODO: Check that the sighashes are correct.
         dbg!(sighashes);
         Ok(())
@@ -517,10 +597,10 @@ mod tests {
     fn test_redirect_tx_builder() -> Result<()> {
         let builder = filled_redirect_tx_builder(
             &filled_warning_tx_builder(&filled_deposit_tx_builder()?)?)?;
-        let unsigned_tx = builder.unsigned_tx()?;
+        let signed_tx = builder.signed_tx()?;
         let sighash = builder.input_sighash()?;
 
-        assert_eq!(tx!(SIGNED_BUYERS_REDIRECT_TX).compute_txid(), unsigned_tx.compute_txid());
+        assert_eq!(&tx(SIGNED_BUYERS_REDIRECT_TX), signed_tx);
         // TODO: Check that the sighash is correct.
         dbg!(sighash);
         Ok(())
@@ -530,14 +610,18 @@ mod tests {
     fn test_claim_tx_builder() -> Result<()> {
         let builder = filled_claim_tx_builder(
             &filled_warning_tx_builder(&filled_deposit_tx_builder()?)?)?;
-        let unsigned_tx = builder.unsigned_tx()?;
+        let signed_tx = builder.signed_tx()?;
         let sighash = builder.input_sighash()?;
 
-        assert_eq!(tx!(SIGNED_SELLERS_CLAIM_TX).compute_txid(), unsigned_tx.compute_txid());
+        assert_eq!(&tx(SIGNED_SELLERS_CLAIM_TX), signed_tx);
         // TODO: Check that the sighash is correct.
         dbg!(sighash);
         Ok(())
     }
+
+    fn tx(hex: &str) -> Transaction { consensus::deserialize(&hex!(hex)).unwrap() }
+
+    fn sig(hex: &str) -> Signature { Signature::from_slice(&hex!(hex)).unwrap() }
 
     //noinspection SpellCheckingInspection
     fn filled_deposit_tx_builder() -> Result<DepositTxBuilder> {
@@ -572,7 +656,9 @@ mod tests {
             .set_payout_address(payout_address)
             .disable_lock_time()
             .set_fee_rate(FeeRate::from_sat_per_kwu(2252)) // gives 1000-sat absolute fee
-            .compute_unsigned_tx()?;
+            .compute_unsigned_tx()?
+            .set_input_signature(sig(SWAP_TX_SIGNATURE))
+            .compute_signed_tx()?;
         Ok(builder)
     }
 
@@ -591,7 +677,10 @@ mod tests {
             .set_anchor_address(anchor_address)
             .set_lock_time(LockTime::from_height(2))
             .set_fee_rate(FeeRate::from_sat_per_kwu(1182)) // gives 1000-sat absolute fee
-            .compute_unsigned_tx()?;
+            .compute_unsigned_tx()?
+            .set_buyer_input_signature(sig(SELLERS_WARNING_TX_BUYER_INPUT_SIGNATURE))
+            .set_seller_input_signature(sig(SELLERS_WARNING_TX_SELLER_INPUT_SIGNATURE))
+            .compute_signed_tx()?;
         Ok(builder)
     }
 
@@ -613,7 +702,9 @@ mod tests {
             .set_input(warning_tx_builder.escrow()?)
             .set_receivers(Arc::new(receivers))
             .set_anchor_address(anchor_address)
-            .compute_unsigned_tx()?;
+            .compute_unsigned_tx()?
+            .set_input_signature(sig(BUYERS_REDIRECT_TX_SIGNATURE))
+            .compute_signed_tx()?;
         Ok(builder)
     }
 
@@ -628,7 +719,9 @@ mod tests {
             .set_payout_address(payout_address)
             .set_lock_time(LockTime::from_height(2))
             .set_fee_rate(FeeRate::from_sat_per_kwu(2252)) // gives 1000-sat absolute fee
-            .compute_unsigned_tx()?;
+            .compute_unsigned_tx()?
+            .set_input_signature(sig(SELLERS_CLAIM_TX_SIGNATURE))
+            .compute_signed_tx()?;
         Ok(builder)
     }
 }

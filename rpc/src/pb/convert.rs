@@ -1,11 +1,10 @@
 use bdk_wallet::bitcoin::address::NetworkUnchecked;
-use bdk_wallet::bitcoin::consensus::Encodable as _;
 use bdk_wallet::bitcoin::hashes::Hash as _;
-use bdk_wallet::bitcoin::{Address, Amount, Psbt, TapSighash, Txid};
+use bdk_wallet::bitcoin::{consensus, Address, Amount, Psbt, TapSighash, Transaction, Txid};
 use bdk_wallet::chain::ChainPosition;
 use bdk_wallet::{Balance, LocalOutput};
 use musig2::secp::{MaybeScalar, Point, Scalar};
-use musig2::{LiftedSignature, PubNonce};
+use musig2::PubNonce;
 use prost::UnknownEnumValue;
 use tonic::{Result, Status};
 
@@ -88,7 +87,6 @@ impl_try_proto_into_for_slice!(Point, "nonzero point");
 impl_try_proto_into_for_slice!(PubNonce, "pub nonce");
 impl_try_proto_into_for_slice!(Scalar, "nonzero scalar");
 impl_try_proto_into_for_slice!(MaybeScalar, "scalar");
-impl_try_proto_into_for_slice!(LiftedSignature, "signature");
 
 impl TryProtoInto<Txid> for &[u8] {
     fn try_proto_into(self) -> Result<Txid> {
@@ -101,6 +99,13 @@ impl TryProtoInto<TapSighash> for &[u8] {
     fn try_proto_into(self) -> Result<TapSighash> {
         TapSighash::from_slice(self)
             .map_err(|e| Status::invalid_argument(format!("could not decode sighash: {e}")))
+    }
+}
+
+impl TryProtoInto<Transaction> for &[u8] {
+    fn try_proto_into(self) -> Result<Transaction> {
+        consensus::deserialize(self)
+            .map_err(|e| Status::invalid_argument(format!("could not decode transaction: {e}")))
     }
 }
 
@@ -294,8 +299,7 @@ impl From<LocalOutput> for TransactionOutput {
 
 impl From<TxConfidence> for ConfEvent {
     fn from(TxConfidence { wallet_tx, num_confirmations }: TxConfidence) -> Self {
-        let mut raw_tx = Vec::new();
-        wallet_tx.tx.consensus_encode(&mut raw_tx).unwrap();
+        let raw_tx = Some(consensus::serialize(&wallet_tx.tx));
         let (confidence_type, confirmation_block_time) = match wallet_tx.chain_position {
             ChainPosition::Confirmed { anchor, .. } =>
                 (ConfidenceType::Confirmed, Some(ConfirmationBlockTime {
@@ -306,7 +310,7 @@ impl From<TxConfidence> for ConfEvent {
             ChainPosition::Unconfirmed { .. } => (ConfidenceType::Unconfirmed, None)
         };
         Self {
-            raw_tx: Some(raw_tx),
+            raw_tx,
             confidence_type: confidence_type.into(),
             num_confirmations,
             confirmation_block_time,

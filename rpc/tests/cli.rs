@@ -1,8 +1,7 @@
 use assert_cmd::assert::Assert;
 use assert_cmd::Command;
-use bdk_wallet::bitcoin::consensus::Decodable as _;
 use bdk_wallet::bitcoin::hex::test_hex_unwrap as hex;
-use bdk_wallet::bitcoin::{OutPoint, Transaction};
+use bdk_wallet::bitcoin::{consensus, OutPoint, Transaction};
 use bdk_wallet::chain::{ChainPosition, ConfirmationBlockTime};
 use bdk_wallet::{KeychainKind, LocalOutput};
 use const_format::str_replace;
@@ -20,12 +19,13 @@ use unimock::{matching, MockFn as _, Unimock};
 const CLI_TIMEOUT: Duration = Duration::from_millis(200);
 
 //noinspection SpellCheckingInspection
-const MOCK_TX: &str = "02000000000101fb8ab4c1fb7ea3fe11a35d24853653df8823b7552cb561e5626bf4b709bbf9\
-    f70000000000fdffffff0200f90295000000002251206523edfb7a73d0d1e1b38ec0068503b46557bc8368e4e4d3057\
-    5c9f524e9a8748ef202950000000022512025a006cf9eb838697404da9568728e678e4fb704007d8f154b300fbdba3c\
-    9fb602473044022042821bee4e1afa02ce2ec5a931a964a3110c18987dae0c176f4ef83656ff149f0220730cc1917a8\
-    277d92ad9af155730630ac5482759300bbdf0d5083407f8dea3e401210226e4d88cd0ea0cd405b8f03e4226291e094c\
-    1e8fe83a3536d438146a56c421f000000000";
+const MOCK_TX: &str = "\
+    02000000000101fb8ab4c1fb7ea3fe11a35d24853653df8823b7552cb561e5626bf4b709bbf9f70000000000fdffffff\
+    0200f90295000000002251206523edfb7a73d0d1e1b38ec0068503b46557bc8368e4e4d30575c9f524e9a8748ef20295\
+    0000000022512025a006cf9eb838697404da9568728e678e4fb704007d8f154b300fbdba3c9fb602473044022042821b\
+    ee4e1afa02ce2ec5a931a964a3110c18987dae0c176f4ef83656ff149f0220730cc1917a8277d92ad9af155730630ac5\
+    482759300bbdf0d5083407f8dea3e401210226e4d88cd0ea0cd405b8f03e4226291e094c1e8fe83a3536d438146a56c4\
+    21f000000000";
 
 const EXPECTED_WALLET_BALANCE_RESPONSE: &str = r#"{
   "immature": 0,
@@ -160,10 +160,7 @@ async fn test_cli_notify_confidence() {
         .stderr(str::is_empty());
 }
 
-fn mock_tx() -> Transaction {
-    let raw_tx = hex!(MOCK_TX);
-    Transaction::consensus_decode(&mut raw_tx.as_slice()).unwrap()
-}
+fn mock_tx() -> Transaction { consensus::deserialize(&hex!(MOCK_TX)).unwrap() }
 
 //noinspection SpellCheckingInspection
 fn mock_chain_position() -> ChainPosition<ConfirmationBlockTime> {
