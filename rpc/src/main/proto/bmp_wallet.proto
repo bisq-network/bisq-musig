@@ -118,14 +118,14 @@ message TransactionInput {
     string prevOutTxId = 1;
     sint32 prevOutIndex = 2;
     sint64 sequenceNumber = 3;
-    string scriptSig = 4;
+    bytes scriptSig = 4;
     string witness = 5;
 }
 
 message TransactionOutput {
     sint64 value = 1;
     string address = 2;
-    string scriptPubKey = 3;
+    bytes scriptPubKey = 3;
 }
 
 message Transaction {
