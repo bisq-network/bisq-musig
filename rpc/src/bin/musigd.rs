@@ -1,6 +1,8 @@
 use clap::Parser;
 use rpc::bmp_service::BmpServiceImpl;
+use rpc::bmp_wallet_service::BmpWalletServiceImpl;
 use rpc::pb::bmp_protocol::bmp_protocol_service_server::BmpProtocolServiceServer;
+use rpc::pb::bmp_wallet::wallet_server::WalletServer as BmpWalletServer;
 use rpc::server::{MusigImpl, MusigServer, WalletImpl, WalletServer};
 use rpc::wallet::WalletServiceImpl;
 use std::error::Error;
@@ -12,8 +14,6 @@ use tracing_subscriber::filter::{EnvFilter, ParseError};
 use tracing_subscriber::fmt;
 use tracing_subscriber::layer::SubscriberExt as _;
 use tracing_subscriber::util::SubscriberInitExt as _;
-use rpc::bmp_wallet_service::BmpWalletServiceImpl;
-use rpc::pb::bmp_wallet::wallet_server::WalletServer as BmpWalletServer;
 
 #[derive(Debug, Parser)]
 #[command(version, about, long_about = None)]
