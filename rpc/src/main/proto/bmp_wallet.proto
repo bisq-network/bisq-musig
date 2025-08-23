@@ -132,7 +132,7 @@ message Transaction {
     string txId = 1;
     repeated TransactionInput inputs = 2;
     repeated TransactionOutput outputs = 3;
-    int64 lockTime = 4;
+    uint64 lockTime = 4;
     uint32 blockHeight = 5;
     uint64 date = 6; // Unix timestamp
     uint32 numConfirmations = 7;
