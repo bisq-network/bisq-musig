@@ -18,8 +18,8 @@ use tracing::{error, instrument, warn};
 
 use crate::storage::{ByOptVal, ByRef, ByVal, Storage, ValStorage};
 use crate::transaction::{
-    empty_dummy_psbt, warning_output_merkle_root, DepositTxBuilder, ForwardingTxBuilder, Receiver,
-    ReceiverList, RedirectTxBuilder, WarningTxBuilder, WithWitnesses as _, ANCHOR_AMOUNT,
+    warning_output_merkle_root, DepositTxBuilder, ForwardingTxBuilder, Receiver, ReceiverList,
+    RedirectTxBuilder, WarningTxBuilder, WithWitnesses as _, ANCHOR_AMOUNT,
     REGTEST_CLAIM_LOCK_TIME, REGTEST_WARNING_LOCK_TIME, SIGNED_REDIRECT_TX_BASE_WEIGHT,
 };
 
@@ -182,14 +182,6 @@ impl TradeModel {
 
     pub const fn am_buyer(&self) -> bool {
         matches!(self.my_role, Role::BuyerAsMaker | Role::BuyerAsTaker)
-    }
-
-    fn check_deposit_tx_params_are_known(&self) -> Result<()> {
-        if self.deposit_tx_builder.trade_amount().is_err() || self.deposit_tx_builder.buyers_security_deposit().is_err() ||
-            self.deposit_tx_builder.sellers_security_deposit().is_err() || self.deposit_tx_builder.fee_rate().is_err() {
-            return Err(ProtocolErrorKind::MissingTxParams);
-        }
-        Ok(())
     }
 
     pub fn set_trade_amount(&mut self, trade_amount: Amount) {
@@ -356,11 +348,10 @@ impl TradeModel {
     }
 
     pub fn init_my_half_deposit_psbt(&mut self) -> Result<()> {
-        self.check_deposit_tx_params_are_known()?;
         if self.am_buyer() {
-            self.deposit_tx_builder.set_buyers_half_psbt(empty_dummy_psbt());
+            self.deposit_tx_builder.init_mock_buyers_half_psbt(&mut rand::rng())?;
         } else {
-            self.deposit_tx_builder.set_sellers_half_psbt(empty_dummy_psbt());
+            self.deposit_tx_builder.init_mock_sellers_half_psbt(&mut rand::rng())?;
         }
         Ok(())
     }
@@ -389,8 +380,8 @@ impl TradeModel {
         self.swap_tx_builder.set_input(seller_payout.clone());
         self.buyers_warning_tx_builder.set_buyer_input(buyer_payout.clone());
         self.buyers_warning_tx_builder.set_seller_input(seller_payout.clone());
-        self.sellers_warning_tx_builder.set_buyer_input(buyer_payout);
-        self.sellers_warning_tx_builder.set_seller_input(seller_payout);
+        self.sellers_warning_tx_builder.set_buyer_input(buyer_payout.clone());
+        self.sellers_warning_tx_builder.set_seller_input(seller_payout.clone());
         Ok(())
     }
 
@@ -678,6 +669,10 @@ impl TradeModel {
         Ok(())
     }
 
+    pub fn get_deposit_psbt(&self) -> Option<&Psbt> {
+        self.deposit_tx_builder.psbt().ok()
+    }
+
     pub const fn set_swap_tx_input_peers_partial_signature(&mut self, sig: PartialSignature) {
         self.swap_tx_input_sig_ctx.peers_partial_sig = Some(sig);
     }
@@ -737,7 +732,7 @@ impl TradeModel {
     pub fn recover_seller_private_key_share_for_buyer_output(&mut self, swap_tx: &Transaction) -> Result<()> {
         let swap_tx_input = self.deposit_tx_builder.seller_payout()?;
         let final_sig = LiftedSignature::from_bytes(
-            &swap_tx.find_key_spend_signature(&swap_tx_input)?.serialize())?;
+            &swap_tx.find_key_spend_signature(swap_tx_input)?.serialize())?;
         let adaptor_sig = self.swap_tx_input_sig_ctx.aggregated_sig
             .ok_or(ProtocolErrorKind::MissingAggSig)?;
         let adaptor_secret: MaybeScalar = adaptor_sig.reveal_secret(&final_sig)

@@ -6,13 +6,19 @@ use bdk_wallet::bitcoin::taproot::{Signature, TaprootBuilder, TAPROOT_ANNEX_PREF
 use bdk_wallet::bitcoin::transaction::Version;
 use bdk_wallet::bitcoin::{
     absolute, relative, script, Address, Amount, FeeRate, Network, OutPoint, Psbt, ScriptBuf,
-    Sequence, TapNodeHash, TapSighash, TapSighashType, Transaction, TxIn, TxOut, Txid, Weight,
-    Witness, XOnlyPublicKey,
+    Sequence, TapNodeHash, TapSighash, TapSighashType, Transaction, TxIn, TxOut, Weight, Witness,
+    XOnlyPublicKey,
 };
 use paste::paste;
+use rand::RngCore;
 use relative::LockTime;
 use std::sync::Arc;
 use thiserror::Error;
+
+use crate::psbt::{
+    merge_psbt_halves, mock_buyer_half_deposit_psbt, mock_seller_half_deposit_psbt,
+    set_payouts_and_shuffle,
+};
 
 pub const REGTEST_WARNING_LOCK_TIME: LockTime = LockTime::from_height(5);
 pub const REGTEST_CLAIM_LOCK_TIME: LockTime = LockTime::from_height(5);
@@ -39,12 +45,6 @@ pub fn warning_output_merkle_root(claim_pub_key: &XOnlyPublicKey, claim_lock_tim
         .try_into_taptree()
         .expect("hardcoded TapTree build sequence should be complete")
         .root_hash()
-}
-
-// TODO: Replace dummy PSBT with real one provided by a service.
-//noinspection SpellCheckingInspection
-pub(crate) fn empty_dummy_psbt() -> Psbt {
-    "cHNidP8BAAoAAAAAAAAAAAAAAA==".parse().expect("hardcoded PSBT should be valid")
 }
 
 pub struct Receiver<V: NetworkValidation = NetworkChecked> {
@@ -119,14 +119,15 @@ macro_rules! make_getter_setter {
     };
 }
 
-#[derive(Clone)]
-pub struct TxOutput(OutPoint, TxOut);
+#[derive(Clone, Debug)]
+pub struct TxOutput(pub OutPoint, pub TxOut);
 
 pub type ReceiverList = Arc<[Receiver]>;
 
 pub trait WithWitnesses: Sized {
     /// # Panics
     /// Will panic if `input_index` is out of bounds
+    #[must_use]
     fn with_key_spend_witness(self, input_index: usize, signature: &Signature) -> Self;
 
     fn key_spend_signature(&self, input_index: usize) -> Result<Signature>;
@@ -185,9 +186,6 @@ trait WithFixedInputs<const N: usize> {
     }
 }
 
-//noinspection SpellCheckingInspection
-const MOCK_DEPOSIT_TXID: &str = "44090980ad341fb556368dbc6f32cfd5c50c61724ce7ae0a362d26c19f87a923";
-
 #[derive(Default)]
 pub struct DepositTxBuilder {
     // Supplied fields:
@@ -202,7 +200,9 @@ pub struct DepositTxBuilder {
     buyers_half_psbt: Option<Psbt>,
     sellers_half_psbt: Option<Psbt>,
     // Derived fields:
-    txid: Option<Txid>,
+    psbt: Option<Psbt>,
+    buyer_payout: Option<TxOutput>,
+    seller_payout: Option<TxOutput>,
 }
 
 impl DepositTxBuilder {
@@ -215,43 +215,50 @@ impl DepositTxBuilder {
     make_getter_setter!(fee_rate: FeeRate);
     make_getter_setter!(buyers_half_psbt: Psbt);
     make_getter_setter!(sellers_half_psbt: Psbt);
+    make_getter!(psbt: Psbt);
+    make_getter!(buyer_payout: TxOutput);
+    make_getter!(seller_payout: TxOutput);
 
-    fn txid(&self) -> Result<Txid> {
-        self.txid.ok_or(TransactionErrorKind::MissingTransaction)
+    pub(crate) fn init_mock_buyers_half_psbt(&mut self, rng: &mut impl RngCore) -> Result<&mut Self> {
+        let deposit_amount = *self.buyers_security_deposit()?;
+        let fee_rate = *self.fee_rate()?;
+        Ok(self.set_buyers_half_psbt(mock_buyer_half_deposit_psbt(deposit_amount, fee_rate, rng)
+            .ok_or(TransactionErrorKind::Overflow)?))
+    }
+
+    pub(crate) fn init_mock_sellers_half_psbt(&mut self, rng: &mut impl RngCore) -> Result<&mut Self> {
+        let deposit_amount = self.trade_amount()?.checked_add(*self.sellers_security_deposit()?)
+            .ok_or(TransactionErrorKind::Overflow)?;
+        let fee_rate = *self.fee_rate()?;
+        let trade_fee_receivers = self.trade_fee_receivers()?;
+        Ok(self.set_sellers_half_psbt(mock_seller_half_deposit_psbt(deposit_amount, fee_rate, trade_fee_receivers, rng)
+            .ok_or(TransactionErrorKind::Overflow)?))
     }
 
     pub fn compute_unsigned_tx(&mut self) -> Result<&mut Self> {
-        // Check that all the params needed to compute a real unsigned tx are set...
-        self.trade_amount()?;
-        self.buyers_security_deposit()?;
-        self.sellers_security_deposit()?;
-        self.buyer_payout_address()?;
-        self.seller_payout_address()?;
-        self.trade_fee_receivers()?;
-        self.fee_rate()?;
-        self.buyers_half_psbt()?;
-        self.sellers_half_psbt()?;
-        // Now set a mock txid (namely, the same one used in the unit tests below).
-        // TODO: Add real PSBT aggregation and unsigned-tx computation logic.
-        self.txid = Some(MOCK_DEPOSIT_TXID.parse().expect("hardcoded txid should be valid"));
-        Ok(self)
-    }
+        // Compute a raw merged PSBT.
+        let [buyer_psbt, seller_psbt] = [self.buyers_half_psbt()?, self.sellers_half_psbt()?];
+        let target_fee_rate = *self.fee_rate()?;
+        let num_receivers = self.trade_fee_receivers()?.len();
+        let mut psbt = merge_psbt_halves(buyer_psbt, seller_psbt, target_fee_rate, num_receivers)?;
 
-    pub fn buyer_payout(&self) -> Result<TxOutput> {
-        // FIXME: Don't assume the buyer payout vout is always 2 (the case for the unit tests).
-        Ok(TxOutput(OutPoint::new(self.txid()?, 2), TxOut {
+        // Set the payout outputs of the PSBT and shuffle all its inputs and outputs.
+        let mut buyer_payout = TxOutput(OutPoint::null(), TxOut {
             value: self.buyers_security_deposit()?.checked_add(*self.trade_amount()?)
                 .ok_or(TransactionErrorKind::Overflow)?,
             script_pubkey: self.buyer_payout_address()?.script_pubkey(),
-        }))
-    }
-
-    pub fn seller_payout(&self) -> Result<TxOutput> {
-        // FIXME: Don't assume the seller payout vout is always 3 (the case for the unit tests).
-        Ok(TxOutput(OutPoint::new(self.txid()?, 3), TxOut {
+        });
+        let mut seller_payout = TxOutput(OutPoint::null(), TxOut {
             value: *self.sellers_security_deposit()?,
             script_pubkey: self.seller_payout_address()?.script_pubkey(),
-        }))
+        });
+        set_payouts_and_shuffle(&mut psbt, &mut buyer_payout, &mut seller_payout);
+
+        // Initialize the computed fields.
+        self.psbt = Some(psbt);
+        self.buyer_payout = Some(buyer_payout);
+        self.seller_payout = Some(seller_payout);
+        Ok(self)
     }
 }
 
@@ -314,9 +321,8 @@ impl WarningTxBuilder {
 
     pub fn escrow(&self) -> Result<TxOutput> {
         let txid = self.unsigned_tx()?.compute_txid();
-        let output = self.unsigned_tx()?.tx_out(0)
-            .expect("warning tx output list should be nonempty");
-        Ok(TxOutput(OutPoint::new(txid, 0), output.clone()))
+        let output = self.unsigned_tx()?.output[0].clone();
+        Ok(TxOutput(OutPoint::new(txid, 0), output))
     }
 
     pub fn buyer_input_sighash(&self) -> Result<TapSighash> {
@@ -452,7 +458,7 @@ impl WithFixedInputs<1> for ForwardingTxBuilder {
     fn inputs(&self) -> Result<[&TxOutput; 1]> { Ok([self.input()?]) }
 }
 
-type Result<T, E = TransactionErrorKind> = std::result::Result<T, E>;
+pub type Result<T, E = TransactionErrorKind> = std::result::Result<T, E>;
 
 #[derive(Error, Debug)]
 #[error(transparent)]
@@ -480,6 +486,8 @@ pub enum TransactionErrorKind {
     Overflow,
     #[error("invalid witness")]
     InvalidWitness,
+    #[error("invalid PSBT")]
+    InvalidPsbt,
     AddressParse(#[from] bdk_wallet::bitcoin::address::ParseError),
     Taproot(#[from] bdk_wallet::bitcoin::sighash::TaprootError),
     InputsIndex(#[from] bdk_wallet::bitcoin::transaction::InputsIndexError),
@@ -492,6 +500,8 @@ mod tests {
     use bdk_wallet::bitcoin::hex::test_hex_unwrap as hex;
     use bdk_wallet::bitcoin::Network;
     use const_format::str_index;
+    use rand::SeedableRng as _;
+    use rand_chacha::ChaCha20Rng;
 
     use super::*;
 
@@ -562,11 +572,20 @@ mod tests {
         let [deposit_txid, swap_txid, warning_txid, redirect_txid, claim_txid] =
             [&deposit_tx, &swap_tx, &warning_tx, &redirect_tx, &claim_tx].map(Transaction::compute_txid);
 
-        assert_eq!(MOCK_DEPOSIT_TXID, deposit_txid.to_string());
+        assert_eq!("44090980ad341fb556368dbc6f32cfd5c50c61724ce7ae0a362d26c19f87a923", deposit_txid.to_string());
         assert_eq!("41e2045e54060bfe2e094e76a7ce4fbd7185384d34afcb77353cd359b465c93d", swap_txid.to_string());
         assert_eq!("c620cc1c09960b37a7cbeab93ec82c25e020d66d25b8567f21dcbb07140203f7", warning_txid.to_string());
         assert_eq!("ecdb3995689d8e23e4c467692ab400af66eb9f5a35b99753ee3bfdaa10b0b1d6", redirect_txid.to_string());
         assert_eq!("81be3cf683c4a65979bbbe35264c8d0e4cd6fe33e80d094463f13ecf4d5eb2df", claim_txid.to_string());
+    }
+
+    #[test]
+    fn test_deposit_tx_builder() -> Result<()> {
+        let builder = filled_deposit_tx_builder()?;
+        let unsigned_tx = &builder.psbt()?.unsigned_tx;
+
+        assert_eq!(tx(SIGNED_DEPOSIT_TX).compute_txid(), unsigned_tx.compute_txid());
+        Ok(())
     }
 
     #[test]
@@ -630,17 +649,21 @@ mod tests {
         let seller_payout_address = "bcrt1pvenudpqy5j9n96uq5ng30ktvsvgx6qk2pk8ue446qdy24t854gnq5sp2l6"
             .parse::<Address<_>>()?.require_network(Network::Regtest)?;
 
+        // The RNG seed determines the shuffling of the deposit inputs & outputs. The byte 0x96 is
+        // the smallest (of the two) array fill values which happen to give the correct shuffling.
+        let mut rng = ChaCha20Rng::from_seed([0x96; 32]);
+
         let mut builder = DepositTxBuilder::default();
         builder
-            .set_trade_amount(Amount::from_sat(120_000_000))
-            .set_buyers_security_deposit(Amount::from_sat(20_000_000))
+            .set_trade_amount(Amount::from_sat(119_999_984))
+            .set_buyers_security_deposit(Amount::from_sat(20_000_016))
             .set_sellers_security_deposit(Amount::from_sat(20_000_000))
-            .set_buyer_payout_address(buyer_payout_address.clone())
-            .set_seller_payout_address(seller_payout_address.clone())
+            .set_buyer_payout_address(buyer_payout_address)
+            .set_seller_payout_address(seller_payout_address)
             .set_trade_fee_receivers(ReceiverList::default())
             .set_fee_rate(FeeRate::from_sat_per_kwu(5158)) // gives 7325-sat absolute fee
-            .set_buyers_half_psbt(empty_dummy_psbt())
-            .set_sellers_half_psbt(empty_dummy_psbt())
+            .init_mock_buyers_half_psbt(&mut rng)?
+            .init_mock_sellers_half_psbt(&mut rng)?
             .compute_unsigned_tx()?;
         Ok(builder)
     }
@@ -652,7 +675,7 @@ mod tests {
 
         let mut builder = ForwardingTxBuilder::default();
         builder
-            .set_input(deposit_tx_builder.seller_payout()?)
+            .set_input(deposit_tx_builder.seller_payout()?.clone())
             .set_payout_address(payout_address)
             .disable_lock_time()
             .set_fee_rate(FeeRate::from_sat_per_kwu(2252)) // gives 1000-sat absolute fee
@@ -671,8 +694,8 @@ mod tests {
 
         let mut builder = WarningTxBuilder::default();
         builder
-            .set_buyer_input(deposit_tx_builder.buyer_payout()?)
-            .set_seller_input(deposit_tx_builder.seller_payout()?)
+            .set_buyer_input(deposit_tx_builder.buyer_payout()?.clone())
+            .set_seller_input(deposit_tx_builder.seller_payout()?.clone())
             .set_escrow_address(escrow_address)
             .set_anchor_address(anchor_address)
             .set_lock_time(LockTime::from_height(2))

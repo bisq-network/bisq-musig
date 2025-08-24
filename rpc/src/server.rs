@@ -27,7 +27,6 @@ use crate::pb::walletrpc::{
     NewAddressResponse, WalletBalanceRequest, WalletBalanceResponse,
 };
 use crate::protocol::{TradeModel, TradeModelStore as _, TRADE_MODELS};
-use crate::transaction::empty_dummy_psbt;
 use crate::wallet::WalletService;
 
 pub use musig_server::MusigServer;
@@ -138,8 +137,11 @@ impl musig_server::Musig for MusigImpl {
             trade_model.set_peer_partial_signatures_on_my_txs(&peers_partial_signatures.try_proto_into()?);
             trade_model.aggregate_partial_signatures()?;
             trade_model.compute_my_signed_prepared_txs()?;
+            // TODO: Need to actually sign the deposit tx -- currently returns an unsigned PSBT:
+            let deposit_psbt = trade_model.get_deposit_psbt()
+                .ok_or_else(|| Status::internal("missing deposit PSBT"))?;
 
-            Ok(DepositPsbt { deposit_psbt: empty_dummy_psbt().serialize() })
+            Ok(DepositPsbt { deposit_psbt: deposit_psbt.serialize() })
         })
     }
 

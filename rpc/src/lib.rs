@@ -9,7 +9,9 @@ pub mod pb {
 pub mod bmp_service;
 mod observable;
 mod protocol;
+mod psbt;
 pub mod server;
 mod storage;
+mod swap;
 mod transaction;
 pub mod wallet;
