@@ -4,14 +4,14 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-bdk_electrum = "0.20.1"
+bdk_electrum = "0.23.1"
 anyhow = "1.0.95"
 dotenv = "0.15.0"
-bdk_core = "0.4.1"
-bdk_wallet = { version = "1.0.0", features = ["compiler", "bdk_file_store", "rusqlite", "keys-bip39"] }
-bdk_esplora = { version = "0.20.1", features = ["blocking"] }
-bdk_bitcoind_rpc = "0.17.1"
-rand = "0.8.5"
+bdk_core = "0.6.1"
+bdk_wallet = { version = "2.1.0", features = ["compiler", "bdk_file_store", "rusqlite", "keys-bip39"] }
+bdk_esplora = { version = "0.22.1", features = ["blocking"] }
+bdk_bitcoind_rpc = "0.21.0"
+rand = "0.9.2"
 ctrlc = "2.0.1"
 musig2 = "0.2.2"
 secp = { version = "0.4.1", features = ["rand"] }
