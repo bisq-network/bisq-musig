@@ -8,3 +8,7 @@ bdk_wallet = { workspace = true }
 bdk_electrum = { workspace = true }
 anyhow = { workspace = true }
 rand = { workspace = true }
+secp = { workspace = true }
+
+[dev-dependencies]
+tempfile = "3.21.0"

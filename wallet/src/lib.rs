@@ -1,62 +1,69 @@
-use anyhow::Error;
-use bdk_electrum::{BdkElectrumClient, electrum_client};
+use bdk_electrum::{
+    BdkElectrumClient,
+    electrum_client::{self, Client},
+};
 use bdk_wallet::{
-    AddressInfo, KeychainKind, PersistedWallet, Wallet, WeightedUtxo,
-    bitcoin::{self, Amount, FeeRate, Network, PrivateKey, Script, bip32::Xpriv},
-    chain::Impl,
-    coin_selection::{CoinSelectionAlgorithm, CoinSelectionResult, InsufficientFunds},
-    keys::SinglePriv,
+    AddressInfo, KeychainKind, PersistedWallet, Wallet,
+    bitcoin::{Amount, Network, bip32::Xpriv, hex::DisplayHex},
+    keys::bip39::Mnemonic,
     rusqlite::{self, Connection, named_params},
     template::{Bip86, DescriptorTemplate},
 };
+
 use rand::RngCore;
+use secp::Scalar;
 use std::vec;
 
 const DB_PATH: &str = "bmp_bdk_wallet.db3";
-const ELECTRUM_URL: &str = "http://localhost:8080";
+const ELECTRUM_URL: &str = "ssl://electrum.blockstream.info:6000";
 
+#[allow(unused)]
 pub struct BMPWallet {
-    wallet: PersistedWallet<rusqlite::Connection>,
-    client: BdkElectrumClient<electrum_client::Client>,
-    imported_keys: Vec<SinglePriv>,
-    db: rusqlite::Connection,
+    wallet: PersistedWallet<Connection>,
+    client: BdkElectrumClient<Client>,
+    imported_keys: Vec<Scalar>,
+    db: Connection,
 }
 
-#[derive(Debug)]
-struct AlwaysSpendImportedFirst;
+// @TODO: revisit here for double persistance
+impl Drop for BMPWallet {
+    fn drop(&mut self) {
+        let _ = self
+            .wallet
+            .persist(&mut self.db)
+            .inspect_err(|e| eprintln!("Error occured while persisting: {e:?}"));
 
-impl CoinSelectionAlgorithm for AlwaysSpendImportedFirst {
-    fn coin_select<R: bitcoin::key::rand::RngCore>(
-        &self,
-        required_utxos: Vec<WeightedUtxo>,
-        optional_utxos: Vec<WeightedUtxo>,
-        fee_rate: FeeRate,
-        target_amount: Amount,
-        drain_script: &Script,
-        rand: &mut R,
-    ) -> Result<CoinSelectionResult, InsufficientFunds> {
-        todo!()
+        let _ = self
+            .persist_imported_keys()
+            .inspect(|e| eprintln!("Error occured while persisting: {e:?}"));
     }
 }
 
 impl BMPWallet {
-    const SECRETS_SCHEMA_TABLE_NAME: &'static str = "bmp_seeds";
+    const SEEDS_TABLE_NAME: &'static str = "bmp_seeds";
     const IMPORTED_KEYS_TABLE_NAME: &'static str = "bmp_imported_keys";
 
     fn schema() -> String {
-        format!(
+        let create_imported_keys_table = format!(
             "CREATE TABLE {} ( \
-                id INTEGER PRIMARY KEY NOT NULL CHECK (id = 0), \
-                key TEXT, \
-                network TEXT \
-                ) STRICT;",
+                key TEXT PRIMARY KEY NOT NULL
+            ) STRICT",
             Self::IMPORTED_KEYS_TABLE_NAME,
-        )
+        );
+
+        let create_seeds_table = format!(
+            "CREATE TABLE {} ( \
+                seed TEXT PRIMARY KEY NOT NULL
+            ) STRICT",
+            Self::SEEDS_TABLE_NAME,
+        );
+
+        format!("{create_imported_keys_table}; {create_seeds_table}")
     }
 
     fn init_sqlite(db_tx: &mut rusqlite::Connection) -> anyhow::Result<()> {
-        let trx = db_tx.transaction().expect("Can't get db transaction");
-        trx.execute(&Self::schema(), ())?;
+        let trx = db_tx.transaction()?;
+        trx.execute_batch(&Self::schema())?;
         trx.commit()?;
 
         Ok(())
@@ -73,11 +80,11 @@ impl BMPWallet {
 
         let (descriptor, external_map, _) = Bip86(xprv, KeychainKind::External)
             .build(network)
-            .expect("Failed to build external descriptor");
+            .expect("External description generation should not fail");
 
         let (change_descriptor, internal_map, _) = Bip86(xprv, KeychainKind::Internal)
             .build(network)
-            .expect("Failed to build internal descriptor");
+            .expect("Internal description generation should not fail");
 
         let mut db = Connection::open(DB_PATH)?;
 
@@ -91,6 +98,11 @@ impl BMPWallet {
 
         Self::init_sqlite(&mut db)?;
 
+        let mnemonic = Mnemonic::from_entropy(&seed)?;
+        let words = mnemonic.to_string();
+
+        Self::persist_seed_phrase(&words, &mut db)?;
+
         Ok(Self {
             wallet,
             client,
@@ -99,35 +111,52 @@ impl BMPWallet {
         })
     }
 
-    // Create a new wallet from the passed mnemonic
-    // Word count can be inferred
-    pub fn from_mnemonic(mnemonic: &str, network: Network) -> anyhow::Result<()> {
+    fn persist_seed_query(
+        mnemonic: &str,
+        db_trx: &mut rusqlite::Transaction,
+    ) -> anyhow::Result<()> {
+        let mut stmt = db_trx.prepare(&format!(
+            "INSERT INTO {}(seed) VALUES(:seed)",
+            Self::SEEDS_TABLE_NAME
+        ))?;
+        stmt.execute(named_params! {
+                ":seed": mnemonic
+        })?;
         Ok(())
     }
 
-    fn load_imported_keys(db_trx: &Connection) -> anyhow::Result<Vec<SinglePriv>> {
-        let mut r: Vec<SinglePriv> = vec![];
+    fn persist_seed_phrase(mnemonic: &str, db: &mut rusqlite::Connection) -> anyhow::Result<()> {
+        let mut trx = db.transaction()?;
+        Self::persist_seed_query(mnemonic, &mut trx)?;
+        trx.commit()?;
+        Ok(())
+    }
 
-        let mut statement = db_trx.prepare(&format!(
-            "SELECT key, network FROM {}",
+    // Create a new wallet from the passed mnemonic
+    // Word count can be inferred
+    pub fn from_mnemonic(_mnemonic: &str, _network: Network) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    fn load_imported_keys(db: &Connection) -> anyhow::Result<Vec<Scalar>> {
+        let mut imported_keys: Vec<Scalar> = vec![];
+
+        let mut statement = db.prepare(&format!(
+            "SELECT key FROM {}",
             Self::IMPORTED_KEYS_TABLE_NAME
         ))?;
 
         let row_iter = statement.query_map([], |row| {
-            anyhow::Result::Ok((
-                row.get::<_, String>("key")?,
-                row.get::<_, Impl<Network>>("network")?,
-            ))
+            anyhow::Result::Ok((row.get::<_, String>("key")?,))
         })?;
 
         for row in row_iter {
-            let (key, _network) = row?;
-            r.push(SinglePriv {
-                origin: None,
-                key: PrivateKey::from_wif(&key).unwrap(),
-            });
+            let hex_key = row?;
+            let secret = Scalar::from_hex(&hex_key.0)?;
+            imported_keys.push(secret);
         }
-        anyhow::Result::Ok(r)
+
+        Ok(imported_keys)
     }
 
     // For already created wallets this will load stored data
@@ -144,11 +173,11 @@ impl BMPWallet {
                 wallet,
                 client,
                 imported_keys,
-                db
+                db,
             });
         }
 
-        return Err(anyhow::anyhow!("Unable to load wallet"));
+        Err(anyhow::anyhow!("Unable to load wallet"))
     }
 
     // Retrieve the balance of the main wallet
@@ -158,45 +187,53 @@ impl BMPWallet {
     }
 
     // Generate a new bitcoin address, we don't take into account addresses from imported keys
-    pub fn next_unused_address(&mut self) -> AddressInfo {
+    pub fn next_unused_address(&mut self) -> anyhow::Result<AddressInfo> {
         let addr = self.wallet.next_unused_address(KeychainKind::External);
-
         // Persist the revealed address, to avoid address reuse
-        self.wallet.persist(&mut self.db).expect("Write is okay");
+        self.wallet.persist(&mut self.db)?;
 
-        addr
+        Ok(addr)
     }
 
     // Import an external private from the HD wallet
     // After importing a rescan should be triggered
-    pub fn import_private_key(&mut self, pk: SinglePriv) {
+    pub fn import_private_key(&mut self, pk: Scalar) {
         self.imported_keys.push(pk);
     }
 
-    fn persist_to_sqlite(
-        keys: &Vec<SinglePriv>,
-        network: Network,
+    fn persist_imported_keys_query(
+        keys: &Vec<Scalar>,
         db_trx: &mut rusqlite::Transaction,
     ) -> anyhow::Result<()> {
         let mut statement = db_trx.prepare_cached(&format!(
-            "INSERT INTO {} (key, network) VALUES (:key, :network)",
+            "INSERT OR IGNORE INTO {} (key) VALUES (:key)",
             Self::IMPORTED_KEYS_TABLE_NAME
         ))?;
 
         for key in keys {
             statement.execute(named_params! {
-                ":key": key.key.to_wif(),
-                ":network": Impl(network)
+                ":key": key.serialize().to_lower_hex_string()
             })?;
         }
         Ok(())
+    }
+
+    // Return the generated mnemonic phrase
+    pub fn get_seed_phrase(&self) -> anyhow::Result<String> {
+        let mnemonic = self.db.query_row(
+            &format!("SELECT seed FROM {}", Self::SEEDS_TABLE_NAME),
+            (),
+            |row| row.get::<_, String>("seed"),
+        )?;
+
+        Ok(mnemonic)
     }
 
     // This will persist the imported_keys vector, which are keys imported during trade ops
     // The keys are stored inside rusqlite kv database
     pub fn persist_imported_keys(&mut self) -> anyhow::Result<()> {
         let mut db_trx = self.db.transaction()?;
-        Self::persist_to_sqlite(&self.imported_keys, self.wallet.network(), &mut db_trx)?;
+        Self::persist_imported_keys_query(&self.imported_keys, &mut db_trx)?;
         db_trx.commit()?;
         Ok(())
     }
@@ -209,26 +246,80 @@ impl BMPWallet {
 }
 
 #[cfg(test)]
-
 mod tests {
-    use crate::BMPWallet;
-    use bdk_wallet::{Wallet, bitcoin::Network};
+    use std::fs;
+
+    use crate::{BMPWallet, DB_PATH};
+    use bdk_wallet::{
+        KeychainKind,
+        bitcoin::{Amount, Network},
+    };
+    use rand::RngCore;
+    use secp::Scalar;
+
+    fn tear_down() {
+        fs::remove_file(DB_PATH).expect("DB should be removed after tests");
+    }
 
     #[test]
     fn test_create_wallet() -> anyhow::Result<()> {
-        let bmp_wallet2 = BMPWallet::new(Network::Regtest);
+        let mut bmp_wallet2 = BMPWallet::new(Network::Regtest)?;
+        assert_eq!(bmp_wallet2.balance(), Amount::from_sat(0));
+
+        let addr1 = bmp_wallet2.next_unused_address()?;
+        let addr2 = bmp_wallet2.next_unused_address()?;
+
+        println!("Addr1 {}", addr1);
+        println!("Addr2 {}", addr2);
+
+        assert_eq!(addr1, addr2);
+
+        bmp_wallet2
+            .wallet
+            .mark_used(KeychainKind::External, addr1.index);
+
+        let addr2 = bmp_wallet2.next_unused_address()?;
+
+        assert_ne!(addr1, addr2);
+
+        tear_down();
+
         Ok(())
     }
 
     #[test]
     fn test_create_wallet_from_mnemonic() -> anyhow::Result<()> {
-        let bmp_wallet = BMPWallet::from_mnemonic("h b c d", Network::Regtest);
+        let _bmp_wallet = BMPWallet::from_mnemonic("h b c d", Network::Regtest);
         Ok(())
     }
 
     #[test]
     fn test_load_wallet() -> anyhow::Result<()> {
-        let existing_wallet = BMPWallet::load_wallet(Network::Regtest);
+        let mut seed: [u8; 32] = [0u8; 32];
+        let mut seed2: [u8; 32] = [0u8; 32];
+
+        rand::rng().fill_bytes(&mut seed);
+        rand::rng().fill_bytes(&mut seed2);
+
+        let mut bmp_wallet = BMPWallet::new(Network::Regtest)?;
+        assert_eq!(bmp_wallet.balance(), Amount::from_sat(0));
+
+        let pk1 = Scalar::from_slice(&seed)?;
+        let pk2 = Scalar::from_slice(&seed2)?;
+
+        bmp_wallet.import_private_key(pk1);
+        bmp_wallet.import_private_key(pk2);
+
+        assert_eq!(bmp_wallet.imported_keys.len(), 2);
+
+        bmp_wallet.persist_imported_keys().unwrap();
+
+        let loaded_wallet = BMPWallet::load_wallet(Network::Regtest)?;
+
+        assert_eq!(bmp_wallet.imported_keys, loaded_wallet.imported_keys);
+        assert_eq!(bmp_wallet.balance(), loaded_wallet.balance());
+
+        tear_down();
         Ok(())
     }
 
