@@ -3,8 +3,8 @@ use bdk_wallet::bitcoin::hashes::Hash as _;
 use bdk_wallet::bitcoin::opcodes::all::OP_RETURN;
 use bdk_wallet::bitcoin::transaction::Version;
 use bdk_wallet::bitcoin::{
-    absolute, script, Address, Amount, FeeRate, Network, Psbt, ScriptBuf, Sequence, Transaction,
-    TxIn, TxOut, Weight,
+    absolute, psbt, script, Address, Amount, FeeRate, Network, Psbt, ScriptBuf, Sequence,
+    Transaction, TxIn, TxOut, Weight,
 };
 use rand::{RngCore, SeedableRng as _};
 use rand_chacha::ChaCha20Rng;
@@ -12,6 +12,102 @@ use std::mem;
 
 use crate::swap::Swap as _;
 use crate::transaction::{Receiver, Result, TransactionErrorKind, TxOutput};
+
+// We disallow half-deposit PSBTs with more than half the single-byte VarInt-representable limit
+// number (252) of inputs or outputs, as otherwise merging the peer's PSBT could cause it to tip
+// over the limit and lead to an unexpected (but slight) underpaying of the deposit tx fee.
+// TODO: Maybe this is a little too restrictive. We could instead choose length limits that are on
+//  the boundary of what would guarantee a standard deposit tx if both sides maxed them out.
+pub const MAX_ALLOWED_HALF_PSBT_INPUT_NUM: usize = 126;
+pub const MAX_ALLOWED_HALF_PSBT_OUTPUT_NUM: usize = 126;
+
+pub trait TradeWallet {
+    fn create_half_deposit_psbt(
+        &mut self,
+        deposit_amount: Amount,
+        fee_rate: FeeRate,
+        trade_fee_receivers: &[Receiver],
+        rng: &mut impl RngCore,
+    ) -> Result<Psbt>;
+}
+
+pub(crate) struct MockTradeWallet<Cs: Iterator<Item=TxOutput>, As: Iterator<Item=Address>> {
+    funding_coins: Cs,
+    new_addresses: As,
+}
+
+impl<Cs: Iterator<Item=TxOutput>, As: Iterator<Item=Address>> TradeWallet for MockTradeWallet<Cs, As> {
+    fn create_half_deposit_psbt(
+        &mut self,
+        deposit_amount: Amount,
+        fee_rate: FeeRate,
+        trade_fee_receivers: &[Receiver],
+        rng: &mut impl RngCore,
+    ) -> Result<Psbt> {
+        const HALF_DEPOSIT_TX_BASE_WEIGHT: Weight = Weight::from_wu(193);
+
+        let fee_cost_msat = |weight: Weight|
+            fee_rate.to_sat_per_kwu().checked_mul(weight.to_wu())
+                .ok_or(TransactionErrorKind::Overflow);
+        let deposit_amount_msat = deposit_amount.to_sat().checked_mul(1000)
+            .ok_or(TransactionErrorKind::Overflow)?;
+
+        let mut input = Vec::new();
+        let mut inputs = Vec::new();
+        let mut output = Vec::with_capacity(trade_fee_receivers.len() + 2);
+
+        output.push(TxOut {
+            value: deposit_amount,
+            script_pubkey: half_deposit_placeholder_spk(rng),
+        });
+        output.extend(trade_fee_receivers.iter().map(TxOut::from));
+        let mut change_output = self.new_addresses.next()
+            .map(|addr| TxOut { value: Amount::ZERO, script_pubkey: addr.script_pubkey() })
+            .ok_or(TransactionErrorKind::MissingAddress)?;
+
+        let mut cost_msat = Receiver::total_output_cost_msat(trade_fee_receivers, fee_rate, 2)
+            .ok_or(TransactionErrorKind::Overflow)?
+            .checked_add(deposit_amount_msat)
+            .ok_or(TransactionErrorKind::Overflow)?
+            .checked_add(fee_cost_msat(HALF_DEPOSIT_TX_BASE_WEIGHT)?)
+            .ok_or(TransactionErrorKind::Overflow)?
+            .checked_add(fee_cost_msat(change_output.weight())?)
+            .ok_or(TransactionErrorKind::Overflow)?;
+
+        let mut funds = Amount::ZERO;
+        while funds < Amount::from_sat(cost_msat.div_ceil(1000)) {
+            let new_coin = self.funding_coins.next()
+                .ok_or(TransactionErrorKind::MissingTxOutput)?;
+            let new_coin_weight = new_coin.estimated_input_weight()
+                .ok_or(TransactionErrorKind::InvalidPsbt)?;
+            funds = funds.checked_add(new_coin.1.value)
+                .ok_or(TransactionErrorKind::Overflow)?;
+            cost_msat = cost_msat.checked_add(fee_cost_msat(new_coin_weight)?)
+                .ok_or(TransactionErrorKind::Overflow)?;
+            let new_input = TxIn {
+                previous_output: new_coin.0,
+                sequence: Sequence::ENABLE_RBF_NO_LOCKTIME,
+                ..TxIn::default()
+            };
+            input.push(new_input);
+            let new_psbt_input = psbt::Input { witness_utxo: Some(new_coin.1), ..psbt::Input::default() };
+            inputs.push(new_psbt_input);
+        }
+
+        change_output.value = funds - Amount::from_sat(cost_msat.div_ceil(1000));
+        if change_output.value >= change_output.script_pubkey.minimal_non_dust() {
+            output.push(change_output);
+        }
+
+        let unsigned_tx = Transaction {
+            version: Version::TWO,
+            lock_time: absolute::LockTime::ZERO,
+            input,
+            output,
+        };
+        Ok(Psbt { inputs, ..Psbt::from_unsigned_tx(unsigned_tx).expect("tx is unsigned by construction") })
+    }
+}
 
 // The outputs of each trader's half-deposit PSBT consists of a temporary OP_RETURN placeholder with
 // a 27-byte random datagram, burning their trade deposit, followed by any fee receivers(s) in the
@@ -34,109 +130,59 @@ pub fn half_deposit_placeholder_spk(rng: &mut impl RngCore) -> ScriptBuf {
         .into_script()
 }
 
-fn half_deposit_tx_weight(num_keyspend_inputs: u16, num_p2tr_change_outputs: u16) -> Weight {
-    const HALF_DEPOSIT_TX_BASE_WEIGHT: Weight = Weight::from_wu(193);
-    const KEYSPEND_INPUT_WEIGHT: Weight = Weight::from_wu(230); // Assumes default sighash type
-    const P2TR_OUTPUT_WEIGHT: Weight = Weight::from_wu(172);
-
-    HALF_DEPOSIT_TX_BASE_WEIGHT
-        + KEYSPEND_INPUT_WEIGHT * u64::from(num_keyspend_inputs)
-        + P2TR_OUTPUT_WEIGHT * u64::from(num_p2tr_change_outputs)
-}
-
 //noinspection SpellCheckingInspection
-pub(crate) fn mock_buyer_half_deposit_psbt(
-    deposit_amount: Amount,
-    fee_rate: FeeRate,
-    rng: &mut impl RngCore,
-) -> Option<Psbt> {
-    let weight = half_deposit_tx_weight(1, 1);
-
-    let change_amount = Amount::from_sat(100_000_000)
-        .checked_sub(deposit_amount)?
-        .checked_sub(fee_rate.checked_mul_by_weight(weight)?)?;
+pub(crate) fn mock_buyer_trade_wallet() -> impl TradeWallet {
     let change_address = "bcrt1pgsj9aw0wvs5h6zj780djnu267v6jazmfekwm4g4q4s6ax3w3t0lseqqnjc"
-        .parse::<Address<_>>().ok()?.require_network(Network::Regtest).ok()?;
-
-    let unsigned_tx = Transaction {
-        version: Version::TWO,
-        lock_time: absolute::LockTime::ZERO,
-        input: vec![
-            TxIn {
-                previous_output: "658654575bbbeb46e965bd9eb37fd3be550a7e0fa2d64bc5f218763155602300:0".parse().ok()?,
-                sequence: Sequence::ENABLE_RBF_NO_LOCKTIME,
-                ..TxIn::default()
-            },
-        ],
-        output: vec![
-            TxOut { value: deposit_amount, script_pubkey: half_deposit_placeholder_spk(rng) },
-            TxOut { value: change_amount, script_pubkey: change_address.script_pubkey() },
-        ],
-    };
-    Psbt::from_unsigned_tx(unsigned_tx).ok()
+        .parse::<Address<_>>().unwrap().require_network(Network::Regtest).unwrap();
+    MockTradeWallet {
+        funding_coins: [
+            TxOutput::mock_1_btc_coin("658654575bbbeb46e965bd9eb37fd3be550a7e0fa2d64bc5f218763155602300:0"),
+        ].into_iter(),
+        new_addresses: [change_address].into_iter(),
+    }
 }
 
 //noinspection SpellCheckingInspection
-pub(crate) fn mock_seller_half_deposit_psbt(
-    deposit_amount: Amount,
-    fee_rate: FeeRate,
-    trade_fee_receivers: &[Receiver],
-    rng: &mut impl RngCore,
-) -> Option<Psbt> {
-    let weight_excluding_receivers = half_deposit_tx_weight(2, 1);
-
-    // We assume a large `extra_output_num` of 128 here because the peer may have decided to add a
-    // large number of change outputs to his deposit tx half (for whatever reason), so budget half
-    // of the single-byte-compact-integer output count limit of 252 to each trader.
-    let total_fees_msat = Receiver::total_output_cost_msat(trade_fee_receivers, fee_rate, 128)?
-        .checked_add(fee_rate.to_sat_per_kwu().checked_mul(weight_excluding_receivers.to_wu())?)?;
-
-    let change_amount = Amount::from_sat(200_000_000)
-        .checked_sub(deposit_amount)?
-        .checked_sub(Amount::from_sat(total_fees_msat.checked_add(999)? / 1000))?;
+pub(crate) fn mock_seller_trade_wallet() -> impl TradeWallet {
     let change_address = "bcrt1p80xu5f0nqjarfnechsmlt488jf3tykx8cva9zeeczlsu4c7x557qr499gz"
-        .parse::<Address<_>>().ok()?.require_network(Network::Regtest).ok()?;
+        .parse::<Address<_>>().unwrap().require_network(Network::Regtest).unwrap();
+    MockTradeWallet {
+        funding_coins: [
+            TxOutput::mock_1_btc_coin("4a5ecc72ec8db78f11c6785f560a13f6f32eac66d160a8157d30956695ccf523:0"),
+            TxOutput::mock_1_btc_coin("373b3ca0b9135e9649672772d4659bb5597d06b4694f1fbdbece285823fde0a3:1"),
+        ].into_iter(),
+        new_addresses: [change_address].into_iter(),
+    }
+}
 
-    let mut output = Vec::with_capacity(trade_fee_receivers.len() + 2);
-    output.push(TxOut { value: deposit_amount, script_pubkey: half_deposit_placeholder_spk(rng) });
-    output.extend(trade_fee_receivers.iter().map(TxOut::from));
-    output.push(TxOut { value: change_amount, script_pubkey: change_address.script_pubkey() });
-
-    let unsigned_tx = Transaction {
-        version: Version::TWO,
-        lock_time: absolute::LockTime::ZERO,
-        input: vec![
-            TxIn {
-                previous_output: "4a5ecc72ec8db78f11c6785f560a13f6f32eac66d160a8157d30956695ccf523:0".parse().ok()?,
-                sequence: Sequence::ENABLE_RBF_NO_LOCKTIME,
-                ..TxIn::default()
-            },
-            TxIn {
-                previous_output: "373b3ca0b9135e9649672772d4659bb5597d06b4694f1fbdbece285823fde0a3:1".parse().ok()?,
-                sequence: Sequence::ENABLE_RBF_NO_LOCKTIME,
-                ..TxIn::default()
-            },
-        ],
-        output,
-    };
-    Psbt::from_unsigned_tx(unsigned_tx).ok()
+fn input_coin(psbt: &Psbt, index: usize) -> Option<TxOutput> {
+    Some(TxOutput(psbt.unsigned_tx.input[index].previous_output,
+        psbt.inputs[index].witness_utxo.clone()?))
 }
 
 fn half_psbt_fee_overpay_msat(psbt: &Psbt, target_fee_rate: FeeRate) -> Option<i64> {
-    // Satisfaction weight of each input assuming default sighash type.
-    // FIXME: Don't just assume that all inputs are p2tr keyspends.
-    const KEYSPEND_WITNESS_WEIGHT: Weight = Weight::from_wu(66);
+    const INPUT_NON_WITNESS_WEIGHT: Weight = Weight::from_wu(164);
 
     // This is the extra weight of witness vs non-witness consensus-serialization (2 wu) minus 1 wu
     // to account for the fact that the base weight of a half-deposit PSBT is 194 wu, which is 1 wu
     // more than half the base weight (386 wu) of the final deposit tx, so just pretend it's 193 wu.
     const EXTRA_WEIGHT: Weight = Weight::from_wu(1);
 
-    let signed_tx_weight = psbt.unsigned_tx.weight() + EXTRA_WEIGHT
-        + KEYSPEND_WITNESS_WEIGHT * psbt.inputs.len() as u64;
+    if psbt.inputs.len() > MAX_ALLOWED_HALF_PSBT_INPUT_NUM ||
+        psbt.outputs.len() > MAX_ALLOWED_HALF_PSBT_OUTPUT_NUM {
+        return None;
+    }
+    let mut signed_tx_weight = psbt.unsigned_tx.weight() + EXTRA_WEIGHT
+        - INPUT_NON_WITNESS_WEIGHT * psbt.inputs.len() as u64;
+    let mut input_amount = Amount::ZERO;
 
-    // FIXME: Don't just assume that all inputs are 1 BTC each!
-    let input_amount = Amount::ONE_BTC * psbt.inputs.len() as u64;
+    for i in 0..psbt.inputs.len() {
+        // FIXME: This will lead to an overflow error if a corrupted or disallowed input coin is
+        //  encountered, instead of an invalid PSBT error as it should:
+        let coin = input_coin(psbt, i)?;
+        signed_tx_weight += coin.estimated_input_weight()?;
+        input_amount = input_amount.checked_add(coin.1.value)?;
+    }
     let output_amount = psbt.unsigned_tx.output.iter().map(|o| o.value).checked_sum()?;
 
     let actual_fee_msat = input_amount.checked_sub(output_amount)?.to_sat().checked_mul(1000)?;

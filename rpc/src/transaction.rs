@@ -15,10 +15,7 @@ use relative::LockTime;
 use std::sync::Arc;
 use thiserror::Error;
 
-use crate::psbt::{
-    merge_psbt_halves, mock_buyer_half_deposit_psbt, mock_seller_half_deposit_psbt,
-    set_payouts_and_shuffle,
-};
+use crate::psbt::{merge_psbt_halves, set_payouts_and_shuffle, TradeWallet};
 
 pub const REGTEST_WARNING_LOCK_TIME: LockTime = LockTime::from_height(5);
 pub const REGTEST_CLAIM_LOCK_TIME: LockTime = LockTime::from_height(5);
@@ -122,6 +119,29 @@ macro_rules! make_getter_setter {
 #[derive(Clone, Debug)]
 pub struct TxOutput(pub OutPoint, pub TxOut);
 
+impl TxOutput {
+    pub fn estimated_input_weight(&self) -> Option<Weight> {
+        Some(Weight::from_wu(match &self.1.script_pubkey {
+            // Assumes a keyspend with default sighash type:
+            // FIXME: Should enforce that there's no script spend path (say by including an
+            //  optional internal key field in the `TxOutput` struct).
+            s if s.is_p2tr() => 230,
+            // Assumes low-R nonce grinding:
+            s if s.is_p2wpkh() => 272,
+            // Other spk types are forbidden, as they lead to either tx malleability or an
+            // arbitrarily long and unstructured witness program, or no standard spends:
+            _ => return None
+        }))
+    }
+
+    pub(crate) fn mock_1_btc_coin(outpoint: &'static str) -> Self {
+        Self(outpoint.parse().expect("for mocking only; assumed valid outpoint str"), TxOut {
+            value: Amount::ONE_BTC,
+            script_pubkey: script::Builder::new().push_int(1).push_slice([0; 32]).into_script(),
+        })
+    }
+}
+
 pub type ReceiverList = Arc<[Receiver]>;
 
 pub trait WithWitnesses: Sized {
@@ -219,20 +239,28 @@ impl DepositTxBuilder {
     make_getter!(buyer_payout: TxOutput);
     make_getter!(seller_payout: TxOutput);
 
-    pub(crate) fn init_mock_buyers_half_psbt(&mut self, rng: &mut impl RngCore) -> Result<&mut Self> {
+    pub fn init_buyers_half_psbt(
+        &mut self,
+        trade_wallet: &mut impl TradeWallet,
+        rng: &mut impl RngCore,
+    ) -> Result<&mut Self> {
         let deposit_amount = *self.buyers_security_deposit()?;
         let fee_rate = *self.fee_rate()?;
-        Ok(self.set_buyers_half_psbt(mock_buyer_half_deposit_psbt(deposit_amount, fee_rate, rng)
-            .ok_or(TransactionErrorKind::Overflow)?))
+        Ok(self.set_buyers_half_psbt(
+            trade_wallet.create_half_deposit_psbt(deposit_amount, fee_rate, &[], rng)?))
     }
 
-    pub(crate) fn init_mock_sellers_half_psbt(&mut self, rng: &mut impl RngCore) -> Result<&mut Self> {
+    pub fn init_sellers_half_psbt(
+        &mut self,
+        trade_wallet: &mut impl TradeWallet,
+        rng: &mut impl RngCore,
+    ) -> Result<&mut Self> {
         let deposit_amount = self.trade_amount()?.checked_add(*self.sellers_security_deposit()?)
             .ok_or(TransactionErrorKind::Overflow)?;
         let fee_rate = *self.fee_rate()?;
         let trade_fee_receivers = self.trade_fee_receivers()?;
-        Ok(self.set_sellers_half_psbt(mock_seller_half_deposit_psbt(deposit_amount, fee_rate, trade_fee_receivers, rng)
-            .ok_or(TransactionErrorKind::Overflow)?))
+        Ok(self.set_sellers_half_psbt(
+            trade_wallet.create_half_deposit_psbt(deposit_amount, fee_rate, trade_fee_receivers, rng)?))
     }
 
     pub fn compute_unsigned_tx(&mut self) -> Result<&mut Self> {
@@ -504,6 +532,7 @@ mod tests {
     use rand_chacha::ChaCha20Rng;
 
     use super::*;
+    use crate::psbt::{mock_buyer_trade_wallet, mock_seller_trade_wallet};
 
     // Valid signed txs pulled from an integration test run. We should be able to rebuild them exactly...
 
@@ -662,8 +691,8 @@ mod tests {
             .set_seller_payout_address(seller_payout_address)
             .set_trade_fee_receivers(ReceiverList::default())
             .set_fee_rate(FeeRate::from_sat_per_kwu(5158)) // gives 7325-sat absolute fee
-            .init_mock_buyers_half_psbt(&mut rng)?
-            .init_mock_sellers_half_psbt(&mut rng)?
+            .init_buyers_half_psbt(&mut mock_buyer_trade_wallet(), &mut rng)?
+            .init_sellers_half_psbt(&mut mock_seller_trade_wallet(), &mut rng)?
             .compute_unsigned_tx()?;
         Ok(builder)
     }

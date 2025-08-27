@@ -16,6 +16,7 @@ use std::sync::{Arc, LazyLock, Mutex};
 use thiserror::Error;
 use tracing::{error, instrument, warn};
 
+use crate::psbt::{mock_buyer_trade_wallet, mock_seller_trade_wallet};
 use crate::storage::{ByOptVal, ByRef, ByVal, Storage, ValStorage};
 use crate::transaction::{
     warning_output_merkle_root, DepositTxBuilder, ForwardingTxBuilder, Receiver, ReceiverList,
@@ -349,9 +350,9 @@ impl TradeModel {
 
     pub fn init_my_half_deposit_psbt(&mut self) -> Result<()> {
         if self.am_buyer() {
-            self.deposit_tx_builder.init_mock_buyers_half_psbt(&mut rand::rng())?;
+            self.deposit_tx_builder.init_buyers_half_psbt(&mut mock_buyer_trade_wallet(), &mut rand::rng())?;
         } else {
-            self.deposit_tx_builder.init_mock_sellers_half_psbt(&mut rand::rng())?;
+            self.deposit_tx_builder.init_sellers_half_psbt(&mut mock_seller_trade_wallet(), &mut rand::rng())?;
         }
         Ok(())
     }
