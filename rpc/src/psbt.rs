@@ -8,7 +8,6 @@ use bdk_wallet::bitcoin::{
 };
 use rand::{RngCore, SeedableRng as _};
 use rand_chacha::ChaCha20Rng;
-use std::mem;
 
 use crate::swap::Swap as _;
 use crate::transaction::{Receiver, Result, TransactionErrorKind, TxOutput};
@@ -84,14 +83,16 @@ impl<Cs: Iterator<Item=TxOutput>, As: Iterator<Item=Address>> TradeWallet for Mo
                 .ok_or(TransactionErrorKind::Overflow)?;
             cost_msat = cost_msat.checked_add(fee_cost_msat(new_coin_weight)?)
                 .ok_or(TransactionErrorKind::Overflow)?;
-            let new_input = TxIn {
+            input.push(TxIn {
                 previous_output: new_coin.0,
                 sequence: Sequence::ENABLE_RBF_NO_LOCKTIME,
                 ..TxIn::default()
-            };
-            input.push(new_input);
-            let new_psbt_input = psbt::Input { witness_utxo: Some(new_coin.1), ..psbt::Input::default() };
-            inputs.push(new_psbt_input);
+            });
+            inputs.push(psbt::Input {
+                witness_utxo: Some(new_coin.1),
+                tap_internal_key: new_coin.2,
+                ..psbt::Input::default()
+            });
         }
 
         change_output.value = funds - Amount::from_sat(cost_msat.div_ceil(1000));
@@ -136,7 +137,8 @@ pub(crate) fn mock_buyer_trade_wallet() -> impl TradeWallet {
         .parse::<Address<_>>().unwrap().require_network(Network::Regtest).unwrap();
     MockTradeWallet {
         funding_coins: [
-            TxOutput::mock_1_btc_coin("658654575bbbeb46e965bd9eb37fd3be550a7e0fa2d64bc5f218763155602300:0"),
+            TxOutput::mock_1_btc_coin("658654575bbbeb46e965bd9eb37fd3be550a7e0fa2d64bc5f218763155602300:0",
+                "0000000000000000000000000000000000000000000000000000000000000001"),
         ].into_iter(),
         new_addresses: [change_address].into_iter(),
     }
@@ -148,16 +150,22 @@ pub(crate) fn mock_seller_trade_wallet() -> impl TradeWallet {
         .parse::<Address<_>>().unwrap().require_network(Network::Regtest).unwrap();
     MockTradeWallet {
         funding_coins: [
-            TxOutput::mock_1_btc_coin("4a5ecc72ec8db78f11c6785f560a13f6f32eac66d160a8157d30956695ccf523:0"),
-            TxOutput::mock_1_btc_coin("373b3ca0b9135e9649672772d4659bb5597d06b4694f1fbdbece285823fde0a3:1"),
+            TxOutput::mock_1_btc_coin("4a5ecc72ec8db78f11c6785f560a13f6f32eac66d160a8157d30956695ccf523:0",
+                "0000000000000000000000000000000000000000000000000000000000000002"),
+            TxOutput::mock_1_btc_coin("373b3ca0b9135e9649672772d4659bb5597d06b4694f1fbdbece285823fde0a3:1",
+                "0000000000000000000000000000000000000000000000000000000000000003"),
         ].into_iter(),
         new_addresses: [change_address].into_iter(),
     }
 }
 
 fn input_coin(psbt: &Psbt, index: usize) -> Option<TxOutput> {
+    if psbt.unsigned_tx.input[index].sequence != Sequence::ENABLE_RBF_NO_LOCKTIME {
+        // Enforce that all deposit PSBT inputs have a sequence number of 0xFFFFFFFD.
+        return None;
+    }
     Some(TxOutput(psbt.unsigned_tx.input[index].previous_output,
-        psbt.inputs[index].witness_utxo.clone()?))
+        psbt.inputs[index].witness_utxo.clone()?, psbt.inputs[index].tap_internal_key))
 }
 
 fn half_psbt_fee_overpay_msat(psbt: &Psbt, target_fee_rate: FeeRate) -> Option<i64> {
@@ -191,20 +199,24 @@ fn half_psbt_fee_overpay_msat(psbt: &Psbt, target_fee_rate: FeeRate) -> Option<i
     Some(i64::try_from(actual_fee_msat).ok()? - i64::try_from(target_fee_msat).ok()?)
 }
 
+fn is_well_formed(psbt: &Psbt) -> bool {
+    psbt.inputs.len() == psbt.unsigned_tx.input.len() &&
+        psbt.outputs.len() == psbt.unsigned_tx.output.len() &&
+        psbt.unsigned_tx.input.iter().all(|i| i.script_sig.is_empty() && i.witness.is_empty())
+}
+
 pub fn merge_psbt_halves(buyer_psbt: &Psbt, seller_psbt: &Psbt, target_fee_rate: FeeRate, num_receivers: usize) -> Result<Psbt> {
     fn re<T: Clone>(dest: &mut Vec<T>, src: &[T]) -> Vec<T> {
         let mut cloned_src = Vec::with_capacity(src.len() + dest.len());
         cloned_src.extend(src.iter().cloned());
-        mem::replace(dest, cloned_src)
+        std::mem::replace(dest, cloned_src)
     }
     use std::convert::identity as id;
 
-    // TODO: Need to do much more thorough half-PSBT validation than this:
-    if buyer_psbt.outputs.is_empty() || seller_psbt.outputs.is_empty() ||
-        buyer_psbt.inputs.len() != buyer_psbt.unsigned_tx.input.len() ||
-        buyer_psbt.outputs.len() != buyer_psbt.unsigned_tx.output.len() ||
-        seller_psbt.inputs.len() != seller_psbt.unsigned_tx.input.len() ||
-        seller_psbt.outputs.len() != seller_psbt.unsigned_tx.output.len() {
+    // TODO: We still need to verify that the 1st output of each PSBT half is an OP_RETURN of the
+    //  correct length, burning the correct (trader's deposit) amount, to prevent theft of tx fees.
+    if !is_well_formed(buyer_psbt) || buyer_psbt.outputs.is_empty() ||
+        !is_well_formed(seller_psbt) || seller_psbt.outputs.is_empty() {
         return Err(TransactionErrorKind::InvalidPsbt);
     }
 
@@ -236,6 +248,7 @@ pub fn merge_psbt_halves(buyer_psbt: &Psbt, seller_psbt: &Psbt, target_fee_rate:
     let seller_inputs = re(&mut merged_psbt.inputs, &buyer_psbt.inputs);
     let seller_outputs = re(&mut merged_psbt.outputs, &buyer_psbt.outputs);
     if merged_psbt != *buyer_psbt {
+        // All fields of the PSBT halves, apart from their input & output lists, must exactly match.
         return Err(TransactionErrorKind::InvalidPsbt);
     }
     merged_psbt.unsigned_tx.input.append(&mut id(seller_tx_input));

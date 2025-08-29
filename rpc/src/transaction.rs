@@ -5,14 +5,15 @@ use bdk_wallet::bitcoin::sighash::{Prevouts, SighashCache};
 use bdk_wallet::bitcoin::taproot::{Signature, TaprootBuilder, TAPROOT_ANNEX_PREFIX};
 use bdk_wallet::bitcoin::transaction::Version;
 use bdk_wallet::bitcoin::{
-    absolute, relative, script, Address, Amount, FeeRate, Network, OutPoint, Psbt, ScriptBuf,
-    Sequence, TapNodeHash, TapSighash, TapSighashType, Transaction, TxIn, TxOut, Weight, Witness,
-    XOnlyPublicKey,
+    absolute, relative, script, secp256k1, Address, Amount, FeeRate, Network, OutPoint, Psbt,
+    ScriptBuf, Sequence, TapNodeHash, TapSighash, TapSighashType, Transaction, TxIn, TxOut, Weight,
+    Witness, XOnlyPublicKey,
 };
 use paste::paste;
 use rand::RngCore;
 use relative::LockTime;
-use std::sync::Arc;
+use std::str::FromStr as _;
+use std::sync::{Arc, LazyLock};
 use thiserror::Error;
 
 use crate::psbt::{merge_psbt_halves, set_payouts_and_shuffle, TradeWallet};
@@ -117,28 +118,34 @@ macro_rules! make_getter_setter {
 }
 
 #[derive(Clone, Debug)]
-pub struct TxOutput(pub OutPoint, pub TxOut);
+pub struct TxOutput(pub(crate) OutPoint, pub(crate) TxOut, pub(crate) Option<XOnlyPublicKey>);
 
 impl TxOutput {
     pub fn estimated_input_weight(&self) -> Option<Weight> {
-        Some(Weight::from_wu(match &self.1.script_pubkey {
-            // Assumes a keyspend with default sighash type:
-            // FIXME: Should enforce that there's no script spend path (say by including an
-            //  optional internal key field in the `TxOutput` struct).
-            s if s.is_p2tr() => 230,
+        Some(Weight::from_wu(match (&self.1.script_pubkey, self.2) {
+            // Assumes default sighash type:
+            (s, Some(k)) if s.is_p2tr() && *s == Self::keyspend_only_spk(k) => 230,
             // Assumes low-R nonce grinding:
-            s if s.is_p2wpkh() => 272,
+            (s, None) if s.is_p2wpkh() => 272,
             // Other spk types are forbidden, as they lead to either tx malleability or an
             // arbitrarily long and unstructured witness program, or no standard spends:
             _ => return None
         }))
     }
 
-    pub(crate) fn mock_1_btc_coin(outpoint: &'static str) -> Self {
+    pub(crate) fn mock_1_btc_coin(outpoint: &'static str, internal_key: &'static str) -> Self {
+        let internal_key = XOnlyPublicKey::from_str(internal_key)
+            .expect("for mocking only; assumed valid X-only pubkey hex str");
         Self(outpoint.parse().expect("for mocking only; assumed valid outpoint str"), TxOut {
             value: Amount::ONE_BTC,
-            script_pubkey: script::Builder::new().push_int(1).push_slice([0; 32]).into_script(),
-        })
+            script_pubkey: Self::keyspend_only_spk(internal_key),
+        }, Some(internal_key))
+    }
+
+    fn keyspend_only_spk(internal_key: XOnlyPublicKey) -> ScriptBuf {
+        static LIBSECP256K1_CTX: LazyLock<secp256k1::Secp256k1<secp256k1::All>> =
+            LazyLock::new(secp256k1::Secp256k1::new);
+        ScriptBuf::new_p2tr(&*LIBSECP256K1_CTX, internal_key, None)
     }
 }
 
@@ -275,11 +282,11 @@ impl DepositTxBuilder {
             value: self.buyers_security_deposit()?.checked_add(*self.trade_amount()?)
                 .ok_or(TransactionErrorKind::Overflow)?,
             script_pubkey: self.buyer_payout_address()?.script_pubkey(),
-        });
+        }, None);
         let mut seller_payout = TxOutput(OutPoint::null(), TxOut {
             value: *self.sellers_security_deposit()?,
             script_pubkey: self.seller_payout_address()?.script_pubkey(),
-        });
+        }, None);
         set_payouts_and_shuffle(&mut psbt, &mut buyer_payout, &mut seller_payout);
 
         // Initialize the computed fields.
@@ -350,7 +357,7 @@ impl WarningTxBuilder {
     pub fn escrow(&self) -> Result<TxOutput> {
         let txid = self.unsigned_tx()?.compute_txid();
         let output = self.unsigned_tx()?.output[0].clone();
-        Ok(TxOutput(OutPoint::new(txid, 0), output))
+        Ok(TxOutput(OutPoint::new(txid, 0), output, None))
     }
 
     pub fn buyer_input_sighash(&self) -> Result<TapSighash> {
