@@ -1,6 +1,6 @@
 use bdk_wallet::bitcoin::amount::CheckedSum as _;
 use bdk_wallet::bitcoin::hashes::Hash as _;
-use bdk_wallet::bitcoin::opcodes::all::OP_RETURN;
+use bdk_wallet::bitcoin::opcodes::all::{OP_PUSHBYTES_27, OP_RETURN};
 use bdk_wallet::bitcoin::transaction::Version;
 use bdk_wallet::bitcoin::{
     absolute, psbt, script, Address, Amount, FeeRate, Network, Psbt, ScriptBuf, Sequence,
@@ -159,6 +159,26 @@ pub(crate) fn mock_seller_trade_wallet() -> impl TradeWallet {
     }
 }
 
+pub fn check_placeholder_output(psbt: &Psbt, expected_deposit: Amount) -> Result<()> {
+    let Some(TxOut { value, script_pubkey }) = psbt.unsigned_tx.output.first() else {
+        return Err(TransactionErrorKind::InvalidPsbt);
+    };
+    if *value != expected_deposit || !script_pubkey.is_op_return() || script_pubkey.len() != 29
+        || script_pubkey.as_bytes()[1] != OP_PUSHBYTES_27.to_u8() {
+        return Err(TransactionErrorKind::InvalidPsbt);
+    }
+    Ok(())
+}
+
+pub fn check_receiver_outputs(psbt: &Psbt, trade_fee_receivers: &[Receiver]) -> Result<()> {
+    if psbt.unsigned_tx.output.len() <= trade_fee_receivers.len() ||
+        (0..trade_fee_receivers.len())
+            .any(|i| psbt.unsigned_tx.output[i + 1] != (&trade_fee_receivers[i]).into()) {
+        return Err(TransactionErrorKind::InvalidPsbt);
+    }
+    Ok(())
+}
+
 fn input_coin(psbt: &Psbt, index: usize) -> Option<TxOutput> {
     if psbt.unsigned_tx.input[index].sequence != Sequence::ENABLE_RBF_NO_LOCKTIME {
         // Enforce that all deposit PSBT inputs have a sequence number of 0xFFFFFFFD.
@@ -213,8 +233,6 @@ pub fn merge_psbt_halves(buyer_psbt: &Psbt, seller_psbt: &Psbt, target_fee_rate:
     }
     use std::convert::identity as id;
 
-    // TODO: We still need to verify that the 1st output of each PSBT half is an OP_RETURN of the
-    //  correct length, burning the correct (trader's deposit) amount, to prevent theft of tx fees.
     if !is_well_formed(buyer_psbt) || buyer_psbt.outputs.is_empty() ||
         !is_well_formed(seller_psbt) || seller_psbt.outputs.is_empty() {
         return Err(TransactionErrorKind::InvalidPsbt);

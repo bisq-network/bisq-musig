@@ -16,7 +16,10 @@ use std::str::FromStr as _;
 use std::sync::{Arc, LazyLock};
 use thiserror::Error;
 
-use crate::psbt::{merge_psbt_halves, set_payouts_and_shuffle, TradeWallet};
+use crate::psbt::{
+    check_placeholder_output, check_receiver_outputs, merge_psbt_halves, set_payouts_and_shuffle,
+    TradeWallet,
+};
 
 pub const REGTEST_WARNING_LOCK_TIME: LockTime = LockTime::from_height(5);
 pub const REGTEST_CLAIM_LOCK_TIME: LockTime = LockTime::from_height(5);
@@ -246,6 +249,11 @@ impl DepositTxBuilder {
     make_getter!(buyer_payout: TxOutput);
     make_getter!(seller_payout: TxOutput);
 
+    fn sellers_trade_deposit(&self) -> Result<Amount> {
+        self.trade_amount()?.checked_add(*self.sellers_security_deposit()?)
+            .ok_or(TransactionErrorKind::Overflow)
+    }
+
     pub fn init_buyers_half_psbt(
         &mut self,
         trade_wallet: &mut impl TradeWallet,
@@ -262,8 +270,7 @@ impl DepositTxBuilder {
         trade_wallet: &mut impl TradeWallet,
         rng: &mut impl RngCore,
     ) -> Result<&mut Self> {
-        let deposit_amount = self.trade_amount()?.checked_add(*self.sellers_security_deposit()?)
-            .ok_or(TransactionErrorKind::Overflow)?;
+        let deposit_amount = self.sellers_trade_deposit()?;
         let fee_rate = *self.fee_rate()?;
         let trade_fee_receivers = self.trade_fee_receivers()?;
         Ok(self.set_sellers_half_psbt(
@@ -271,8 +278,13 @@ impl DepositTxBuilder {
     }
 
     pub fn compute_unsigned_tx(&mut self) -> Result<&mut Self> {
-        // Compute a raw merged PSBT.
+        // Check that the placeholder output & receiver outputs of each PSBT half are correct.
         let [buyer_psbt, seller_psbt] = [self.buyers_half_psbt()?, self.sellers_half_psbt()?];
+        check_placeholder_output(buyer_psbt, *self.buyers_security_deposit()?)?;
+        check_placeholder_output(seller_psbt, self.sellers_trade_deposit()?)?;
+        check_receiver_outputs(seller_psbt, self.trade_fee_receivers()?)?;
+
+        // Compute a raw merged PSBT.
         let target_fee_rate = *self.fee_rate()?;
         let num_receivers = self.trade_fee_receivers()?.len();
         let mut psbt = merge_psbt_halves(buyer_psbt, seller_psbt, target_fee_rate, num_receivers)?;
