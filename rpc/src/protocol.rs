@@ -1,4 +1,4 @@
-use bdk_wallet::bitcoin::address::{KnownHrp, NetworkChecked, NetworkUnchecked, NetworkValidation};
+use bdk_wallet::bitcoin::address::{NetworkChecked, NetworkUnchecked, NetworkValidation};
 use bdk_wallet::bitcoin::hashes::Hash as _;
 use bdk_wallet::bitcoin::key::TweakedPublicKey;
 use bdk_wallet::bitcoin::taproot::Signature;
@@ -20,9 +20,9 @@ use tracing::{error, instrument, warn};
 use crate::psbt::{mock_buyer_trade_wallet, mock_seller_trade_wallet, TradeWallet};
 use crate::storage::{ByOptVal, ByRef, ByVal, Storage, ValStorage};
 use crate::transaction::{
-    warning_output_merkle_root, DepositTxBuilder, ForwardingTxBuilder, Receiver, ReceiverList,
+    DepositTxBuilder, ForwardingTxBuilder, NetworkParams as _, Receiver, ReceiverList,
     RedirectTxBuilder, WarningTxBuilder, WithWitnesses as _, ANCHOR_AMOUNT,
-    REGTEST_CLAIM_LOCK_TIME, REGTEST_WARNING_LOCK_TIME, SIGNED_REDIRECT_TX_BASE_WEIGHT,
+    SIGNED_REDIRECT_TX_BASE_WEIGHT,
 };
 
 pub trait TradeModelStore {
@@ -163,11 +163,11 @@ impl TradeModel {
     pub fn new(trade_id: String, my_role: Role) -> Self {
         let mut trade_model = Self { trade_id, my_role, ..Default::default() };
         let am_buyer = trade_model.am_buyer();
-        trade_model.trade_wallet = Some(if am_buyer {
+        let network = trade_model.trade_wallet.insert(if am_buyer {
             Arc::new(Mutex::new(mock_buyer_trade_wallet()))
         } else {
             Arc::new(Mutex::new(mock_seller_trade_wallet()))
-        });
+        }).lock().unwrap().network();
         trade_model.buyer_output_key_ctx.am_buyer = am_buyer;
         trade_model.seller_output_key_ctx.am_buyer = am_buyer;
         trade_model.swap_tx_input_sig_ctx.am_buyer = am_buyer;
@@ -179,12 +179,13 @@ impl TradeModel {
         trade_model.sellers_redirect_tx_input_sig_ctx.am_buyer = am_buyer;
         trade_model.buyers_claim_tx_input_sig_ctx.am_buyer = am_buyer;
         trade_model.sellers_claim_tx_input_sig_ctx.am_buyer = am_buyer;
-        // TODO: Make the network configurable:
         trade_model.swap_tx_builder.disable_lock_time();
-        trade_model.buyers_warning_tx_builder.set_lock_time(REGTEST_WARNING_LOCK_TIME);
-        trade_model.sellers_warning_tx_builder.set_lock_time(REGTEST_WARNING_LOCK_TIME);
-        trade_model.buyers_claim_tx_builder.set_lock_time(REGTEST_CLAIM_LOCK_TIME);
-        trade_model.sellers_claim_tx_builder.set_lock_time(REGTEST_CLAIM_LOCK_TIME);
+        trade_model.buyers_warning_tx_builder.set_lock_time(network.warning_lock_time());
+        trade_model.sellers_warning_tx_builder.set_lock_time(network.warning_lock_time());
+        trade_model.buyers_redirect_tx_builder.set_lock_time(network.redirect_lock_time());
+        trade_model.sellers_redirect_tx_builder.set_lock_time(network.redirect_lock_time());
+        trade_model.buyers_claim_tx_builder.set_lock_time(network.claim_lock_time());
+        trade_model.sellers_claim_tx_builder.set_lock_time(network.claim_lock_time());
         trade_model
     }
 
@@ -232,6 +233,7 @@ impl TradeModel {
     }
 
     pub fn redirection_amount_msat(&self) -> Option<u64> {
+        // TODO: Should this logic be moved into `transaction`?
         let split_input_amounts = [
             *self.deposit_tx_builder.trade_amount().ok()?,
             *self.deposit_tx_builder.buyers_security_deposit().ok()?,
@@ -246,17 +248,19 @@ impl TradeModel {
             .checked_sub(redirection_tx_base_fee)
     }
 
-    pub fn init_my_key_shares(&mut self) {
+    pub fn init_my_key_shares(&mut self) -> Result<()> {
+        let network = self.trade_wallet()?.network();
         let buyer_output_pub_key = self.buyer_output_key_ctx.init_my_key_share().pub_key;
         let seller_output_pub_key = self.seller_output_key_ctx.init_my_key_share().pub_key;
         if self.am_buyer() {
-            self.buyers_redirect_tx_input_sig_ctx.set_warning_output_merkle_root(&seller_output_pub_key);
-            self.sellers_claim_tx_input_sig_ctx.set_warning_output_merkle_root(&seller_output_pub_key);
+            self.buyers_redirect_tx_input_sig_ctx.set_warning_output_merkle_root(&seller_output_pub_key, network);
+            self.sellers_claim_tx_input_sig_ctx.set_warning_output_merkle_root(&seller_output_pub_key, network);
         } else {
             self.swap_tx_input_sig_ctx.adaptor_point = MaybePoint::Valid(buyer_output_pub_key);
-            self.sellers_redirect_tx_input_sig_ctx.set_warning_output_merkle_root(&buyer_output_pub_key);
-            self.buyers_claim_tx_input_sig_ctx.set_warning_output_merkle_root(&buyer_output_pub_key);
+            self.sellers_redirect_tx_input_sig_ctx.set_warning_output_merkle_root(&buyer_output_pub_key, network);
+            self.buyers_claim_tx_input_sig_ctx.set_warning_output_merkle_root(&buyer_output_pub_key, network);
         }
+        Ok(())
     }
 
     pub fn get_my_key_shares(&self) -> Option<[&KeyPair; 2]> {
@@ -266,26 +270,29 @@ impl TradeModel {
         ])
     }
 
-    pub fn set_peer_key_shares(&mut self, buyer_output_pub_key: Point, seller_output_pub_key: Point) {
+    pub fn set_peer_key_shares(&mut self, buyer_output_pub_key: Point, seller_output_pub_key: Point) -> Result<()> {
+        let network = self.trade_wallet()?.network();
         self.buyer_output_key_ctx.peers_key_share = Some(KeyPair::from_public(buyer_output_pub_key));
         self.seller_output_key_ctx.peers_key_share = Some(KeyPair::from_public(seller_output_pub_key));
         if self.am_buyer() {
             // TODO: Should check that signing hasn't already begun before setting an adaptor point.
             self.swap_tx_input_sig_ctx.adaptor_point = MaybePoint::Valid(buyer_output_pub_key);
-            self.sellers_redirect_tx_input_sig_ctx.set_warning_output_merkle_root(&buyer_output_pub_key);
-            self.buyers_claim_tx_input_sig_ctx.set_warning_output_merkle_root(&buyer_output_pub_key);
+            self.sellers_redirect_tx_input_sig_ctx.set_warning_output_merkle_root(&buyer_output_pub_key, network);
+            self.buyers_claim_tx_input_sig_ctx.set_warning_output_merkle_root(&buyer_output_pub_key, network);
         } else {
-            self.buyers_redirect_tx_input_sig_ctx.set_warning_output_merkle_root(&seller_output_pub_key);
-            self.sellers_claim_tx_input_sig_ctx.set_warning_output_merkle_root(&seller_output_pub_key);
+            self.buyers_redirect_tx_input_sig_ctx.set_warning_output_merkle_root(&seller_output_pub_key, network);
+            self.sellers_claim_tx_input_sig_ctx.set_warning_output_merkle_root(&seller_output_pub_key, network);
         }
+        Ok(())
     }
 
     pub fn aggregate_key_shares(&mut self) -> Result<()> {
+        let network = self.trade_wallet()?.network();
         self.buyer_output_key_ctx.aggregate_key_shares()?;
         self.seller_output_key_ctx.aggregate_key_shares()?;
 
-        let buyer_payout_address = self.buyer_output_key_ctx.compute_p2tr_address(None)?;
-        let seller_payout_address = self.seller_output_key_ctx.compute_p2tr_address(None)?;
+        let buyer_payout_address = self.buyer_output_key_ctx.compute_p2tr_address(None, network)?;
+        let seller_payout_address = self.seller_output_key_ctx.compute_p2tr_address(None, network)?;
         self.deposit_tx_builder.set_buyer_payout_address(buyer_payout_address);
         self.deposit_tx_builder.set_seller_payout_address(seller_payout_address);
 
@@ -294,9 +301,9 @@ impl TradeModel {
         let sellers_warning_output_merkle_root = self.buyers_redirect_tx_input_sig_ctx.merkle_root.as_ref();
 
         let buyers_warning_escrow_address = self.seller_output_key_ctx.compute_p2tr_address(
-            buyers_warning_output_merkle_root)?;
+            buyers_warning_output_merkle_root, network)?;
         let sellers_warning_escrow_address = self.buyer_output_key_ctx.compute_p2tr_address(
-            sellers_warning_output_merkle_root)?;
+            sellers_warning_output_merkle_root, network)?;
         self.buyers_warning_tx_builder.set_escrow_address(buyers_warning_escrow_address);
         self.sellers_warning_tx_builder.set_escrow_address(sellers_warning_escrow_address);
         Ok(())
@@ -845,28 +852,25 @@ impl KeyCtx {
         })
     }
 
-    fn compute_p2tr_address(&self, merkle_root: Option<&TapNodeHash>) -> Result<Address> {
+    fn compute_p2tr_address(&self, merkle_root: Option<&TapNodeHash>, network: Network) -> Result<Address> {
         let pub_key: Point = self.compute_tweaked_key_agg_ctx(merkle_root)?.aggregated_pubkey();
         // NOTE: We have to round-trip the public key because 'musig2' & 'bitcoin' currently use
         // different versions of the 'secp256k1' crate:
         let pub_key = PublicKey::from_slice(&pub_key.serialize_uncompressed())
             .expect("curve point should have a valid uncompressed DER encoding").into();
 
-        // TODO: Make the network configurable:
         // This is safe, as we just performed a Taproot tweak above (via the 'musig2::secp' crate):
-        Ok(Address::p2tr_tweaked(TweakedPublicKey::dangerous_assume_tweaked(pub_key), KnownHrp::Regtest))
+        Ok(Address::p2tr_tweaked(TweakedPublicKey::dangerous_assume_tweaked(pub_key), network))
     }
 }
 
 impl SigCtx {
-    fn set_warning_output_merkle_root(&mut self, claim_pub_key: &Point) -> &TapNodeHash {
+    fn set_warning_output_merkle_root(&mut self, claim_pub_key: &Point, network: Network) -> &TapNodeHash {
         // NOTE: We have to round-trip the public key because 'musig2' & 'bitcoin' currently use
         // different versions of the 'secp256k1' crate:
         let claim_pub_key = PublicKey::from_slice(&claim_pub_key.serialize_uncompressed())
             .expect("curve point should have a valid uncompressed DER encoding").into();
-
-        // TODO: Make the network used to decide the claim lock-time configurable:
-        self.merkle_root.insert(warning_output_merkle_root(&claim_pub_key, REGTEST_CLAIM_LOCK_TIME))
+        self.merkle_root.insert(network.warning_output_merkle_root(&claim_pub_key))
     }
 
     fn init_my_nonce_share(&mut self, key_ctx: &KeyCtx) -> Result<()> {

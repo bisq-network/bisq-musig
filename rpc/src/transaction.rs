@@ -24,11 +24,38 @@ use crate::psbt::{
 };
 
 pub const REGTEST_WARNING_LOCK_TIME: LockTime = LockTime::from_height(5);
+pub const REGTEST_REDIRECT_LOCK_TIME: LockTime = LockTime::ZERO;
 pub const REGTEST_CLAIM_LOCK_TIME: LockTime = LockTime::from_height(5);
+
+// TODO: Consider further (also, we may want different delays for fiat & altcoin trades):
+pub const MAINNET_WARNING_LOCK_TIME: LockTime = LockTime::from_height(144 * 10);
+// TODO: Consider further (zero disables relative lock time):
+pub const MAINNET_REDIRECT_LOCK_TIME: LockTime = LockTime::ZERO;
+// TODO: Consider further:
+pub const MAINNET_CLAIM_LOCK_TIME: LockTime = LockTime::from_height(144 * 5);
+
 pub const ANCHOR_AMOUNT: Amount = Amount::from_sat(330);
 pub const SIGNED_FORWARDING_TX_WEIGHT: Weight = Weight::from_wu(444);
 pub const SIGNED_WARNING_TX_WEIGHT: Weight = Weight::from_wu(846);
 pub const SIGNED_REDIRECT_TX_BASE_WEIGHT: Weight = SIGNED_FORWARDING_TX_WEIGHT;
+
+pub trait NetworkParams {
+    fn warning_lock_time(&self) -> LockTime;
+
+    fn redirect_lock_time(&self) -> LockTime;
+
+    fn claim_lock_time(&self) -> LockTime;
+
+    fn warning_output_merkle_root(&self, claim_pub_key: &XOnlyPublicKey) -> TapNodeHash {
+        let claim_script = claim_script(claim_pub_key, self.claim_lock_time());
+        TaprootBuilder::with_capacity(1)
+            .add_leaf(0, claim_script)
+            .expect("hardcoded TapTree build sequence should be valid")
+            .try_into_taptree()
+            .expect("hardcoded TapTree build sequence should be complete")
+            .root_hash()
+    }
+}
 
 fn claim_script(pub_key: &XOnlyPublicKey, lock_time: LockTime) -> ScriptBuf {
     script::Builder::new()
@@ -40,14 +67,27 @@ fn claim_script(pub_key: &XOnlyPublicKey, lock_time: LockTime) -> ScriptBuf {
         .into_script()
 }
 
-pub fn warning_output_merkle_root(claim_pub_key: &XOnlyPublicKey, claim_lock_time: LockTime) -> TapNodeHash {
-    let claim_script = claim_script(claim_pub_key, claim_lock_time);
-    TaprootBuilder::with_capacity(1)
-        .add_leaf(0, claim_script)
-        .expect("hardcoded TapTree build sequence should be valid")
-        .try_into_taptree()
-        .expect("hardcoded TapTree build sequence should be complete")
-        .root_hash()
+impl NetworkParams for Network {
+    fn warning_lock_time(&self) -> LockTime {
+        match self {
+            Self::Regtest => REGTEST_WARNING_LOCK_TIME,
+            _ => MAINNET_WARNING_LOCK_TIME
+        }
+    }
+
+    fn redirect_lock_time(&self) -> LockTime {
+        match self {
+            Self::Regtest => REGTEST_REDIRECT_LOCK_TIME,
+            _ => MAINNET_REDIRECT_LOCK_TIME
+        }
+    }
+
+    fn claim_lock_time(&self) -> LockTime {
+        match self {
+            Self::Regtest => REGTEST_CLAIM_LOCK_TIME,
+            _ => MAINNET_CLAIM_LOCK_TIME
+        }
+    }
 }
 
 pub struct Receiver<V: NetworkValidation = NetworkChecked> {
@@ -207,7 +247,6 @@ trait WithFixedInputs<const N: usize> {
     fn inputs(&self) -> Result<[&TxOutput; N]>;
 
     fn tx_ins(&self, lock_time: LockTime) -> Result<[TxIn; N]> {
-        // FIXME: A bit hacky to use (an otherwise perfectly valid) zero lock time as a sentinel value.
         let sequence = if lock_time == LockTime::ZERO {
             Sequence::ENABLE_RBF_NO_LOCKTIME
         } else {
@@ -408,6 +447,7 @@ pub struct RedirectTxBuilder {
     input: Option<TxOutput>,
     receivers: Option<ReceiverList>,
     anchor_address: Option<Address>,
+    lock_time: Option<LockTime>,
     input_signature: Option<Signature>,
     // Derived fields:
     unsigned_tx: Option<Transaction>,
@@ -418,6 +458,7 @@ impl RedirectTxBuilder {
     make_getter_setter!(input: TxOutput);
     make_getter_setter!(receivers: ReceiverList);
     make_getter_setter!(anchor_address: Address);
+    make_getter_setter!(lock_time: LockTime);
     make_getter_setter!(input_signature: Signature);
     make_getter!(unsigned_tx: Transaction);
     #[cfg(test)]
@@ -433,7 +474,7 @@ impl RedirectTxBuilder {
         let tx = Transaction {
             version: Version::TWO,
             lock_time: absolute::LockTime::ZERO,
-            input: self.tx_ins(LockTime::ZERO)?.to_vec(),
+            input: self.tx_ins(*self.lock_time()?)?.to_vec(),
             output,
         };
         self.unsigned_tx.get_or_insert(tx);
@@ -782,6 +823,7 @@ mod tests {
             .set_input(warning_tx_builder.escrow()?)
             .set_receivers(Arc::new(receivers))
             .set_anchor_address(anchor_address)
+            .set_lock_time(LockTime::ZERO)
             .compute_unsigned_tx()?
             .set_input_signature(sig(BUYERS_REDIRECT_TX_SIGNATURE))
             .compute_signed_tx()?;

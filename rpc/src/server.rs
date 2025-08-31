@@ -41,7 +41,7 @@ impl musig_server::Musig for MusigImpl {
     async fn init_trade(&self, request: Request<PubKeySharesRequest>) -> Result<Response<PubKeySharesResponse>> {
         handle_request(request, move |request| {
             let mut trade_model = TradeModel::new(request.trade_id, request.my_role.try_proto_into()?);
-            trade_model.init_my_key_shares();
+            trade_model.init_my_key_shares()?;
             let my_key_shares = trade_model.get_my_key_shares()
                 .ok_or_else(|| Status::internal("missing key shares"))?;
             let response = PubKeySharesResponse {
@@ -60,7 +60,7 @@ impl musig_server::Musig for MusigImpl {
         handle_musig_request(request, move |request, trade_model| {
             trade_model.set_peer_key_shares(
                 request.buyer_output_peers_pub_key_share.try_proto_into()?,
-                request.seller_output_peers_pub_key_share.try_proto_into()?);
+                request.seller_output_peers_pub_key_share.try_proto_into()?)?;
             trade_model.aggregate_key_shares()?;
             trade_model.set_trade_amount(
                 Amount::from_sat(request.trade_amount.check_in_signed_range()?));
