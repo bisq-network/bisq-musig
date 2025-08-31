@@ -21,12 +21,16 @@ pub const MAX_ALLOWED_HALF_PSBT_INPUT_NUM: usize = 126;
 pub const MAX_ALLOWED_HALF_PSBT_OUTPUT_NUM: usize = 126;
 
 pub trait TradeWallet {
+    fn network(&self) -> Network;
+
+    fn new_address(&mut self) -> Result<Address>;
+
     fn create_half_deposit_psbt(
         &mut self,
         deposit_amount: Amount,
         fee_rate: FeeRate,
         trade_fee_receivers: &[Receiver],
-        rng: &mut impl RngCore,
+        rng: &mut dyn RngCore,
     ) -> Result<Psbt>;
 }
 
@@ -36,12 +40,18 @@ pub(crate) struct MockTradeWallet<Cs: Iterator<Item=TxOutput>, As: Iterator<Item
 }
 
 impl<Cs: Iterator<Item=TxOutput>, As: Iterator<Item=Address>> TradeWallet for MockTradeWallet<Cs, As> {
+    fn network(&self) -> Network { Network::Regtest }
+
+    fn new_address(&mut self) -> Result<Address> {
+        self.new_addresses.next().ok_or(TransactionErrorKind::MissingAddress)
+    }
+
     fn create_half_deposit_psbt(
         &mut self,
         deposit_amount: Amount,
         fee_rate: FeeRate,
         trade_fee_receivers: &[Receiver],
-        rng: &mut impl RngCore,
+        rng: &mut dyn RngCore,
     ) -> Result<Psbt> {
         const HALF_DEPOSIT_TX_BASE_WEIGHT: Weight = Weight::from_wu(193);
 
@@ -60,9 +70,7 @@ impl<Cs: Iterator<Item=TxOutput>, As: Iterator<Item=Address>> TradeWallet for Mo
             script_pubkey: half_deposit_placeholder_spk(rng),
         });
         output.extend(trade_fee_receivers.iter().map(TxOut::from));
-        let mut change_output = self.new_addresses.next()
-            .map(|addr| TxOut { value: Amount::ZERO, script_pubkey: addr.script_pubkey() })
-            .ok_or(TransactionErrorKind::MissingAddress)?;
+        let mut change_output = TxOut { value: Amount::ZERO, script_pubkey: self.new_address()?.script_pubkey() };
 
         let mut cost_msat = Receiver::total_output_cost_msat(trade_fee_receivers, fee_rate, 2)
             .ok_or(TransactionErrorKind::Overflow)?
@@ -122,7 +130,7 @@ impl<Cs: Iterator<Item=TxOutput>, As: Iterator<Item=Address>> TradeWallet for Mo
 // When the half-PSBTs are merged, the placeholders are replaced with the actual payout UTXOs. The
 // injected randomness of the (trade-private) OP_RETURN datagrams ensures that a _deterministic_
 // shuffling of the merged deposit PSBT inputs & outputs is unpredictable to any 3rd party.
-pub fn half_deposit_placeholder_spk(rng: &mut impl RngCore) -> ScriptBuf {
+pub fn half_deposit_placeholder_spk<R: RngCore + ?Sized>(rng: &mut R) -> ScriptBuf {
     let mut data = [0u8; 27];
     rng.fill_bytes(&mut data);
     script::Builder::new()
@@ -133,30 +141,37 @@ pub fn half_deposit_placeholder_spk(rng: &mut impl RngCore) -> ScriptBuf {
 
 //noinspection SpellCheckingInspection
 pub(crate) fn mock_buyer_trade_wallet() -> impl TradeWallet {
-    let change_address = "bcrt1pgsj9aw0wvs5h6zj780djnu267v6jazmfekwm4g4q4s6ax3w3t0lseqqnjc"
-        .parse::<Address<_>>().unwrap().require_network(Network::Regtest).unwrap();
-    MockTradeWallet {
-        funding_coins: [
-            TxOutput::mock_1_btc_coin("658654575bbbeb46e965bd9eb37fd3be550a7e0fa2d64bc5f218763155602300:0",
-                "0000000000000000000000000000000000000000000000000000000000000001"),
-        ].into_iter(),
-        new_addresses: [change_address].into_iter(),
-    }
+    let funding_coins = std::iter::once(
+        TxOutput::mock_1_btc_coin("658654575bbbeb46e965bd9eb37fd3be550a7e0fa2d64bc5f218763155602300:0",
+            "0000000000000000000000000000000000000000000000000000000000000001"),
+    );
+    let new_addresses = [
+        "bcrt1pgsj9aw0wvs5h6zj780djnu267v6jazmfekwm4g4q4s6ax3w3t0lseqqnjc",
+        "bcrt1pkar3gerekw8f9gef9vn9xz0qypytgacp9wa5saelpksdgct33qdqan7c89",
+        "bcrt1pv537m7m6w0gdrcdn3mqqdpgrk3j400yrdrjwf5c9whyl2f8f4p6q9dn3l9",
+        "bcrt1pzvynlely05x82u40cts3znctmvyskue74xa5zwy0t5ueuv92726szpgpaa",
+    ].map(|a| a.parse::<Address<_>>()
+        .expect("hardcoded addresses should be valid").assume_checked()).into_iter();
+    MockTradeWallet { funding_coins, new_addresses }
 }
 
 //noinspection SpellCheckingInspection
 pub(crate) fn mock_seller_trade_wallet() -> impl TradeWallet {
-    let change_address = "bcrt1p80xu5f0nqjarfnechsmlt488jf3tykx8cva9zeeczlsu4c7x557qr499gz"
-        .parse::<Address<_>>().unwrap().require_network(Network::Regtest).unwrap();
-    MockTradeWallet {
-        funding_coins: [
-            TxOutput::mock_1_btc_coin("4a5ecc72ec8db78f11c6785f560a13f6f32eac66d160a8157d30956695ccf523:0",
-                "0000000000000000000000000000000000000000000000000000000000000002"),
-            TxOutput::mock_1_btc_coin("373b3ca0b9135e9649672772d4659bb5597d06b4694f1fbdbece285823fde0a3:1",
-                "0000000000000000000000000000000000000000000000000000000000000003"),
-        ].into_iter(),
-        new_addresses: [change_address].into_iter(),
-    }
+    let funding_coins = [
+        TxOutput::mock_1_btc_coin("4a5ecc72ec8db78f11c6785f560a13f6f32eac66d160a8157d30956695ccf523:0",
+            "0000000000000000000000000000000000000000000000000000000000000002"),
+        TxOutput::mock_1_btc_coin("373b3ca0b9135e9649672772d4659bb5597d06b4694f1fbdbece285823fde0a3:1",
+            "0000000000000000000000000000000000000000000000000000000000000003"),
+    ].into_iter();
+    let new_addresses = [
+        "bcrt1p80xu5f0nqjarfnechsmlt488jf3tykx8cva9zeeczlsu4c7x557qr499gz",
+        "bcrt1pt5xd4aqe9whmvlz78mt39rvdlgpp6hujs5ggwan5285zjnsf73rq20k456",
+        "bcrt1pwxlp4v9v7v03nx0e7vunlc87d4936wnyqegw0fuahudypan64wysefpqzy",
+        "bcrt1pw4s5zvfm665fq9u6uwn9g7gwna658s939dvvf9wg63yede8kvyms5pmalx",
+        "bcrt1pe3kcs085e8qej9aqqx6qryv2qsfxzywy9xd8pryzwemv2dghdqgscylr69",
+    ].map(|a| a.parse::<Address<_>>()
+        .expect("hardcoded addresses should be valid").assume_checked()).into_iter();
+    MockTradeWallet { funding_coins, new_addresses }
 }
 
 pub fn check_placeholder_output(psbt: &Psbt, expected_deposit: Amount) -> Result<()> {

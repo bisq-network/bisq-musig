@@ -5,6 +5,7 @@ use bdk_wallet::bitcoin::taproot::Signature;
 use bdk_wallet::bitcoin::{
     Address, Amount, FeeRate, Network, Psbt, PublicKey, TapNodeHash, TapSighash, Transaction,
 };
+use guardian::ArcMutexGuardian;
 use musig2::adaptor::AdaptorSignature;
 use musig2::secp::{MaybePoint, MaybeScalar, Point, Scalar};
 use musig2::{
@@ -16,7 +17,7 @@ use std::sync::{Arc, LazyLock, Mutex};
 use thiserror::Error;
 use tracing::{error, instrument, warn};
 
-use crate::psbt::{mock_buyer_trade_wallet, mock_seller_trade_wallet};
+use crate::psbt::{mock_buyer_trade_wallet, mock_seller_trade_wallet, TradeWallet};
 use crate::storage::{ByOptVal, ByRef, ByVal, Storage, ValStorage};
 use crate::transaction::{
     warning_output_merkle_root, DepositTxBuilder, ForwardingTxBuilder, Receiver, ReceiverList,
@@ -48,6 +49,7 @@ pub static TRADE_MODELS: LazyLock<TradeModelMemoryStore> = LazyLock::new(|| Mute
 pub struct TradeModel {
     trade_id: String,
     my_role: Role,
+    trade_wallet: Option<Arc<Mutex<dyn TradeWallet + Send + 'static>>>,
     deposit_tx_builder: DepositTxBuilder,
     swap_tx_builder: ForwardingTxBuilder,
     prepared_tx_fee_rate: Option<FeeRate>,
@@ -161,6 +163,11 @@ impl TradeModel {
     pub fn new(trade_id: String, my_role: Role) -> Self {
         let mut trade_model = Self { trade_id, my_role, ..Default::default() };
         let am_buyer = trade_model.am_buyer();
+        trade_model.trade_wallet = Some(if am_buyer {
+            Arc::new(Mutex::new(mock_buyer_trade_wallet()))
+        } else {
+            Arc::new(Mutex::new(mock_seller_trade_wallet()))
+        });
         trade_model.buyer_output_key_ctx.am_buyer = am_buyer;
         trade_model.seller_output_key_ctx.am_buyer = am_buyer;
         trade_model.swap_tx_input_sig_ctx.am_buyer = am_buyer;
@@ -183,6 +190,11 @@ impl TradeModel {
 
     pub const fn am_buyer(&self) -> bool {
         matches!(self.my_role, Role::BuyerAsMaker | Role::BuyerAsTaker)
+    }
+
+    fn trade_wallet(&self) -> Result<ArcMutexGuardian<dyn TradeWallet + Send + 'static>> {
+        Ok(ArcMutexGuardian::take(self.trade_wallet.clone()
+            .ok_or(ProtocolErrorKind::MissingTradeWallet)?).unwrap())
     }
 
     pub fn set_trade_amount(&mut self, trade_amount: Amount) {
@@ -210,10 +222,11 @@ impl TradeModel {
         self.sellers_claim_tx_builder.set_fee_rate(fee_rate);
     }
 
+    #[instrument(skip_all)]
     pub fn set_trade_fee_receiver(&mut self, receiver: Option<Receiver<NetworkUnchecked>>) -> Result<()> {
-        // TODO: Make the required network configurable:
+        let network = self.trade_wallet()?.network();
         self.deposit_tx_builder.set_trade_fee_receivers(receiver
-            .map(|r| r.require_network(Network::Signet)).transpose()?
+            .map(|r| r.require_network(network)).transpose()?
             .into_iter().collect());
         Ok(())
     }
@@ -289,27 +302,19 @@ impl TradeModel {
         Ok(())
     }
 
-    //noinspection SpellCheckingInspection
     pub fn init_my_addresses(&mut self) -> Result<()> {
-        // TODO: Replace dummy addresses with real ones provided by a service, say by passing in a
-        //  suitable service or context object. (Need to make the network configurable as well.)
+        let mut wallet = self.trade_wallet()?;
         if self.am_buyer() {
-            self.buyers_warning_tx_builder.set_anchor_address("tb1pkar3gerekw8f9gef9vn9xz0qypytgacp9wa5saelpksdgct33qdqs257jl"
-                .parse::<Address<_>>()?.require_network(Network::Signet)?);
-            self.buyers_redirect_tx_builder.set_anchor_address("tb1pv537m7m6w0gdrcdn3mqqdpgrk3j400yrdrjwf5c9whyl2f8f4p6qg5eh2l"
-                .parse::<Address<_>>()?.require_network(Network::Signet)?);
-            self.buyers_claim_tx_builder.set_payout_address("tb1pv537m7m6w0gdrcdn3mqqdpgrk3j400yrdrjwf5c9whyl2f8f4p6qg5eh2l"
-                .parse::<Address<_>>()?.require_network(Network::Signet)?);
+            self.buyers_warning_tx_builder.set_anchor_address(wallet.new_address()?);
+            self.buyers_redirect_tx_builder.set_anchor_address(wallet.new_address()?);
+            self.buyers_claim_tx_builder.set_payout_address(wallet.new_address()?);
         } else {
-            self.sellers_warning_tx_builder.set_anchor_address("tb1pzvynlely05x82u40cts3znctmvyskue74xa5zwy0t5ueuv92726s0cz8g8"
-                .parse::<Address<_>>()?.require_network(Network::Signet)?);
-            self.sellers_redirect_tx_builder.set_anchor_address("tb1pt5xd4aqe9whmvlz78mt39rvdlgpp6hujs5ggwan5285zjnsf73rq8kunpq"
-                .parse::<Address<_>>()?.require_network(Network::Signet)?);
-            self.sellers_claim_tx_builder.set_payout_address("tb1pt5xd4aqe9whmvlz78mt39rvdlgpp6hujs5ggwan5285zjnsf73rq8kunpq"
-                .parse::<Address<_>>()?.require_network(Network::Signet)?);
-            self.swap_tx_builder.set_payout_address("tb1pt5xd4aqe9whmvlz78mt39rvdlgpp6hujs5ggwan5285zjnsf73rq8kunpq"
-                .parse::<Address<_>>()?.require_network(Network::Signet)?);
+            self.sellers_warning_tx_builder.set_anchor_address(wallet.new_address()?);
+            self.sellers_redirect_tx_builder.set_anchor_address(wallet.new_address()?);
+            self.sellers_claim_tx_builder.set_payout_address(wallet.new_address()?);
+            self.swap_tx_builder.set_payout_address(wallet.new_address()?);
         }
+        drop(wallet);
         Ok(())
     }
 
@@ -330,8 +335,7 @@ impl TradeModel {
     }
 
     pub fn set_peer_addresses(&mut self, addresses: ExchangedAddresses<ByVal, NetworkUnchecked>) -> Result<()> {
-        // TODO: Make the required network configurable and enforced to match the one above:
-        let addresses = addresses.require_network(Network::Signet)?;
+        let addresses = addresses.require_network(self.trade_wallet()?.network())?;
         if self.am_buyer() {
             self.sellers_warning_tx_builder.set_anchor_address(addresses.warning_tx_fee_bump_address);
             self.sellers_redirect_tx_builder.set_anchor_address(addresses.redirect_tx_fee_bump_address);
@@ -350,9 +354,9 @@ impl TradeModel {
 
     pub fn init_my_half_deposit_psbt(&mut self) -> Result<()> {
         if self.am_buyer() {
-            self.deposit_tx_builder.init_buyers_half_psbt(&mut mock_buyer_trade_wallet(), &mut rand::rng())?;
+            self.deposit_tx_builder.init_buyers_half_psbt(&mut *self.trade_wallet()?, &mut rand::rng())?;
         } else {
-            self.deposit_tx_builder.init_sellers_half_psbt(&mut mock_seller_trade_wallet(), &mut rand::rng())?;
+            self.deposit_tx_builder.init_sellers_half_psbt(&mut *self.trade_wallet()?, &mut rand::rng())?;
         }
         Ok(())
     }
@@ -413,14 +417,15 @@ impl TradeModel {
         Ok(())
     }
 
+    #[instrument(skip_all)]
     pub fn set_redirection_receivers<I, E>(&mut self, receivers: I) -> Result<(), E>
         where I: IntoIterator<Item=Result<Receiver<NetworkUnchecked>, E>>,
               E: From<ProtocolErrorKind>
     {
-        // TODO: Make the required network configurable and enforced to match the ones above.
+        let network = self.trade_wallet()?.network();
         let mut vec = Vec::new();
         for receiver in receivers {
-            vec.push(receiver?.require_network(Network::Signet).map_err(ProtocolErrorKind::from)?);
+            vec.push(receiver?.require_network(network).map_err(ProtocolErrorKind::from)?);
         }
         let receivers: ReceiverList = vec.into();
         self.redirection_receivers = Some(receivers.clone());
@@ -970,6 +975,8 @@ pub enum ProtocolErrorKind {
     MissingAggSig,
     #[error("missing aggregated nonce")]
     MissingAggNonce,
+    #[error("missing trade wallet")]
+    MissingTradeWallet,
     #[error("nonce has already been used")]
     NonceReuse,
     #[error("nonce is zero")]
@@ -994,7 +1001,7 @@ impl ProtocolErrorKind {
         match &self {
             Self::MissingKeyShare | Self::MissingNonceShare | Self::MissingPartialSig |
             Self::MissingDepositPsbt | Self::MissingTxParams | Self::MissingAggPubKey |
-            Self::MissingAggSig | Self::MissingAggNonce => {
+            Self::MissingAggSig | Self::MissingAggNonce | Self::MissingTradeWallet => {
                 warn!("Skipping error: {self}");
                 Ok(())
             }

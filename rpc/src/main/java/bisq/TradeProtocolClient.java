@@ -329,7 +329,7 @@ public class TradeProtocolClient {
     @SuppressWarnings("SpellCheckingInspection")
     private static ReceiverAddressAndAmount mockTradeFeeReceiver() {
         return ReceiverAddressAndAmount.newBuilder()
-                .setAddress("tb1qpg889v22f3gefuvwpe3963t5a00nvfmkhlgqw5")
+                .setAddress("bcrt1qwk6p86mzqmstcsg99qlu2mhsp3766u68jktv6k")
                 .setAmount(5_000)
                 .build();
     }
@@ -351,8 +351,8 @@ public class TradeProtocolClient {
         // A one-sat-wide discrepancy range ensures fee overpay of less than 1 sat for the specified feerate, with
         // underpay never allowed, as attaining an exact feerate (in sats per kwu) is impossible in general.
         return ImmutableMap.of(
-                        "tb1pwxlp4v9v7v03nx0e7vunlc87d4936wnyqegw0fuahudypan64wys5stxh7", 160_000,
-                        "tb1qpg889v22f3gefuvwpe3963t5a00nvfmkhlgqw5", 80_000,
+                        "bcrt1phc8m8vansnl4utths947mjquprw20puwrrdfrwx8akeeu2tqwklsnxsvf0", 160_000,
+                        "bcrt1qwk6p86mzqmstcsg99qlu2mhsp3766u68jktv6k", 80_000,
                         "2N2x2bA28AsLZZEHss4SjFoyToQV5YYZsJM", 15_055
                 )
                 .entrySet().stream()

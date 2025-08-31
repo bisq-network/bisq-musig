@@ -12,9 +12,11 @@ use bdk_wallet::bitcoin::{
 use paste::paste;
 use rand::RngCore;
 use relative::LockTime;
+use std::error::Error as _;
 use std::str::FromStr as _;
 use std::sync::{Arc, LazyLock};
 use thiserror::Error;
+use tracing::warn;
 
 use crate::psbt::{
     check_placeholder_output, check_receiver_outputs, merge_psbt_halves, set_payouts_and_shuffle,
@@ -54,8 +56,15 @@ pub struct Receiver<V: NetworkValidation = NetworkChecked> {
 }
 
 impl Receiver<NetworkUnchecked> {
+    #[expect(clippy::unnecessary_wraps,
+    reason = "temporarily skipping errors to avoid breaking the Bisq2 client, until it is updated")]
     pub fn require_network(self, required: Network) -> Result<Receiver> {
-        Ok(Receiver { address: self.address.require_network(required)?, amount: self.amount })
+        let address = self.address.clone().require_network(required)
+            .unwrap_or_else(|e| {
+                warn!("Skipping {e}: {}", e.source().unwrap());
+                self.address.assume_checked()
+            });
+        Ok(Receiver { address, amount: self.amount })
     }
 }
 
@@ -256,8 +265,8 @@ impl DepositTxBuilder {
 
     pub fn init_buyers_half_psbt(
         &mut self,
-        trade_wallet: &mut impl TradeWallet,
-        rng: &mut impl RngCore,
+        trade_wallet: &mut (impl TradeWallet + ?Sized),
+        rng: &mut dyn RngCore,
     ) -> Result<&mut Self> {
         let deposit_amount = *self.buyers_security_deposit()?;
         let fee_rate = *self.fee_rate()?;
@@ -267,8 +276,8 @@ impl DepositTxBuilder {
 
     pub fn init_sellers_half_psbt(
         &mut self,
-        trade_wallet: &mut impl TradeWallet,
-        rng: &mut impl RngCore,
+        trade_wallet: &mut (impl TradeWallet + ?Sized),
+        rng: &mut dyn RngCore,
     ) -> Result<&mut Self> {
         let deposit_amount = self.sellers_trade_deposit()?;
         let fee_rate = *self.fee_rate()?;
