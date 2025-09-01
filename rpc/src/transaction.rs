@@ -1,6 +1,7 @@
 use bdk_wallet::bitcoin::address::{NetworkChecked, NetworkUnchecked, NetworkValidation};
 use bdk_wallet::bitcoin::amount::CheckedSum as _;
 use bdk_wallet::bitcoin::opcodes::all::{OP_CHECKSIG, OP_CSV, OP_DROP};
+use bdk_wallet::bitcoin::psbt::ExtractTxError;
 use bdk_wallet::bitcoin::sighash::{Prevouts, SighashCache};
 use bdk_wallet::bitcoin::taproot::{Signature, TaprootBuilder, TAPROOT_ANNEX_PREFIX};
 use bdk_wallet::bitcoin::transaction::Version;
@@ -12,6 +13,7 @@ use bdk_wallet::bitcoin::{
 use paste::paste;
 use rand::RngCore;
 use relative::LockTime;
+use std::collections::BTreeSet;
 use std::error::Error as _;
 use std::str::FromStr as _;
 use std::sync::{Arc, LazyLock};
@@ -19,8 +21,8 @@ use thiserror::Error;
 use tracing::warn;
 
 use crate::psbt::{
-    check_placeholder_output, check_receiver_outputs, merge_psbt_halves, set_payouts_and_shuffle,
-    TradeWallet,
+    check_placeholder_output, check_receiver_outputs, merge_psbt_halves, prevout_set,
+    set_payouts_and_shuffle, TradeWallet,
 };
 
 pub const REGTEST_WARNING_LOCK_TIME: LockTime = LockTime::from_height(5);
@@ -355,6 +357,32 @@ impl DepositTxBuilder {
         self.seller_payout = Some(seller_payout);
         Ok(self)
     }
+
+    pub fn sign_buyer_inputs(&mut self, trade_wallet: &(impl TradeWallet + ?Sized)) -> Result<&mut Self> {
+        self.sign_matching_inputs(trade_wallet, &prevout_set(self.buyers_half_psbt()?))
+    }
+
+    pub fn sign_seller_inputs(&mut self, trade_wallet: &(impl TradeWallet + ?Sized)) -> Result<&mut Self> {
+        self.sign_matching_inputs(trade_wallet, &prevout_set(self.sellers_half_psbt()?))
+    }
+
+    fn sign_matching_inputs(
+        &mut self,
+        trade_wallet: &(impl TradeWallet + ?Sized),
+        prevouts: &BTreeSet<OutPoint>,
+    ) -> Result<&mut Self> {
+        let psbt = self.psbt.as_mut().ok_or(TransactionErrorKind::MissingPsbt)?;
+        trade_wallet.sign_selected_inputs(psbt, &|o| prevouts.contains(o))?;
+        Ok(self)
+    }
+
+    pub fn combine_psbts(&mut self, other: Psbt) -> Result<&mut Self> {
+        // TODO: We may need to do some validation of the provided PSBT.
+        self.psbt.as_mut().ok_or(TransactionErrorKind::MissingPsbt)?.combine(other)?;
+        Ok(self)
+    }
+
+    pub fn signed_tx(&self) -> Result<Transaction> { Ok(self.psbt()?.clone().extract_tx()?) }
 }
 
 #[derive(Default)]
@@ -383,7 +411,6 @@ impl WarningTxBuilder {
     make_getter_setter!(buyer_input_signature: Signature);
     make_getter_setter!(seller_input_signature: Signature);
     make_getter!(unsigned_tx: Transaction);
-    #[cfg(test)]
     make_getter!(signed_tx: Transaction);
 
     pub fn escrow_amount(input_amounts: impl IntoIterator<Item=Amount>, fee_rate: FeeRate) -> Option<Amount> {
@@ -461,7 +488,6 @@ impl RedirectTxBuilder {
     make_getter_setter!(lock_time: LockTime);
     make_getter_setter!(input_signature: Signature);
     make_getter!(unsigned_tx: Transaction);
-    #[cfg(test)]
     make_getter!(signed_tx: Transaction);
 
     pub fn compute_unsigned_tx(&mut self) -> Result<&mut Self> {
@@ -589,6 +615,12 @@ pub enum TransactionErrorKind {
     Taproot(#[from] bdk_wallet::bitcoin::sighash::TaprootError),
     InputsIndex(#[from] bdk_wallet::bitcoin::transaction::InputsIndexError),
     SigFromSlice(#[from] bdk_wallet::bitcoin::taproot::SigFromSliceError),
+    Psbt(#[from] bdk_wallet::bitcoin::psbt::Error),
+    ExtractTx(#[from] Box<ExtractTxError>),
+}
+
+impl From<ExtractTxError> for TransactionErrorKind {
+    fn from(error: ExtractTxError) -> Self { Box::new(error).into() }
 }
 
 #[cfg(test)]
@@ -680,9 +712,9 @@ mod tests {
     #[test]
     fn test_deposit_tx_builder() -> Result<()> {
         let builder = filled_deposit_tx_builder()?;
-        let unsigned_tx = &builder.psbt()?.unsigned_tx;
+        let signed_tx = builder.signed_tx()?;
 
-        assert_eq!(tx(SIGNED_DEPOSIT_TX).compute_txid(), unsigned_tx.compute_txid());
+        assert_eq!(tx(SIGNED_DEPOSIT_TX), signed_tx);
         Ok(())
     }
 
@@ -762,7 +794,9 @@ mod tests {
             .set_fee_rate(FeeRate::from_sat_per_kwu(5158)) // gives 7325-sat absolute fee
             .init_buyers_half_psbt(&mut mock_buyer_trade_wallet(), &mut rng)?
             .init_sellers_half_psbt(&mut mock_seller_trade_wallet(), &mut rng)?
-            .compute_unsigned_tx()?;
+            .compute_unsigned_tx()?
+            .sign_buyer_inputs(&mock_buyer_trade_wallet())?
+            .sign_seller_inputs(&mock_seller_trade_wallet())?;
         Ok(builder)
     }
 

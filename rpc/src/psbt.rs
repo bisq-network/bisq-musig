@@ -1,13 +1,15 @@
 use bdk_wallet::bitcoin::amount::CheckedSum as _;
 use bdk_wallet::bitcoin::hashes::Hash as _;
 use bdk_wallet::bitcoin::opcodes::all::{OP_PUSHBYTES_27, OP_RETURN};
+use bdk_wallet::bitcoin::taproot::Signature;
 use bdk_wallet::bitcoin::transaction::Version;
 use bdk_wallet::bitcoin::{
-    absolute, psbt, script, Address, Amount, FeeRate, Network, Psbt, ScriptBuf, Sequence,
-    Transaction, TxIn, TxOut, Weight,
+    absolute, psbt, script, Address, Amount, FeeRate, Network, OutPoint, Psbt, ScriptBuf, Sequence,
+    TapSighashType, Transaction, TxIn, TxOut, Weight, Witness,
 };
 use rand::{RngCore, SeedableRng as _};
 use rand_chacha::ChaCha20Rng;
+use std::collections::{BTreeMap, BTreeSet};
 
 use crate::swap::Swap as _;
 use crate::transaction::{Receiver, Result, TransactionErrorKind, TxOutput};
@@ -32,11 +34,14 @@ pub trait TradeWallet {
         trade_fee_receivers: &[Receiver],
         rng: &mut dyn RngCore,
     ) -> Result<Psbt>;
+
+    fn sign_selected_inputs(&self, psbt: &mut Psbt, is_selected: &dyn Fn(&OutPoint) -> bool) -> Result<()>;
 }
 
 pub(crate) struct MockTradeWallet<Cs: Iterator<Item=TxOutput>, As: Iterator<Item=Address>> {
     funding_coins: Cs,
     new_addresses: As,
+    signature_map: BTreeMap<OutPoint, Signature>,
 }
 
 impl<Cs: Iterator<Item=TxOutput>, As: Iterator<Item=Address>> TradeWallet for MockTradeWallet<Cs, As> {
@@ -116,6 +121,18 @@ impl<Cs: Iterator<Item=TxOutput>, As: Iterator<Item=Address>> TradeWallet for Mo
         };
         Ok(Psbt { inputs, ..Psbt::from_unsigned_tx(unsigned_tx).expect("tx is unsigned by construction") })
     }
+
+    fn sign_selected_inputs(&self, psbt: &mut Psbt, is_selected: &dyn Fn(&OutPoint) -> bool) -> Result<()> {
+        for (input, TxIn { previous_output, .. })
+        in psbt.inputs.iter_mut().zip(&psbt.unsigned_tx.input) {
+            if is_selected(previous_output) {
+                let signature = input.tap_key_sig.insert(*self.signature_map.get(previous_output)
+                    .ok_or(TransactionErrorKind::MissingSignature)?);
+                input.final_script_witness = Some(Witness::p2tr_key_spend(signature));
+            }
+        }
+        Ok(())
+    }
 }
 
 // The outputs of each trader's half-deposit PSBT consists of a temporary OP_RETURN placeholder with
@@ -141,10 +158,14 @@ pub fn half_deposit_placeholder_spk<R: RngCore + ?Sized>(rng: &mut R) -> ScriptB
 
 //noinspection SpellCheckingInspection
 pub(crate) fn mock_buyer_trade_wallet() -> impl TradeWallet {
-    let funding_coins = std::iter::once(
+    let funding_coins = [
         TxOutput::mock_1_btc_coin("658654575bbbeb46e965bd9eb37fd3be550a7e0fa2d64bc5f218763155602300:0",
             "0000000000000000000000000000000000000000000000000000000000000001"),
-    );
+    ];
+    let signature_map = signature_map(&funding_coins, &[
+        "f631ae99b4743315b237af9c48ae1f9bb87b6c5404e84d8e3907269218d1bba5\
+         4c397158aa233fd3f2227f4dc46922ef62eb8cc39a06b7a339b33e2401d512c1",
+    ]);
     let new_addresses = [
         "bcrt1pgsj9aw0wvs5h6zj780djnu267v6jazmfekwm4g4q4s6ax3w3t0lseqqnjc",
         "bcrt1pkar3gerekw8f9gef9vn9xz0qypytgacp9wa5saelpksdgct33qdqan7c89",
@@ -152,7 +173,8 @@ pub(crate) fn mock_buyer_trade_wallet() -> impl TradeWallet {
         "bcrt1pzvynlely05x82u40cts3znctmvyskue74xa5zwy0t5ueuv92726szpgpaa",
     ].map(|a| a.parse::<Address<_>>()
         .expect("hardcoded addresses should be valid").assume_checked()).into_iter();
-    MockTradeWallet { funding_coins, new_addresses }
+
+    MockTradeWallet { funding_coins: funding_coins.into_iter(), new_addresses, signature_map }
 }
 
 //noinspection SpellCheckingInspection
@@ -163,6 +185,12 @@ pub(crate) fn mock_seller_trade_wallet() -> impl TradeWallet {
         TxOutput::mock_1_btc_coin("373b3ca0b9135e9649672772d4659bb5597d06b4694f1fbdbece285823fde0a3:1",
             "0000000000000000000000000000000000000000000000000000000000000003"),
     ].into_iter();
+    let signature_map = signature_map(funding_coins.as_slice(), &[
+        "2376111ed79dac9ff6f2d85dfe57d142f6075f4df9381aeab87a941477425224\
+         7555f791ddf82354a3d73fa24955f6c5330ae44b2b238fa74be2eee9a46fcb72",
+        "637f4a624bfc46bdb52e01b923d157a97148210f1a2669716815d3249c615673\
+         17d543868698f30130e0aaf693ce265c544e3db5eda568bffb6ccd03d25a31df",
+    ]);
     let new_addresses = [
         "bcrt1p80xu5f0nqjarfnechsmlt488jf3tykx8cva9zeeczlsu4c7x557qr499gz",
         "bcrt1pt5xd4aqe9whmvlz78mt39rvdlgpp6hujs5ggwan5285zjnsf73rq20k456",
@@ -171,7 +199,20 @@ pub(crate) fn mock_seller_trade_wallet() -> impl TradeWallet {
         "bcrt1pe3kcs085e8qej9aqqx6qryv2qsfxzywy9xd8pryzwemv2dghdqgscylr69",
     ].map(|a| a.parse::<Address<_>>()
         .expect("hardcoded addresses should be valid").assume_checked()).into_iter();
-    MockTradeWallet { funding_coins, new_addresses }
+
+    MockTradeWallet { funding_coins, new_addresses, signature_map }
+}
+
+fn signature_map(funding_coins: &[TxOutput], signatures: &[&'static str]) -> BTreeMap<OutPoint, Signature> {
+    let signatures = signatures.iter().map(|s| Signature {
+        signature: s.parse().expect("hardcoded signatures should be valid"),
+        sighash_type: TapSighashType::Default,
+    });
+    funding_coins.iter().map(|o| o.0).zip(signatures).collect()
+}
+
+pub fn prevout_set(psbt: &Psbt) -> BTreeSet<OutPoint> {
+    psbt.unsigned_tx.input.iter().map(|input| input.previous_output).collect()
 }
 
 pub fn check_placeholder_output(psbt: &Psbt, expected_deposit: Amount) -> Result<()> {
@@ -300,6 +341,10 @@ pub fn merge_psbt_halves(buyer_psbt: &Psbt, seller_psbt: &Psbt, target_fee_rate:
     // Move the seller's placeholder output to the 2nd position (after the buyer's) for convenience:
     (&mut merged_psbt.outputs[..], &mut merged_psbt.unsigned_tx.output[..])
         .swap(1, seller_output_start);
+    // Check for duplicate prevouts, which may be caused by the peer attempting to use some of ours:
+    if prevout_set(&merged_psbt).len() != merged_psbt.inputs.len() {
+        return Err(TransactionErrorKind::InvalidPsbt);
+    }
 
     Ok(merged_psbt)
 }

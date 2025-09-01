@@ -682,8 +682,42 @@ impl TradeModel {
         Ok(())
     }
 
+    #[instrument(skip_all)]
+    pub fn sign_deposit_psbt(&mut self) -> Result<()> {
+        // Check that we have all the prepared tx data we need:
+        if self.am_buyer() {
+            self.buyers_warning_tx_builder.signed_tx()?;
+            self.buyers_redirect_tx_builder.signed_tx()?;
+            self.buyers_claim_tx_builder.signed_tx()
+                .map_or_else(|e| ProtocolErrorKind::from(e).skip_missing(), |_| Ok(()))?;
+            self.swap_tx_input_sig_ctx.aggregated_sig.ok_or(ProtocolErrorKind::MissingAggSig)?;
+        } else {
+            self.sellers_warning_tx_builder.signed_tx()?;
+            self.sellers_redirect_tx_builder.signed_tx()?;
+            self.sellers_claim_tx_builder.signed_tx()
+                .map_or_else(|e| ProtocolErrorKind::from(e).skip_missing(), |_| Ok(()))?;
+        }
+        // FIXME: This is the first point in the protocol that a real commitment is made.
+        //  It is CRITICAL that the trade data is persisted and backed up at this point.
+        if self.am_buyer() {
+            self.deposit_tx_builder.sign_buyer_inputs(&*self.trade_wallet()?)?;
+        } else {
+            self.deposit_tx_builder.sign_seller_inputs(&*self.trade_wallet()?)?;
+        }
+        Ok(())
+    }
+
     pub fn get_deposit_psbt(&self) -> Option<&Psbt> {
         self.deposit_tx_builder.psbt().ok()
+    }
+
+    pub fn combine_deposit_psbts(&mut self, other: Psbt) -> Result<()> {
+        self.deposit_tx_builder.combine_psbts(other)?;
+        Ok(())
+    }
+
+    pub fn get_signed_deposit_tx(&self) -> Option<Transaction> {
+        self.deposit_tx_builder.signed_tx().ok()
     }
 
     pub const fn set_swap_tx_input_peers_partial_signature(&mut self, sig: PartialSignature) {
@@ -1002,10 +1036,12 @@ pub enum ProtocolErrorKind {
 
 impl ProtocolErrorKind {
     fn skip_missing(self) -> Result<()> {
+        use crate::transaction::TransactionErrorKind;
         match &self {
             Self::MissingKeyShare | Self::MissingNonceShare | Self::MissingPartialSig |
             Self::MissingDepositPsbt | Self::MissingTxParams | Self::MissingAggPubKey |
-            Self::MissingAggSig | Self::MissingAggNonce | Self::MissingTradeWallet => {
+            Self::MissingAggSig | Self::MissingAggNonce | Self::MissingTradeWallet |
+            Self::Transaction(TransactionErrorKind::MissingTransaction) => {
                 warn!("Skipping error: {self}");
                 Ok(())
             }

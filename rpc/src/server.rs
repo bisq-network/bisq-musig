@@ -1,4 +1,4 @@
-use bdk_wallet::bitcoin::{consensus, Amount, FeeRate, Psbt};
+use bdk_wallet::bitcoin::{consensus, Amount, FeeRate};
 use bdk_wallet::serde_json;
 use drop_stream::DropStreamExt as _;
 use futures_util::stream::{self, BoxStream, Stream, StreamExt as _, TryStream, TryStreamExt as _};
@@ -137,7 +137,7 @@ impl musig_server::Musig for MusigImpl {
             trade_model.set_peer_partial_signatures_on_my_txs(&peers_partial_signatures.try_proto_into()?);
             trade_model.aggregate_partial_signatures()?;
             trade_model.compute_my_signed_prepared_txs()?;
-            // TODO: Need to actually sign the deposit tx -- currently returns an unsigned PSBT:
+            trade_model.sign_deposit_psbt()?;
             let deposit_psbt = trade_model.get_deposit_psbt()
                 .ok_or_else(|| Status::internal("missing deposit PSBT"))?;
 
@@ -149,14 +149,17 @@ impl musig_server::Musig for MusigImpl {
 
     #[instrument(skip_all)]
     async fn publish_deposit_tx(&self, request: Request<PublishDepositTxRequest>) -> Result<Response<Self::PublishDepositTxStream>> {
-        handle_musig_request(request, move |request, _trade_model| {
+        handle_musig_request(request, move |request, trade_model| {
             let peers_deposit_psbt = request.peers_deposit_psbt
                 .ok_or_else(|| Status::not_found("missing request.peers_deposit_psbt"))?;
-            TryProtoInto::<Psbt>::try_proto_into(peers_deposit_psbt.deposit_psbt)?;
+            trade_model.combine_deposit_psbts(peers_deposit_psbt.deposit_psbt.try_proto_into()?)?;
+            let deposit_tx = trade_model.get_signed_deposit_tx()
+                .ok_or_else(|| Status::internal("missing signed deposit tx"))?;
 
             info!("*** BROADCAST DEPOSIT TX ***"); // TODO: Implement broadcast.
 
-            Ok(mock_tx_confirmation_status_stream(request.trade_id).box_traced())
+            Ok(mock_tx_confirmation_status_stream(request.trade_id,
+                consensus::serialize(&deposit_tx)).box_traced())
         })
     }
 
@@ -166,7 +169,8 @@ impl musig_server::Musig for MusigImpl {
     async fn subscribe_tx_confirmation_status(&self, request: Request<SubscribeTxConfirmationStatusRequest>)
                                               -> Result<Response<Self::SubscribeTxConfirmationStatusStream>> {
         handle_musig_request(request, move |request, _trade_model| {
-            Ok(mock_tx_confirmation_status_stream(request.trade_id).box_traced())
+            Ok(mock_tx_confirmation_status_stream(request.trade_id,
+                b"signed_deposit_tx".into()).box_traced())
         })
     }
 
@@ -221,9 +225,9 @@ impl musig_server::Musig for MusigImpl {
     }
 }
 
-fn mock_tx_confirmation_status_stream(trade_id: String) -> impl Stream<Item=Result<TxConfirmationStatus>> {
+fn mock_tx_confirmation_status_stream(trade_id: String, tx: Vec<u8>) -> impl Stream<Item=Result<TxConfirmationStatus>> {
     let confirmation_event = TxConfirmationStatus {
-        tx: b"signed_deposit_tx".into(),
+        tx,
         current_block_height: 900_001,
         num_confirmations: 1,
     };
