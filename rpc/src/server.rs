@@ -1,4 +1,4 @@
-use bdk_wallet::bitcoin::{Amount, FeeRate, Psbt};
+use bdk_wallet::bitcoin::{consensus, Amount, FeeRate};
 use bdk_wallet::serde_json;
 use drop_stream::DropStreamExt as _;
 use futures_util::stream::{self, BoxStream, Stream, StreamExt as _, TryStream, TryStreamExt as _};
@@ -27,7 +27,6 @@ use crate::pb::walletrpc::{
     NewAddressResponse, WalletBalanceRequest, WalletBalanceResponse,
 };
 use crate::protocol::{TradeModel, TradeModelStore as _, TRADE_MODELS};
-use crate::transaction::empty_dummy_psbt;
 use crate::wallet::WalletService;
 
 pub use musig_server::MusigServer;
@@ -42,7 +41,7 @@ impl musig_server::Musig for MusigImpl {
     async fn init_trade(&self, request: Request<PubKeySharesRequest>) -> Result<Response<PubKeySharesResponse>> {
         handle_request(request, move |request| {
             let mut trade_model = TradeModel::new(request.trade_id, request.my_role.try_proto_into()?);
-            trade_model.init_my_key_shares();
+            trade_model.init_my_key_shares()?;
             let my_key_shares = trade_model.get_my_key_shares()
                 .ok_or_else(|| Status::internal("missing key shares"))?;
             let response = PubKeySharesResponse {
@@ -61,7 +60,7 @@ impl musig_server::Musig for MusigImpl {
         handle_musig_request(request, move |request, trade_model| {
             trade_model.set_peer_key_shares(
                 request.buyer_output_peers_pub_key_share.try_proto_into()?,
-                request.seller_output_peers_pub_key_share.try_proto_into()?);
+                request.seller_output_peers_pub_key_share.try_proto_into()?)?;
             trade_model.aggregate_key_shares()?;
             trade_model.set_trade_amount(
                 Amount::from_sat(request.trade_amount.check_in_signed_range()?));
@@ -137,8 +136,12 @@ impl musig_server::Musig for MusigImpl {
             }
             trade_model.set_peer_partial_signatures_on_my_txs(&peers_partial_signatures.try_proto_into()?);
             trade_model.aggregate_partial_signatures()?;
+            trade_model.compute_my_signed_prepared_txs()?;
+            trade_model.sign_deposit_psbt()?;
+            let deposit_psbt = trade_model.get_deposit_psbt()
+                .ok_or_else(|| Status::internal("missing deposit PSBT"))?;
 
-            Ok(DepositPsbt { deposit_psbt: empty_dummy_psbt().serialize() })
+            Ok(DepositPsbt { deposit_psbt: deposit_psbt.serialize() })
         })
     }
 
@@ -146,14 +149,17 @@ impl musig_server::Musig for MusigImpl {
 
     #[instrument(skip_all)]
     async fn publish_deposit_tx(&self, request: Request<PublishDepositTxRequest>) -> Result<Response<Self::PublishDepositTxStream>> {
-        handle_musig_request(request, move |request, _trade_model| {
+        handle_musig_request(request, move |request, trade_model| {
             let peers_deposit_psbt = request.peers_deposit_psbt
                 .ok_or_else(|| Status::not_found("missing request.peers_deposit_psbt"))?;
-            TryProtoInto::<Psbt>::try_proto_into(peers_deposit_psbt.deposit_psbt)?;
+            trade_model.combine_deposit_psbts(peers_deposit_psbt.deposit_psbt.try_proto_into()?)?;
+            let deposit_tx = trade_model.get_signed_deposit_tx()
+                .ok_or_else(|| Status::internal("missing signed deposit tx"))?;
 
             info!("*** BROADCAST DEPOSIT TX ***"); // TODO: Implement broadcast.
 
-            Ok(mock_tx_confirmation_status_stream(request.trade_id).box_traced())
+            Ok(mock_tx_confirmation_status_stream(request.trade_id,
+                consensus::serialize(&deposit_tx)).box_traced())
         })
     }
 
@@ -163,7 +169,8 @@ impl musig_server::Musig for MusigImpl {
     async fn subscribe_tx_confirmation_status(&self, request: Request<SubscribeTxConfirmationStatusRequest>)
                                               -> Result<Response<Self::SubscribeTxConfirmationStatusStream>> {
         handle_musig_request(request, move |request, _trade_model| {
-            Ok(mock_tx_confirmation_status_stream(request.trade_id).box_traced())
+            Ok(mock_tx_confirmation_status_stream(request.trade_id,
+                b"signed_deposit_tx".into()).box_traced())
         })
     }
 
@@ -173,11 +180,13 @@ impl musig_server::Musig for MusigImpl {
             if trade_model.am_buyer() {
                 return Err(Status::failed_precondition("operation only available for seller"));
             }
-            let sig = if let Ok(sig) = trade_model.compute_swap_tx_input_signature() { sig } else {
+            let swap_tx = if let Some(swap_tx) = trade_model.get_signed_swap_tx() { swap_tx } else {
                 trade_model.set_swap_tx_input_peers_partial_signature(
                     request.swap_tx_input_peers_partial_signature.try_proto_into()?);
                 trade_model.aggregate_swap_tx_partial_signatures()?;
-                trade_model.compute_swap_tx_input_signature()?
+                trade_model.compute_signed_swap_tx()?;
+                trade_model.get_signed_swap_tx()
+                    .ok_or_else(|| Status::internal("missing signed swap tx"))?
             };
             let prv_key_share = trade_model.get_my_private_key_share_for_peer_output()
                 .ok_or_else(|| Status::internal("missing private key share"))?;
@@ -186,8 +195,7 @@ impl musig_server::Musig for MusigImpl {
                 return Ok(SwapTxSignatureResponse::default());
             }
             Ok(SwapTxSignatureResponse {
-                // For now, just set 'swap_tx' to be the (final) swap tx signature, rather than the actual signed tx:
-                swap_tx: sig.serialize().into(),
+                swap_tx: consensus::serialize(swap_tx),
                 peer_output_prv_key_share: prv_key_share.serialize().into(),
             })
         })
@@ -200,10 +208,10 @@ impl musig_server::Musig for MusigImpl {
                 // Trader receives the private key share from a cooperative peer, closing our trade.
                 trade_model.set_peer_private_key_share_for_my_output(peer_prv_key_share)?;
                 trade_model.aggregate_private_keys_for_my_output()?;
-            } else if let Some(swap_tx_input_signature) = request.swap_tx.try_proto_into()? {
+            } else if let Some(swap_tx) = request.swap_tx.try_proto_into()? {
                 // Buyer supplies a signed swap tx to the Rust server, to close our trade. (Mainly for
                 // testing -- normally the tx would be picked up from the bitcoin network by the server.)
-                trade_model.recover_seller_private_key_share_for_buyer_output(&swap_tx_input_signature)?;
+                trade_model.recover_seller_private_key_share_for_buyer_output(&swap_tx)?;
                 trade_model.aggregate_private_keys_for_my_output()?;
             } else {
                 // Peer unresponsive -- force-close our trade by publishing the swap tx. For seller only.
@@ -217,9 +225,9 @@ impl musig_server::Musig for MusigImpl {
     }
 }
 
-fn mock_tx_confirmation_status_stream(trade_id: String) -> impl Stream<Item=Result<TxConfirmationStatus>> {
+fn mock_tx_confirmation_status_stream(trade_id: String, tx: Vec<u8>) -> impl Stream<Item=Result<TxConfirmationStatus>> {
     let confirmation_event = TxConfirmationStatus {
-        tx: b"signed_deposit_tx".into(),
+        tx,
         current_block_height: 900_001,
         num_confirmations: 1,
     };

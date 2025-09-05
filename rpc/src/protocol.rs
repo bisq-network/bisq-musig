@@ -1,9 +1,11 @@
-use bdk_wallet::bitcoin::address::{KnownHrp, NetworkChecked, NetworkUnchecked, NetworkValidation};
+use bdk_wallet::bitcoin::address::{NetworkChecked, NetworkUnchecked, NetworkValidation};
 use bdk_wallet::bitcoin::hashes::Hash as _;
 use bdk_wallet::bitcoin::key::TweakedPublicKey;
+use bdk_wallet::bitcoin::taproot::Signature;
 use bdk_wallet::bitcoin::{
-    Address, Amount, FeeRate, Network, Psbt, PublicKey, TapNodeHash, TapSighash,
+    Address, Amount, FeeRate, Network, Psbt, PublicKey, TapNodeHash, TapSighash, Transaction,
 };
+use guardian::ArcMutexGuardian;
 use musig2::adaptor::AdaptorSignature;
 use musig2::secp::{MaybePoint, MaybeScalar, Point, Scalar};
 use musig2::{
@@ -15,11 +17,12 @@ use std::sync::{Arc, LazyLock, Mutex};
 use thiserror::Error;
 use tracing::{error, instrument, warn};
 
+use crate::psbt::{mock_buyer_trade_wallet, mock_seller_trade_wallet, TradeWallet};
 use crate::storage::{ByOptVal, ByRef, ByVal, Storage, ValStorage};
 use crate::transaction::{
-    empty_dummy_psbt, warning_output_merkle_root, DepositTxBuilder, ForwardingTxBuilder, Receiver,
-    ReceiverList, RedirectTxBuilder, WarningTxBuilder, ANCHOR_AMOUNT, REGTEST_CLAIM_LOCK_TIME,
-    REGTEST_WARNING_LOCK_TIME, SIGNED_REDIRECT_TX_BASE_WEIGHT,
+    DepositTxBuilder, ForwardingTxBuilder, NetworkParams as _, Receiver, ReceiverList,
+    RedirectTxBuilder, WarningTxBuilder, WithWitnesses as _, ANCHOR_AMOUNT,
+    SIGNED_REDIRECT_TX_BASE_WEIGHT,
 };
 
 pub trait TradeModelStore {
@@ -46,6 +49,7 @@ pub static TRADE_MODELS: LazyLock<TradeModelMemoryStore> = LazyLock::new(|| Mute
 pub struct TradeModel {
     trade_id: String,
     my_role: Role,
+    trade_wallet: Option<Arc<Mutex<dyn TradeWallet + Send + 'static>>>,
     deposit_tx_builder: DepositTxBuilder,
     swap_tx_builder: ForwardingTxBuilder,
     prepared_tx_fee_rate: Option<FeeRate>,
@@ -159,6 +163,11 @@ impl TradeModel {
     pub fn new(trade_id: String, my_role: Role) -> Self {
         let mut trade_model = Self { trade_id, my_role, ..Default::default() };
         let am_buyer = trade_model.am_buyer();
+        let network = trade_model.trade_wallet.insert(if am_buyer {
+            Arc::new(Mutex::new(mock_buyer_trade_wallet()))
+        } else {
+            Arc::new(Mutex::new(mock_seller_trade_wallet()))
+        }).lock().unwrap().network();
         trade_model.buyer_output_key_ctx.am_buyer = am_buyer;
         trade_model.seller_output_key_ctx.am_buyer = am_buyer;
         trade_model.swap_tx_input_sig_ctx.am_buyer = am_buyer;
@@ -170,12 +179,13 @@ impl TradeModel {
         trade_model.sellers_redirect_tx_input_sig_ctx.am_buyer = am_buyer;
         trade_model.buyers_claim_tx_input_sig_ctx.am_buyer = am_buyer;
         trade_model.sellers_claim_tx_input_sig_ctx.am_buyer = am_buyer;
-        // TODO: Make the network configurable:
         trade_model.swap_tx_builder.disable_lock_time();
-        trade_model.buyers_warning_tx_builder.set_lock_time(REGTEST_WARNING_LOCK_TIME);
-        trade_model.sellers_warning_tx_builder.set_lock_time(REGTEST_WARNING_LOCK_TIME);
-        trade_model.buyers_claim_tx_builder.set_lock_time(REGTEST_CLAIM_LOCK_TIME);
-        trade_model.sellers_claim_tx_builder.set_lock_time(REGTEST_CLAIM_LOCK_TIME);
+        trade_model.buyers_warning_tx_builder.set_lock_time(network.warning_lock_time());
+        trade_model.sellers_warning_tx_builder.set_lock_time(network.warning_lock_time());
+        trade_model.buyers_redirect_tx_builder.set_lock_time(network.redirect_lock_time());
+        trade_model.sellers_redirect_tx_builder.set_lock_time(network.redirect_lock_time());
+        trade_model.buyers_claim_tx_builder.set_lock_time(network.claim_lock_time());
+        trade_model.sellers_claim_tx_builder.set_lock_time(network.claim_lock_time());
         trade_model
     }
 
@@ -183,12 +193,9 @@ impl TradeModel {
         matches!(self.my_role, Role::BuyerAsMaker | Role::BuyerAsTaker)
     }
 
-    fn check_deposit_tx_params_are_known(&self) -> Result<()> {
-        if self.deposit_tx_builder.trade_amount().is_err() || self.deposit_tx_builder.buyers_security_deposit().is_err() ||
-            self.deposit_tx_builder.sellers_security_deposit().is_err() || self.deposit_tx_builder.fee_rate().is_err() {
-            return Err(ProtocolErrorKind::MissingTxParams);
-        }
-        Ok(())
+    fn trade_wallet(&self) -> Result<ArcMutexGuardian<dyn TradeWallet + Send + 'static>> {
+        Ok(ArcMutexGuardian::take(self.trade_wallet.clone()
+            .ok_or(ProtocolErrorKind::MissingTradeWallet)?).unwrap())
     }
 
     pub fn set_trade_amount(&mut self, trade_amount: Amount) {
@@ -216,15 +223,17 @@ impl TradeModel {
         self.sellers_claim_tx_builder.set_fee_rate(fee_rate);
     }
 
+    #[instrument(skip_all)]
     pub fn set_trade_fee_receiver(&mut self, receiver: Option<Receiver<NetworkUnchecked>>) -> Result<()> {
-        // TODO: Make the required network configurable:
+        let network = self.trade_wallet()?.network();
         self.deposit_tx_builder.set_trade_fee_receivers(receiver
-            .map(|r| r.require_network(Network::Signet)).transpose()?
+            .map(|r| r.require_network(network)).transpose()?
             .into_iter().collect());
         Ok(())
     }
 
     pub fn redirection_amount_msat(&self) -> Option<u64> {
+        // TODO: Should this logic be moved into `transaction`?
         let split_input_amounts = [
             *self.deposit_tx_builder.trade_amount().ok()?,
             *self.deposit_tx_builder.buyers_security_deposit().ok()?,
@@ -239,17 +248,19 @@ impl TradeModel {
             .checked_sub(redirection_tx_base_fee)
     }
 
-    pub fn init_my_key_shares(&mut self) {
+    pub fn init_my_key_shares(&mut self) -> Result<()> {
+        let network = self.trade_wallet()?.network();
         let buyer_output_pub_key = self.buyer_output_key_ctx.init_my_key_share().pub_key;
         let seller_output_pub_key = self.seller_output_key_ctx.init_my_key_share().pub_key;
         if self.am_buyer() {
-            self.buyers_redirect_tx_input_sig_ctx.set_warning_output_merkle_root(&seller_output_pub_key);
-            self.sellers_claim_tx_input_sig_ctx.set_warning_output_merkle_root(&seller_output_pub_key);
+            self.buyers_redirect_tx_input_sig_ctx.set_warning_output_merkle_root(&seller_output_pub_key, network);
+            self.sellers_claim_tx_input_sig_ctx.set_warning_output_merkle_root(&seller_output_pub_key, network);
         } else {
             self.swap_tx_input_sig_ctx.adaptor_point = MaybePoint::Valid(buyer_output_pub_key);
-            self.sellers_redirect_tx_input_sig_ctx.set_warning_output_merkle_root(&buyer_output_pub_key);
-            self.buyers_claim_tx_input_sig_ctx.set_warning_output_merkle_root(&buyer_output_pub_key);
+            self.sellers_redirect_tx_input_sig_ctx.set_warning_output_merkle_root(&buyer_output_pub_key, network);
+            self.buyers_claim_tx_input_sig_ctx.set_warning_output_merkle_root(&buyer_output_pub_key, network);
         }
+        Ok(())
     }
 
     pub fn get_my_key_shares(&self) -> Option<[&KeyPair; 2]> {
@@ -259,26 +270,29 @@ impl TradeModel {
         ])
     }
 
-    pub fn set_peer_key_shares(&mut self, buyer_output_pub_key: Point, seller_output_pub_key: Point) {
+    pub fn set_peer_key_shares(&mut self, buyer_output_pub_key: Point, seller_output_pub_key: Point) -> Result<()> {
+        let network = self.trade_wallet()?.network();
         self.buyer_output_key_ctx.peers_key_share = Some(KeyPair::from_public(buyer_output_pub_key));
         self.seller_output_key_ctx.peers_key_share = Some(KeyPair::from_public(seller_output_pub_key));
         if self.am_buyer() {
             // TODO: Should check that signing hasn't already begun before setting an adaptor point.
             self.swap_tx_input_sig_ctx.adaptor_point = MaybePoint::Valid(buyer_output_pub_key);
-            self.sellers_redirect_tx_input_sig_ctx.set_warning_output_merkle_root(&buyer_output_pub_key);
-            self.buyers_claim_tx_input_sig_ctx.set_warning_output_merkle_root(&buyer_output_pub_key);
+            self.sellers_redirect_tx_input_sig_ctx.set_warning_output_merkle_root(&buyer_output_pub_key, network);
+            self.buyers_claim_tx_input_sig_ctx.set_warning_output_merkle_root(&buyer_output_pub_key, network);
         } else {
-            self.buyers_redirect_tx_input_sig_ctx.set_warning_output_merkle_root(&seller_output_pub_key);
-            self.sellers_claim_tx_input_sig_ctx.set_warning_output_merkle_root(&seller_output_pub_key);
+            self.buyers_redirect_tx_input_sig_ctx.set_warning_output_merkle_root(&seller_output_pub_key, network);
+            self.sellers_claim_tx_input_sig_ctx.set_warning_output_merkle_root(&seller_output_pub_key, network);
         }
+        Ok(())
     }
 
     pub fn aggregate_key_shares(&mut self) -> Result<()> {
+        let network = self.trade_wallet()?.network();
         self.buyer_output_key_ctx.aggregate_key_shares()?;
         self.seller_output_key_ctx.aggregate_key_shares()?;
 
-        let buyer_payout_address = self.buyer_output_key_ctx.compute_p2tr_address(None)?;
-        let seller_payout_address = self.seller_output_key_ctx.compute_p2tr_address(None)?;
+        let buyer_payout_address = self.buyer_output_key_ctx.compute_p2tr_address(None, network)?;
+        let seller_payout_address = self.seller_output_key_ctx.compute_p2tr_address(None, network)?;
         self.deposit_tx_builder.set_buyer_payout_address(buyer_payout_address);
         self.deposit_tx_builder.set_seller_payout_address(seller_payout_address);
 
@@ -287,35 +301,27 @@ impl TradeModel {
         let sellers_warning_output_merkle_root = self.buyers_redirect_tx_input_sig_ctx.merkle_root.as_ref();
 
         let buyers_warning_escrow_address = self.seller_output_key_ctx.compute_p2tr_address(
-            buyers_warning_output_merkle_root)?;
+            buyers_warning_output_merkle_root, network)?;
         let sellers_warning_escrow_address = self.buyer_output_key_ctx.compute_p2tr_address(
-            sellers_warning_output_merkle_root)?;
+            sellers_warning_output_merkle_root, network)?;
         self.buyers_warning_tx_builder.set_escrow_address(buyers_warning_escrow_address);
         self.sellers_warning_tx_builder.set_escrow_address(sellers_warning_escrow_address);
         Ok(())
     }
 
-    //noinspection SpellCheckingInspection
     pub fn init_my_addresses(&mut self) -> Result<()> {
-        // TODO: Replace dummy addresses with real ones provided by a service, say by passing in a
-        //  suitable service or context object. (Need to make the network configurable as well.)
+        let mut wallet = self.trade_wallet()?;
         if self.am_buyer() {
-            self.buyers_warning_tx_builder.set_anchor_address("tb1pkar3gerekw8f9gef9vn9xz0qypytgacp9wa5saelpksdgct33qdqs257jl"
-                .parse::<Address<_>>()?.require_network(Network::Signet)?);
-            self.buyers_redirect_tx_builder.set_anchor_address("tb1pv537m7m6w0gdrcdn3mqqdpgrk3j400yrdrjwf5c9whyl2f8f4p6qg5eh2l"
-                .parse::<Address<_>>()?.require_network(Network::Signet)?);
-            self.buyers_claim_tx_builder.set_payout_address("tb1pv537m7m6w0gdrcdn3mqqdpgrk3j400yrdrjwf5c9whyl2f8f4p6qg5eh2l"
-                .parse::<Address<_>>()?.require_network(Network::Signet)?);
+            self.buyers_warning_tx_builder.set_anchor_address(wallet.new_address()?);
+            self.buyers_redirect_tx_builder.set_anchor_address(wallet.new_address()?);
+            self.buyers_claim_tx_builder.set_payout_address(wallet.new_address()?);
         } else {
-            self.sellers_warning_tx_builder.set_anchor_address("tb1pzvynlely05x82u40cts3znctmvyskue74xa5zwy0t5ueuv92726s0cz8g8"
-                .parse::<Address<_>>()?.require_network(Network::Signet)?);
-            self.sellers_redirect_tx_builder.set_anchor_address("tb1pt5xd4aqe9whmvlz78mt39rvdlgpp6hujs5ggwan5285zjnsf73rq8kunpq"
-                .parse::<Address<_>>()?.require_network(Network::Signet)?);
-            self.sellers_claim_tx_builder.set_payout_address("tb1pt5xd4aqe9whmvlz78mt39rvdlgpp6hujs5ggwan5285zjnsf73rq8kunpq"
-                .parse::<Address<_>>()?.require_network(Network::Signet)?);
-            self.swap_tx_builder.set_payout_address("tb1pt5xd4aqe9whmvlz78mt39rvdlgpp6hujs5ggwan5285zjnsf73rq8kunpq"
-                .parse::<Address<_>>()?.require_network(Network::Signet)?);
+            self.sellers_warning_tx_builder.set_anchor_address(wallet.new_address()?);
+            self.sellers_redirect_tx_builder.set_anchor_address(wallet.new_address()?);
+            self.sellers_claim_tx_builder.set_payout_address(wallet.new_address()?);
+            self.swap_tx_builder.set_payout_address(wallet.new_address()?);
         }
+        drop(wallet);
         Ok(())
     }
 
@@ -336,8 +342,7 @@ impl TradeModel {
     }
 
     pub fn set_peer_addresses(&mut self, addresses: ExchangedAddresses<ByVal, NetworkUnchecked>) -> Result<()> {
-        // TODO: Make the required network configurable and enforced to match the one above:
-        let addresses = addresses.require_network(Network::Signet)?;
+        let addresses = addresses.require_network(self.trade_wallet()?.network())?;
         if self.am_buyer() {
             self.sellers_warning_tx_builder.set_anchor_address(addresses.warning_tx_fee_bump_address);
             self.sellers_redirect_tx_builder.set_anchor_address(addresses.redirect_tx_fee_bump_address);
@@ -355,11 +360,10 @@ impl TradeModel {
     }
 
     pub fn init_my_half_deposit_psbt(&mut self) -> Result<()> {
-        self.check_deposit_tx_params_are_known()?;
         if self.am_buyer() {
-            self.deposit_tx_builder.set_buyers_half_psbt(empty_dummy_psbt());
+            self.deposit_tx_builder.init_buyers_half_psbt(&mut *self.trade_wallet()?, &mut rand::rng())?;
         } else {
-            self.deposit_tx_builder.set_sellers_half_psbt(empty_dummy_psbt());
+            self.deposit_tx_builder.init_sellers_half_psbt(&mut *self.trade_wallet()?, &mut rand::rng())?;
         }
         Ok(())
     }
@@ -388,8 +392,8 @@ impl TradeModel {
         self.swap_tx_builder.set_input(seller_payout.clone());
         self.buyers_warning_tx_builder.set_buyer_input(buyer_payout.clone());
         self.buyers_warning_tx_builder.set_seller_input(seller_payout.clone());
-        self.sellers_warning_tx_builder.set_buyer_input(buyer_payout);
-        self.sellers_warning_tx_builder.set_seller_input(seller_payout);
+        self.sellers_warning_tx_builder.set_buyer_input(buyer_payout.clone());
+        self.sellers_warning_tx_builder.set_seller_input(seller_payout.clone());
         Ok(())
     }
 
@@ -420,14 +424,15 @@ impl TradeModel {
         Ok(())
     }
 
+    #[instrument(skip_all)]
     pub fn set_redirection_receivers<I, E>(&mut self, receivers: I) -> Result<(), E>
         where I: IntoIterator<Item=Result<Receiver<NetworkUnchecked>, E>>,
               E: From<ProtocolErrorKind>
     {
-        // TODO: Make the required network configurable and enforced to match the ones above.
+        let network = self.trade_wallet()?.network();
         let mut vec = Vec::new();
         for receiver in receivers {
-            vec.push(receiver?.require_network(Network::Signet).map_err(ProtocolErrorKind::from)?);
+            vec.push(receiver?.require_network(network).map_err(ProtocolErrorKind::from)?);
         }
         let receivers: ReceiverList = vec.into();
         self.redirection_receivers = Some(receivers.clone());
@@ -644,6 +649,77 @@ impl TradeModel {
         Ok(())
     }
 
+    #[instrument(skip_all)]
+    pub fn compute_my_signed_prepared_txs(&mut self) -> Result<()> {
+        use MaybeScalar::Zero;
+        if self.am_buyer() {
+            self.buyers_warning_tx_builder
+                .set_buyer_input_signature(self.buyers_warning_tx_buyer_input_sig_ctx.compute_taproot_signature(Zero)?)
+                .set_seller_input_signature(self.buyers_warning_tx_seller_input_sig_ctx.compute_taproot_signature(Zero)?)
+                .compute_signed_tx()?;
+            self.buyers_redirect_tx_builder
+                .set_input_signature(self.buyers_redirect_tx_input_sig_ctx.compute_taproot_signature(Zero)?)
+                .compute_signed_tx()?;
+            self.buyers_claim_tx_input_sig_ctx.compute_taproot_signature(Zero)
+                .map_or_else(ProtocolErrorKind::skip_missing, |sig| {
+                    self.buyers_claim_tx_builder.set_input_signature(sig).compute_signed_tx()?;
+                    Ok(())
+                })?;
+        } else {
+            self.sellers_warning_tx_builder
+                .set_buyer_input_signature(self.sellers_warning_tx_buyer_input_sig_ctx.compute_taproot_signature(Zero)?)
+                .set_seller_input_signature(self.sellers_warning_tx_seller_input_sig_ctx.compute_taproot_signature(Zero)?)
+                .compute_signed_tx()?;
+            self.sellers_redirect_tx_builder
+                .set_input_signature(self.sellers_redirect_tx_input_sig_ctx.compute_taproot_signature(Zero)?)
+                .compute_signed_tx()?;
+            self.sellers_claim_tx_input_sig_ctx.compute_taproot_signature(Zero)
+                .map_or_else(ProtocolErrorKind::skip_missing, |sig| {
+                    self.sellers_claim_tx_builder.set_input_signature(sig).compute_signed_tx()?;
+                    Ok(())
+                })?;
+        }
+        Ok(())
+    }
+
+    #[instrument(skip_all)]
+    pub fn sign_deposit_psbt(&mut self) -> Result<()> {
+        // Check that we have all the prepared tx data we need:
+        if self.am_buyer() {
+            self.buyers_warning_tx_builder.signed_tx()?;
+            self.buyers_redirect_tx_builder.signed_tx()?;
+            self.buyers_claim_tx_builder.signed_tx()
+                .map_or_else(|e| ProtocolErrorKind::from(e).skip_missing(), |_| Ok(()))?;
+            self.swap_tx_input_sig_ctx.aggregated_sig.ok_or(ProtocolErrorKind::MissingAggSig)?;
+        } else {
+            self.sellers_warning_tx_builder.signed_tx()?;
+            self.sellers_redirect_tx_builder.signed_tx()?;
+            self.sellers_claim_tx_builder.signed_tx()
+                .map_or_else(|e| ProtocolErrorKind::from(e).skip_missing(), |_| Ok(()))?;
+        }
+        // FIXME: This is the first point in the protocol that a real commitment is made.
+        //  It is CRITICAL that the trade data is persisted and backed up at this point.
+        if self.am_buyer() {
+            self.deposit_tx_builder.sign_buyer_inputs(&*self.trade_wallet()?)?;
+        } else {
+            self.deposit_tx_builder.sign_seller_inputs(&*self.trade_wallet()?)?;
+        }
+        Ok(())
+    }
+
+    pub fn get_deposit_psbt(&self) -> Option<&Psbt> {
+        self.deposit_tx_builder.psbt().ok()
+    }
+
+    pub fn combine_deposit_psbts(&mut self, other: Psbt) -> Result<()> {
+        self.deposit_tx_builder.combine_psbts(other)?;
+        Ok(())
+    }
+
+    pub fn get_signed_deposit_tx(&self) -> Option<Transaction> {
+        self.deposit_tx_builder.signed_tx().ok()
+    }
+
     pub const fn set_swap_tx_input_peers_partial_signature(&mut self, sig: PartialSignature) {
         self.swap_tx_input_sig_ctx.peers_partial_sig = Some(sig);
     }
@@ -687,18 +763,26 @@ impl TradeModel {
         self.get_my_key_ctx_mut().aggregate_prv_key_shares()
     }
 
-    pub fn compute_swap_tx_input_signature(&self) -> Result<LiftedSignature> {
-        let adaptor_sig = self.swap_tx_input_sig_ctx.aggregated_sig
-            .ok_or(ProtocolErrorKind::MissingAggSig)?;
+    pub fn compute_signed_swap_tx(&mut self) -> Result<()> {
         let adaptor_secret = self.buyer_output_key_ctx.get_sellers_prv_key()
-            .ok_or(ProtocolErrorKind::MissingKeyShare)?;
-        adaptor_sig.adapt(adaptor_secret).ok_or(ProtocolErrorKind::ZeroNonce)
+            .ok_or(ProtocolErrorKind::MissingKeyShare)?.into();
+        self.swap_tx_builder
+            .set_input_signature(self.swap_tx_input_sig_ctx.compute_taproot_signature(adaptor_secret)?)
+            .compute_signed_tx()?;
+        Ok(())
     }
 
-    pub fn recover_seller_private_key_share_for_buyer_output(&mut self, swap_tx_input_signature: &LiftedSignature) -> Result<()> {
+    pub fn get_signed_swap_tx(&self) -> Option<&Transaction> {
+        self.swap_tx_builder.signed_tx().ok()
+    }
+
+    pub fn recover_seller_private_key_share_for_buyer_output(&mut self, swap_tx: &Transaction) -> Result<()> {
+        let swap_tx_input = self.deposit_tx_builder.seller_payout()?;
+        let final_sig = LiftedSignature::from_bytes(
+            &swap_tx.find_key_spend_signature(swap_tx_input)?.serialize())?;
         let adaptor_sig = self.swap_tx_input_sig_ctx.aggregated_sig
             .ok_or(ProtocolErrorKind::MissingAggSig)?;
-        let adaptor_secret: MaybeScalar = adaptor_sig.reveal_secret(swap_tx_input_signature)
+        let adaptor_secret: MaybeScalar = adaptor_sig.reveal_secret(&final_sig)
             .ok_or(ProtocolErrorKind::MismatchedSigs)?;
         self.buyer_output_key_ctx.set_sellers_prv_key_if_buyer(adaptor_secret.try_into()?)
     }
@@ -802,28 +886,25 @@ impl KeyCtx {
         })
     }
 
-    fn compute_p2tr_address(&self, merkle_root: Option<&TapNodeHash>) -> Result<Address> {
+    fn compute_p2tr_address(&self, merkle_root: Option<&TapNodeHash>, network: Network) -> Result<Address> {
         let pub_key: Point = self.compute_tweaked_key_agg_ctx(merkle_root)?.aggregated_pubkey();
         // NOTE: We have to round-trip the public key because 'musig2' & 'bitcoin' currently use
         // different versions of the 'secp256k1' crate:
         let pub_key = PublicKey::from_slice(&pub_key.serialize_uncompressed())
             .expect("curve point should have a valid uncompressed DER encoding").into();
 
-        // TODO: Make the network configurable:
         // This is safe, as we just performed a Taproot tweak above (via the 'musig2::secp' crate):
-        Ok(Address::p2tr_tweaked(TweakedPublicKey::dangerous_assume_tweaked(pub_key), KnownHrp::Regtest))
+        Ok(Address::p2tr_tweaked(TweakedPublicKey::dangerous_assume_tweaked(pub_key), network))
     }
 }
 
 impl SigCtx {
-    fn set_warning_output_merkle_root(&mut self, claim_pub_key: &Point) -> &TapNodeHash {
+    fn set_warning_output_merkle_root(&mut self, claim_pub_key: &Point, network: Network) -> &TapNodeHash {
         // NOTE: We have to round-trip the public key because 'musig2' & 'bitcoin' currently use
         // different versions of the 'secp256k1' crate:
         let claim_pub_key = PublicKey::from_slice(&claim_pub_key.serialize_uncompressed())
             .expect("curve point should have a valid uncompressed DER encoding").into();
-
-        // TODO: Make the network used to decide the claim lock-time configurable:
-        self.merkle_root.insert(warning_output_merkle_root(&claim_pub_key, REGTEST_CLAIM_LOCK_TIME))
+        self.merkle_root.insert(network.warning_output_merkle_root(&claim_pub_key))
     }
 
     fn init_my_nonce_share(&mut self, key_ctx: &KeyCtx) -> Result<()> {
@@ -900,6 +981,14 @@ impl SigCtx {
             self.adaptor_point, partial_signatures, message)?;
         Ok(self.aggregated_sig.insert(sig))
     }
+
+    fn compute_taproot_signature(&self, adaptor_secret: MaybeScalar) -> Result<Signature> {
+        let adaptor_sig = self.aggregated_sig
+            .ok_or(ProtocolErrorKind::MissingAggSig)?;
+        let sig_bytes: [u8; 64] = adaptor_sig.adapt(adaptor_secret)
+            .ok_or(ProtocolErrorKind::ZeroNonce)?;
+        Ok(Signature::from_slice(&sig_bytes).expect("len = 64"))
+    }
 }
 
 type Result<T, E = ProtocolErrorKind> = std::result::Result<T, E>;
@@ -924,6 +1013,8 @@ pub enum ProtocolErrorKind {
     MissingAggSig,
     #[error("missing aggregated nonce")]
     MissingAggNonce,
+    #[error("missing trade wallet")]
+    MissingTradeWallet,
     #[error("nonce has already been used")]
     NonceReuse,
     #[error("nonce is zero")]
@@ -937,6 +1028,7 @@ pub enum ProtocolErrorKind {
     Verify(#[from] musig2::errors::VerifyError),
     Tweak(#[from] musig2::errors::TweakError),
     InvalidSecretKeys(#[from] musig2::errors::InvalidSecretKeysError),
+    DecodeLiftedSignature(#[from] musig2::errors::DecodeError<LiftedSignature>),
     ZeroScalar(#[from] musig2::secp::errors::ZeroScalarError),
     AddressParse(#[from] bdk_wallet::bitcoin::address::ParseError),
     Transaction(#[from] crate::transaction::TransactionErrorKind),
@@ -944,10 +1036,12 @@ pub enum ProtocolErrorKind {
 
 impl ProtocolErrorKind {
     fn skip_missing(self) -> Result<()> {
+        use crate::transaction::TransactionErrorKind;
         match &self {
             Self::MissingKeyShare | Self::MissingNonceShare | Self::MissingPartialSig |
             Self::MissingDepositPsbt | Self::MissingTxParams | Self::MissingAggPubKey |
-            Self::MissingAggSig | Self::MissingAggNonce => {
+            Self::MissingAggSig | Self::MissingAggNonce | Self::MissingTradeWallet |
+            Self::Transaction(TransactionErrorKind::MissingTransaction) => {
                 warn!("Skipping error: {self}");
                 Ok(())
             }
