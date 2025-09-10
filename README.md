@@ -41,6 +41,18 @@ If you want to get a feeling about this project, check it out and start the test
 , please see this section [Running Integration Tests](./adaptor/README.md).
 Accepted contributions are eligible for compensation, so you could earn money for your work.
 
+## Setting up precommit hooks
+
+The project comes bundle with a git pre-commit hook script that lints and format the code before each commits.
+To set it up you need to run the following command.
+
+`bash install-hooks.sh`
+
+**NOTE**: Make sure you have `jq` installed
+
+The command will copy the pre-commit script to your local `.git/hooks/pre-commit` file.
+This helps us keeping clean build and focus on the essentials parts when reviewing pull requests.
+
 ## running the tests
 
 to run the test you need a work regtest environment as provided by nigiri. You may need to
