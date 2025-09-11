@@ -172,14 +172,24 @@ macro_rules! make_getter_setter {
 }
 
 #[derive(Clone, Debug)]
-pub struct TxOutput(pub(crate) OutPoint, pub(crate) TxOut, pub(crate) Option<XOnlyPublicKey>);
+pub struct TxOutput {
+    pub outpoint: OutPoint,
+    pub prevout: TxOut,
+    pub(crate) internal_key: Option<XOnlyPublicKey>,
+}
 
 impl TxOutput {
+    pub const fn new(outpoint: OutPoint, prevout: TxOut) -> Self {
+        Self { outpoint, prevout, internal_key: None }
+    }
+
     pub fn estimated_input_weight(&self) -> Option<Weight> {
-        Some(Weight::from_wu(match (&self.1.script_pubkey, self.2) {
+        Some(Weight::from_wu(match (&self.prevout.script_pubkey, self.internal_key) {
             // Assumes default sighash type:
+            // weight = 230 = 4 * (36 + 1 + 4) (non-witness part) + 2 + 64 (signature)
             (s, Some(k)) if s.is_p2tr() && *s == Self::keyspend_only_spk(k) => 230,
             // Assumes low-R nonce grinding:
+            // weight = 272 = 4 * (36 + 1 + 4) (non-witness part) + 3 + 33 (pubkey) + 72 (signature)
             (s, None) if s.is_p2wpkh() => 272,
             // Other spk types are forbidden, as they lead to either tx malleability or an
             // arbitrarily long and unstructured witness program, or no standard spends:
@@ -190,10 +200,11 @@ impl TxOutput {
     pub(crate) fn mock_1_btc_coin(outpoint: &'static str, internal_key: &'static str) -> Self {
         let internal_key = XOnlyPublicKey::from_str(internal_key)
             .expect("for mocking only; assumed valid X-only pubkey hex str");
-        Self(outpoint.parse().expect("for mocking only; assumed valid outpoint str"), TxOut {
-            value: Amount::ONE_BTC,
-            script_pubkey: Self::keyspend_only_spk(internal_key),
-        }, Some(internal_key))
+        Self {
+            outpoint: outpoint.parse().expect("for mocking only; assumed valid outpoint str"),
+            prevout: TxOut { value: Amount::ONE_BTC, script_pubkey: Self::keyspend_only_spk(internal_key) },
+            internal_key: Some(internal_key),
+        }
     }
 
     fn keyspend_only_spk(internal_key: XOnlyPublicKey) -> ScriptBuf {
@@ -237,7 +248,7 @@ impl WithWitnesses for Transaction {
 
     fn find_key_spend_signature(&self, input: &TxOutput) -> Result<Signature> {
         for (input_index, TxIn { previous_output, .. }) in self.input.iter().enumerate() {
-            if previous_output == &input.0 {
+            if previous_output == &input.outpoint {
                 return self.key_spend_signature(input_index);
             }
         }
@@ -255,14 +266,14 @@ trait WithFixedInputs<const N: usize> {
             lock_time.to_sequence()
         };
         Ok(self.inputs()?.map(|input|
-            TxIn { previous_output: input.0, sequence, ..TxIn::default() }))
+            TxIn { previous_output: input.outpoint, sequence, ..TxIn::default() }))
     }
 
     fn key_spend_sighash(&self, tx: &Transaction, input_index: usize) -> Result<TapSighash> {
-        let prevouts = self.inputs()?.map(|input| &input.1);
+        let prevouts = self.inputs()?.map(|input| &input.prevout);
         let prevouts = Prevouts::All(&prevouts);
         let mut cache = SighashCache::new(tx);
-        Ok(cache.taproot_key_spend_signature_hash(input_index, &prevouts, TapSighashType::All)?)
+        Ok(cache.taproot_key_spend_signature_hash(input_index, &prevouts, TapSighashType::Default)?)
     }
 }
 
@@ -340,15 +351,15 @@ impl DepositTxBuilder {
         let mut psbt = merge_psbt_halves(buyer_psbt, seller_psbt, target_fee_rate, num_receivers)?;
 
         // Set the payout outputs of the PSBT and shuffle all its inputs and outputs.
-        let mut buyer_payout = TxOutput(OutPoint::null(), TxOut {
+        let mut buyer_payout = TxOutput::new(OutPoint::null(), TxOut {
             value: self.buyers_security_deposit()?.checked_add(*self.trade_amount()?)
                 .ok_or(TransactionErrorKind::Overflow)?,
             script_pubkey: self.buyer_payout_address()?.script_pubkey(),
-        }, None);
-        let mut seller_payout = TxOutput(OutPoint::null(), TxOut {
+        });
+        let mut seller_payout = TxOutput::new(OutPoint::null(), TxOut {
             value: *self.sellers_security_deposit()?,
             script_pubkey: self.seller_payout_address()?.script_pubkey(),
-        }, None);
+        });
         set_payouts_and_shuffle(&mut psbt, &mut buyer_payout, &mut seller_payout);
 
         // Initialize the computed fields.
@@ -422,7 +433,7 @@ impl WarningTxBuilder {
     pub fn compute_unsigned_tx(&mut self) -> Result<&mut Self> {
         let escrow_output = TxOut {
             value: Self::escrow_amount(
-                [self.buyer_input()?.1.value, self.seller_input()?.1.value],
+                [self.buyer_input()?.prevout.value, self.seller_input()?.prevout.value],
                 *self.fee_rate()?,
             ).ok_or(TransactionErrorKind::Overflow)?,
             script_pubkey: self.escrow_address()?.script_pubkey(),
@@ -444,7 +455,7 @@ impl WarningTxBuilder {
     pub fn escrow(&self) -> Result<TxOutput> {
         let txid = self.unsigned_tx()?.compute_txid();
         let output = self.unsigned_tx()?.output[0].clone();
-        Ok(TxOutput(OutPoint::new(txid, 0), output, None))
+        Ok(TxOutput::new(OutPoint::new(txid, 0), output))
     }
 
     pub fn buyer_input_sighash(&self) -> Result<TapSighash> {
@@ -552,7 +563,7 @@ impl ForwardingTxBuilder {
 
     pub fn compute_unsigned_tx(&mut self) -> Result<&mut Self> {
         let output = vec![TxOut {
-            value: Self::payout_amount(self.input()?.1.value, *self.fee_rate()?)
+            value: Self::payout_amount(self.input()?.prevout.value, *self.fee_rate()?)
                 .ok_or(TransactionErrorKind::Overflow)?,
             script_pubkey: self.payout_address()?.script_pubkey(),
         }];

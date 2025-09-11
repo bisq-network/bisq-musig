@@ -92,18 +92,18 @@ impl<Cs: Iterator<Item=TxOutput>, As: Iterator<Item=Address>> TradeWallet for Mo
                 .ok_or(TransactionErrorKind::MissingTxOutput)?;
             let new_coin_weight = new_coin.estimated_input_weight()
                 .ok_or(TransactionErrorKind::InvalidPsbt)?;
-            funds = funds.checked_add(new_coin.1.value)
+            funds = funds.checked_add(new_coin.prevout.value)
                 .ok_or(TransactionErrorKind::Overflow)?;
             cost_msat = cost_msat.checked_add(fee_cost_msat(new_coin_weight)?)
                 .ok_or(TransactionErrorKind::Overflow)?;
             input.push(TxIn {
-                previous_output: new_coin.0,
+                previous_output: new_coin.outpoint,
                 sequence: Sequence::ENABLE_RBF_NO_LOCKTIME,
                 ..TxIn::default()
             });
             inputs.push(psbt::Input {
-                witness_utxo: Some(new_coin.1),
-                tap_internal_key: new_coin.2,
+                witness_utxo: Some(new_coin.prevout),
+                tap_internal_key: new_coin.internal_key,
                 ..psbt::Input::default()
             });
         }
@@ -208,7 +208,7 @@ fn signature_map(funding_coins: &[TxOutput], signatures: &[&'static str]) -> BTr
         signature: s.parse().expect("hardcoded signatures should be valid"),
         sighash_type: TapSighashType::Default,
     });
-    funding_coins.iter().map(|o| o.0).zip(signatures).collect()
+    funding_coins.iter().map(|o| o.outpoint).zip(signatures).collect()
 }
 
 pub fn prevout_set(psbt: &Psbt) -> BTreeSet<OutPoint> {
@@ -240,8 +240,11 @@ fn input_coin(psbt: &Psbt, index: usize) -> Option<TxOutput> {
         // Enforce that all deposit PSBT inputs have a sequence number of 0xFFFFFFFD.
         return None;
     }
-    Some(TxOutput(psbt.unsigned_tx.input[index].previous_output,
-        psbt.inputs[index].witness_utxo.clone()?, psbt.inputs[index].tap_internal_key))
+    Some(TxOutput {
+        outpoint: psbt.unsigned_tx.input[index].previous_output,
+        prevout: psbt.inputs[index].witness_utxo.clone()?,
+        internal_key: psbt.inputs[index].tap_internal_key,
+    })
 }
 
 fn half_psbt_fee_overpay_msat(psbt: &Psbt, target_fee_rate: FeeRate) -> Option<i64> {
@@ -265,7 +268,7 @@ fn half_psbt_fee_overpay_msat(psbt: &Psbt, target_fee_rate: FeeRate) -> Option<i
         //  encountered, instead of an invalid PSBT error as it should:
         let coin = input_coin(psbt, i)?;
         signed_tx_weight += coin.estimated_input_weight()?;
-        input_amount = input_amount.checked_add(coin.1.value)?;
+        input_amount = input_amount.checked_add(coin.prevout.value)?;
     }
     let output_amount = psbt.unsigned_tx.output.iter().map(|o| o.value).checked_sum()?;
 
@@ -351,17 +354,17 @@ pub fn merge_psbt_halves(buyer_psbt: &Psbt, seller_psbt: &Psbt, target_fee_rate:
 
 pub fn set_payouts_and_shuffle(psbt: &mut Psbt, buyer_payout: &mut TxOutput, seller_payout: &mut TxOutput) {
     let seed = psbt.unsigned_tx.compute_txid().to_byte_array();
-    psbt.unsigned_tx.output[0] = buyer_payout.1.clone();
-    psbt.unsigned_tx.output[1] = seller_payout.1.clone();
-    [buyer_payout.0.vout, seller_payout.0.vout] = [0, 1];
+    psbt.unsigned_tx.output[0] = buyer_payout.prevout.clone();
+    psbt.unsigned_tx.output[1] = seller_payout.prevout.clone();
+    [buyer_payout.outpoint.vout, seller_payout.outpoint.vout] = [0, 1];
 
     let mut rng = ChaCha20Rng::from_seed(seed);
     (&mut psbt.inputs[..], &mut psbt.unsigned_tx.input[..])
         .shuffle(&mut rng);
     (&mut psbt.outputs[..], (&mut psbt.unsigned_tx.output[..],
-        (&mut buyer_payout.0.vout, &mut seller_payout.0.vout)))
+        (&mut buyer_payout.outpoint.vout, &mut seller_payout.outpoint.vout)))
         .shuffle(&mut rng);
 
     let txid = psbt.unsigned_tx.compute_txid();
-    [buyer_payout.0.txid, seller_payout.0.txid] = [txid; 2];
+    [buyer_payout.outpoint.txid, seller_payout.outpoint.txid] = [txid; 2];
 }
