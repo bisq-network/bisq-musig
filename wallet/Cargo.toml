@@ -12,3 +12,4 @@ secp = { workspace = true }
 
 [dev-dependencies]
 tempfile = "3.21.0"
+bdk_wallet = { workspace = true , features = ["test-utils"]}

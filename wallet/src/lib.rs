@@ -5,15 +5,19 @@ use bdk_electrum::{
 
 use bdk_wallet::{
     bitcoin::{bip32::Xpriv, hex::DisplayHex, Amount, Network},
+    chain::Merge,
     keys::bip39::Mnemonic,
     rusqlite::{self, named_params, Connection},
     template::{Bip86, DescriptorTemplate},
-    AddressInfo, KeychainKind, PersistedWallet, Wallet, WalletPersister,
+    AddressInfo, ChangeSet, KeychainKind, PersistedWallet, Wallet, WalletPersister,
 };
 
 use rand::RngCore;
 use secp::Scalar;
-use std::vec;
+use std::{
+    ops::{Deref, DerefMut},
+    vec,
+};
 
 #[allow(unused)]
 const ELECTRUM_URL: &str = "ssl://electrum.blockstream.info:6000";
@@ -44,6 +48,11 @@ pub trait BMPWalletPersister: WalletPersister {
     ) -> anyhow::Result<()>;
 
     fn get_seed_phrase(db: &Self::DB, keys_table_name: &str) -> anyhow::Result<String>;
+
+    fn persist_staged_changes(
+        db: &mut Self::DB,
+        cs: &ChangeSet,
+    ) -> anyhow::Result<(), rusqlite::Error>;
 }
 
 impl BMPWalletPersister for Connection {
@@ -52,6 +61,13 @@ impl BMPWalletPersister for Connection {
     fn new(db_path: &str) -> Result<Self::DB, rusqlite::Error> {
         let db = Connection::open(db_path)?;
         Ok(db)
+    }
+
+    fn persist_staged_changes(
+        db: &mut Self::DB,
+        cs: &ChangeSet,
+    ) -> anyhow::Result<(), rusqlite::Error> {
+        Connection::persist(db, cs)
     }
 
     fn init(
@@ -171,11 +187,13 @@ pub trait WalletApi {
     fn new(network: Network) -> anyhow::Result<Self>
     where
         Self: Sized;
+
     fn load_wallet(network: Network) -> anyhow::Result<Self>
     where
         Self: Sized;
 
-    fn next_unused_address(&mut self) -> anyhow::Result<AddressInfo>;
+    fn get_new_address(&mut self) -> anyhow::Result<AddressInfo>;
+    fn get_change_address(&mut self) -> anyhow::Result<AddressInfo>;
 
     fn get_seed_phrase(&self) -> anyhow::Result<String>;
     fn import_private_key(&mut self, key: Scalar);
@@ -183,12 +201,32 @@ pub trait WalletApi {
     fn balance(&self) -> Amount;
     fn encrypt(password: &str);
     fn decrypt(password: &str);
+
+    fn persist(&mut self) -> anyhow::Result<bool>;
 }
 
 impl WalletApi for BMPWallet<Connection> {
     const SEEDS_TABLE_NAME: &'static str = "bmp_seeds";
     const IMPORTED_KEYS_TABLE_NAME: &'static str = "bmp_imported_keys";
     const DB_PATH: &str = "bmp_bdk_wallet.db3";
+
+    fn persist(&mut self) -> anyhow::Result<bool> {
+        // Persist imported keys and then persist staged changes from ChangeSet
+        let _ = Connection::persist_imported_keys(
+            &mut self.db,
+            Self::IMPORTED_KEYS_TABLE_NAME,
+            &self.imported_keys,
+        );
+
+        match self.wallet.staged_mut() {
+            Some(stage) => {
+                Connection::persist_staged_changes(&mut self.db, &*stage)?;
+                let _ = stage.take();
+                Ok(true)
+            }
+            None => Ok(false),
+        }
+    }
 
     fn new(network: Network) -> anyhow::Result<Self>
     where
@@ -259,10 +297,18 @@ impl WalletApi for BMPWallet<Connection> {
         Err(anyhow::anyhow!("Unable to load wallet"))
     }
 
-    fn next_unused_address(&mut self) -> anyhow::Result<AddressInfo> {
+    fn get_new_address(&mut self) -> anyhow::Result<AddressInfo> {
         let addr = self.wallet.next_unused_address(KeychainKind::External);
         // Persist the revealed address, to avoid address reuse
-        self.wallet.persist(&mut self.db)?;
+        self.persist()?;
+
+        Ok(addr)
+    }
+
+    fn get_change_address(&mut self) -> anyhow::Result<AddressInfo> {
+        let addr = self.wallet.next_unused_address(KeychainKind::Internal);
+        // Persist the revealed address, to avoid address reuse
+        self.persist()?;
 
         Ok(addr)
     }
@@ -290,15 +336,139 @@ impl WalletApi for BMPWallet<Connection> {
     }
 }
 
+impl Deref for BMPWallet<Connection> {
+    type Target = PersistedWallet<Connection>;
+    fn deref(&self) -> &Self::Target {
+        &self.wallet
+    }
+}
+
+impl DerefMut for BMPWallet<Connection> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.wallet
+    }
+}
 #[cfg(test)]
 mod tests {
 
     use crate::{BMPWallet, WalletApi};
-    use bdk_wallet::bitcoin::Network;
+    use bdk_wallet::{
+        bitcoin::{hashes::Hash, AddressType, Amount, BlockHash, Network},
+        chain::{self, BlockId},
+        test_utils::{receive_output_to_address, ReceiveTo},
+        AddressInfo, KeychainKind,
+    };
+    use rand::RngCore;
+    use secp::Scalar;
+    use tempfile::tempdir;
+
+    fn new_private_key() -> Scalar {
+        let mut seed: [u8; 32] = [0u8; 32];
+        rand::rng().fill_bytes(&mut seed);
+        Scalar::from_slice(&seed).unwrap()
+    }
 
     #[test]
+    fn test_create_wallet() -> anyhow::Result<()> {
+        let tmp_dir = tempdir()?;
+        std::env::set_current_dir(tmp_dir.path())?;
 
-    fn test_the_test() {
-        let _wallet = BMPWallet::new(Network::Bitcoin).unwrap();
+        let mut bmp_wallet = BMPWallet::new(Network::Bitcoin)?;
+        assert_eq!(bmp_wallet.imported_keys.len(), 0);
+        assert_eq!(bmp_wallet.balance(), Amount::from_sat(0));
+
+        let seed = bmp_wallet.get_seed_phrase()?;
+
+        println!("Generated mnemonic {} ", seed);
+        assert_eq!(seed.len() > 0, true);
+
+        let receiving_addr = bmp_wallet.get_new_address()?;
+
+        assert_eq!(receiving_addr.address_type(), Some(AddressType::P2tr));
+
+        println!("Generated address {:?}", receiving_addr);
+
+        // Mark address as used and make sure next address will be different.
+        assert!(bmp_wallet.mark_used(KeychainKind::External, receiving_addr.index));
+
+        let new_receiving_addr = bmp_wallet.get_new_address()?;
+
+        assert_ne!(
+            bmp_wallet.next_derivation_index(KeychainKind::External),
+            new_receiving_addr.index
+        );
+
+        assert_ne!(new_receiving_addr, receiving_addr);
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_load_wallet() -> anyhow::Result<()> {
+        let tmp_dir = tempdir()?;
+        std::env::set_current_dir(tmp_dir.path())?;
+
+        let stored_seed: String;
+        let stored_balance: Amount;
+        let last_generated_addr: AddressInfo;
+
+        {
+            let mut wallet = BMPWallet::new(Network::Regtest)?;
+            assert_eq!(wallet.imported_keys.len(), 0);
+            stored_balance = wallet.balance();
+            stored_seed = wallet.get_seed_phrase().unwrap();
+            last_generated_addr = wallet.get_new_address()?;
+
+            receive_output_to_address(
+                &mut wallet,
+                last_generated_addr.address.clone(),
+                Amount::ONE_BTC * 2,
+                ReceiveTo::Block(chain::ConfirmationBlockTime {
+                    block_id: BlockId {
+                        height: 2,
+                        hash: BlockHash::all_zeros(),
+                    },
+                    confirmation_time: 2,
+                }),
+            );
+
+            wallet.persist()?;
+        }
+
+        let mut wallet = BMPWallet::load_wallet(Network::Regtest)?;
+        let loaded_seed = wallet.get_seed_phrase()?;
+
+        let new_receiving_addr = wallet.get_new_address()?;
+
+        assert_eq!(wallet.imported_keys.len(), 0);
+        assert_eq!(wallet.balance(), stored_balance);
+        assert_eq!(loaded_seed, stored_seed);
+
+        // After reloading with previously used address make sure the next generated one is different
+        assert_ne!(new_receiving_addr, last_generated_addr);
+        Ok(())
+    }
+
+    #[test]
+    fn test_imported_keys() -> anyhow::Result<()> {
+        let tmp_dir = tempdir()?;
+        std::env::set_current_dir(tmp_dir.path())?;
+
+        let mut bmp_wallet = BMPWallet::new(Network::Regtest)?;
+        let pk1 = new_private_key();
+        let pk2 = new_private_key();
+
+        bmp_wallet.import_private_key(pk1);
+        bmp_wallet.import_private_key(pk2);
+
+        assert_eq!(bmp_wallet.imported_keys.len(), 2);
+
+        // Persist
+        bmp_wallet.persist()?;
+
+        let loaded_wallet = BMPWallet::load_wallet(Network::Regtest)?;
+
+        assert_eq!(loaded_wallet.imported_keys, bmp_wallet.imported_keys);
+        Ok(())
     }
 }
