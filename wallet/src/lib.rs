@@ -360,7 +360,18 @@ mod tests {
     };
     use rand::RngCore;
     use secp::Scalar;
-    use tempfile::tempdir;
+    use simple_semaphore::{self, Semaphore};
+    use std::sync::Arc;
+    use tempfile::{tempdir, TempDir};
+
+    static SEMAPHORE: once_cell::sync::Lazy<Arc<Semaphore>> =
+        once_cell::sync::Lazy::new(|| Semaphore::new(1));
+
+    fn tear_up() -> TempDir {
+        let tmp_dir = tempdir().unwrap();
+        std::env::set_current_dir(tmp_dir.path()).unwrap();
+        tmp_dir
+    }
 
     fn new_private_key() -> Scalar {
         let mut seed: [u8; 32] = [0u8; 32];
@@ -370,8 +381,8 @@ mod tests {
 
     #[test]
     fn test_create_wallet() -> anyhow::Result<()> {
-        let tmp_dir = tempdir()?;
-        std::env::set_current_dir(tmp_dir.path())?;
+        let permit = SEMAPHORE.acquire();
+        let _tmp_dir = tear_up();
 
         let mut bmp_wallet = BMPWallet::new(Network::Bitcoin)?;
         assert_eq!(bmp_wallet.imported_keys.len(), 0);
@@ -400,13 +411,14 @@ mod tests {
 
         assert_ne!(new_receiving_addr, receiving_addr);
 
+        drop(permit);
         Ok(())
     }
 
     #[test]
     fn test_load_wallet() -> anyhow::Result<()> {
-        let tmp_dir = tempdir()?;
-        std::env::set_current_dir(tmp_dir.path())?;
+        let permit = SEMAPHORE.acquire();
+        let _tmp_dir = tear_up();
 
         let stored_seed: String;
         let stored_balance: Amount;
@@ -446,13 +458,15 @@ mod tests {
 
         // After reloading with previously used address make sure the next generated one is different
         assert_ne!(new_receiving_addr, last_generated_addr);
+
+        drop(permit);
         Ok(())
     }
 
     #[test]
     fn test_imported_keys() -> anyhow::Result<()> {
-        let tmp_dir = tempdir()?;
-        std::env::set_current_dir(tmp_dir.path())?;
+        let permit = SEMAPHORE.acquire();
+        let _tmp_dir = tear_up();
 
         let mut bmp_wallet = BMPWallet::new(Network::Regtest)?;
         let pk1 = new_private_key();
@@ -469,6 +483,8 @@ mod tests {
         let loaded_wallet = BMPWallet::load_wallet(Network::Regtest)?;
 
         assert_eq!(loaded_wallet.imported_keys, bmp_wallet.imported_keys);
+
+        drop(permit);
         Ok(())
     }
 }
