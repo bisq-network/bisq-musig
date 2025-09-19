@@ -50,11 +50,47 @@ fi
 
 echo -e "${BLUE}PRE-COMMIT: Running cargo fmt${RESET}"
 
-for file in $(git diff --cached --name-only --diff-filter=ACM | grep ".rs$"); do
-  PATH_FILE="$ROOT/$file"
-  $(rustfmt +nightly --unstable-features --skip-children --edition 2021 -- "$PATH_FILE")
-  git add "$PATH_FILE"
+repo_root=$(git rev-parse --show-toplevel)
+
+# Temp file for file-lines JSON
+tmp_json=$(mktemp)
+files=$(git diff --cached --name-only --diff-filter=ACM -- '*.rs')
+
+for file in $files; do
+  abs_file="$repo_root/$file"
+
+  # Collect changed line ranges for this file
+  ranges=$(git diff --cached -U0 -- "$file" |
+    grep '^@@' |
+    sed -E 's/^@@ -[0-9,]+ \+([0-9]+)(,([0-9]+))? @@.*$/\1 \3/' |
+    awk '{ start=$1; len=$2==""?1:$2; print "["start","start+len-1"]" }')
+
+  [ -z "$ranges" ] && continue
+
+  # Build JSON array of ranges for rustfmt
+  
+  {
+    echo -n '['
+    first=1
+    while read -r range; do
+      [ -n "$first" ] || echo -n ','
+      echo -n "{\"file\":\"$abs_file\",\"range\":$range}"
+      first=
+    done <<< "$ranges"
+    echo ']'
+  } > "$tmp_json"
+
+  json_content=$(cat $tmp_json)
+
+  # Run rustfmt only on changed lines
+  rustfmt +nightly --unstable-features --skip-children --edition 2021\
+    --file-lines "$json_content" \
+    "$abs_file"
+
+  git add "$file"
 done
+
+rm -f "$tmp_json"
 
 # Insert new line at the end of modified files if none.
 

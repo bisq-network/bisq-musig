@@ -1,8 +1,8 @@
 comment_width = 100
 format_code_in_doc_comments = true
 wrap_comments = true
-reorder_imports = true
+reorder_imports = false
 edition = "2021"
 imports_granularity = "Crate"
-group_imports = "StdExternalCrate"
+group_imports = "Preserve"
 style_edition = "2021"
