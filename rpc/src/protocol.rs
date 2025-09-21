@@ -15,7 +15,6 @@ use musig2::{
 use std::collections::BTreeMap;
 use std::sync::{Arc, LazyLock, Mutex};
 use thiserror::Error;
-use tracing::{error, instrument, warn};
 
 use crate::psbt::{mock_buyer_trade_wallet, mock_seller_trade_wallet, TradeWallet};
 use crate::storage::{ByOptVal, ByRef, ByVal, Storage, ValStorage};
@@ -429,27 +428,22 @@ impl TradeModel {
         Ok(())
     }
 
-    #[instrument(skip_all)]
     pub fn check_redirect_tx_params(&self) -> Result<()> {
         // FIXME: Don't falsely report overflows & invalid params as missing-param errors:
         let receivers = &self.redirection_receivers.as_ref()
             .ok_or(ProtocolErrorKind::MissingTxParams)?[..];
         let fee_rate = self.prepared_tx_fee_rate
             .ok_or(ProtocolErrorKind::MissingTxParams)?;
-        let expected_redirection_amount_msat = self.redirection_amount_msat()
+        let available_msat = self.redirection_amount_msat()
             .ok_or(ProtocolErrorKind::MissingTxParams)?;
-        let actual_redirection_amount_msat = Receiver::total_output_cost_msat(receivers, fee_rate, 1)
+        let used_msat = Receiver::total_output_cost_msat(receivers, fee_rate, 1)
             .ok_or(ProtocolErrorKind::MissingTxParams)?;
 
-        // For now, just log the amount-check failures, to give the Bisq2 client a chance to update.
-        // TODO: Make these both hard errors:
-        if actual_redirection_amount_msat > expected_redirection_amount_msat {
-            error!(expected_redirection_amount_msat, actual_redirection_amount_msat,
-                "Insufficient redirection funds.");
+        if used_msat > available_msat {
+            return Err(ProtocolErrorKind::InsufficientRedirectionFunds { available_msat, used_msat });
         }
-        if actual_redirection_amount_msat.saturating_add(999) < expected_redirection_amount_msat {
-            warn!(expected_redirection_amount_msat, actual_redirection_amount_msat,
-                "Excess redirection funds.");
+        if used_msat.saturating_add(999) < available_msat {
+            return Err(ProtocolErrorKind::ExcessRedirectionFunds { available_msat, used_msat });
         }
         Ok(())
     }
@@ -990,6 +984,16 @@ pub enum ProtocolErrorKind {
     MismatchedKeyPair,
     #[error("mismatched adaptor and final signature")]
     MismatchedSigs,
+    #[error("insufficient redirection funds (available {available_msat:?} msat, used {used_msat:?} msat)")]
+    InsufficientRedirectionFunds {
+        available_msat: u64,
+        used_msat: u64,
+    },
+    #[error("excess redirection funds (available {available_msat:?} msat, used {used_msat:?} msat)")]
+    ExcessRedirectionFunds {
+        available_msat: u64,
+        used_msat: u64,
+    },
     KeyAgg(#[from] musig2::errors::KeyAggError),
     Signing(#[from] musig2::errors::SigningError),
     Verify(#[from] musig2::errors::VerifyError),
