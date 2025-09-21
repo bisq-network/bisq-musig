@@ -14,11 +14,9 @@ use paste::paste;
 use rand::RngCore;
 use relative::LockTime;
 use std::collections::BTreeSet;
-use std::error::Error as _;
 use std::str::FromStr as _;
 use std::sync::{Arc, LazyLock};
 use thiserror::Error;
-use tracing::warn;
 
 use crate::psbt::{
     check_placeholder_output, check_receiver_outputs, merge_psbt_halves, prevout_set,
@@ -98,15 +96,8 @@ pub struct Receiver<V: NetworkValidation = NetworkChecked> {
 }
 
 impl Receiver<NetworkUnchecked> {
-    #[expect(clippy::unnecessary_wraps,
-    reason = "temporarily skipping errors to avoid breaking the Bisq2 client, until it is updated")]
     pub fn require_network(self, required: Network) -> Result<Receiver> {
-        let address = self.address.clone().require_network(required)
-            .unwrap_or_else(|e| {
-                warn!("Skipping {e}: {}", e.source().unwrap());
-                self.address.assume_checked()
-            });
-        Ok(Receiver { address, amount: self.amount })
+        Ok(Receiver { address: self.address.require_network(required)?, amount: self.amount })
     }
 }
 

@@ -223,7 +223,6 @@ impl TradeModel {
         self.sellers_claim_tx_builder.set_fee_rate(fee_rate);
     }
 
-    #[instrument(skip_all)]
     pub fn set_trade_fee_receiver(&mut self, receiver: Option<Receiver<NetworkUnchecked>>) -> Result<()> {
         let network = self.trade_wallet()?.network();
         self.deposit_tx_builder.set_trade_fee_receivers(receiver
@@ -424,7 +423,6 @@ impl TradeModel {
         Ok(())
     }
 
-    #[instrument(skip_all)]
     pub fn set_redirection_receivers<I, E>(&mut self, receivers: I) -> Result<(), E>
         where I: IntoIterator<Item=Result<Receiver<NetworkUnchecked>, E>>,
               E: From<ProtocolErrorKind>
