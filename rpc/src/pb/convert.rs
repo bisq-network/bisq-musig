@@ -71,18 +71,6 @@ macro_rules! impl_try_proto_into_for_slice {
     };
 }
 
-macro_rules! empty_to_none {
-    ($self:ident.$field:ident) => {
-        if $self.$field.is_empty() {
-            let name = stringify!($field);
-            tracing::warn!(name, "Empty proto field.");
-            None
-        } else {
-            Some($self.$field)
-        }
-    };
-}
-
 impl_try_proto_into_for_slice!(Point, "nonzero point");
 impl_try_proto_into_for_slice!(PubNonce, "pub nonce");
 impl_try_proto_into_for_slice!(Scalar, "nonzero scalar");
@@ -169,7 +157,7 @@ impl<'a> TryProtoInto<ReceivedAddressesNoncesPair<'a>> for NonceSharesMessage {
             redirect_tx_fee_bump_address:
             self.redirect_tx_fee_bump_address.try_proto_into()?,
             claim_tx_payout_address:
-            empty_to_none!(self.claim_tx_payout_address).try_proto_into()?,
+            self.claim_tx_payout_address.try_proto_into()?,
         }, ExchangedNonces {
             swap_tx_input_nonce_share:
             self.swap_tx_input_nonce_share.try_proto_into()?,
@@ -186,9 +174,9 @@ impl<'a> TryProtoInto<ReceivedAddressesNoncesPair<'a>> for NonceSharesMessage {
             sellers_redirect_tx_input_nonce_share:
             self.sellers_redirect_tx_input_nonce_share.try_proto_into()?,
             buyers_claim_tx_input_nonce_share:
-            empty_to_none!(self.buyers_claim_tx_input_nonce_share).try_proto_into()?,
+            self.buyers_claim_tx_input_nonce_share.try_proto_into()?,
             sellers_claim_tx_input_nonce_share:
-            empty_to_none!(self.sellers_claim_tx_input_nonce_share).try_proto_into()?,
+            self.sellers_claim_tx_input_nonce_share.try_proto_into()?,
         }))
     }
 }
@@ -203,7 +191,7 @@ impl<'a> TryProtoInto<ExchangedSigs<'a, ByVal>> for PartialSignaturesMessage {
             peers_redirect_tx_input_partial_signature:
             self.peers_redirect_tx_input_partial_signature.try_proto_into()?,
             peers_claim_tx_input_partial_signature:
-            empty_to_none!(self.peers_claim_tx_input_partial_signature).try_proto_into()?,
+            self.peers_claim_tx_input_partial_signature.try_proto_into()?,
             swap_tx_input_partial_signature:
             self.swap_tx_input_partial_signature.try_proto_into()?,
             swap_tx_input_sighash:
@@ -232,7 +220,7 @@ impl From<SentAddressesNoncesPair<'_>> for NonceSharesMessage {
             // Addresses...
             warning_tx_fee_bump_address: addresses.warning_tx_fee_bump_address.to_string(),
             redirect_tx_fee_bump_address: addresses.redirect_tx_fee_bump_address.to_string(),
-            claim_tx_payout_address: addresses.claim_tx_payout_address.map(Address::to_string).unwrap_or_default(),
+            claim_tx_payout_address: addresses.claim_tx_payout_address.to_string(),
             // Actual nonce shares...
             swap_tx_input_nonce_share:
             nonces.swap_tx_input_nonce_share.serialize().into(),
@@ -249,9 +237,9 @@ impl From<SentAddressesNoncesPair<'_>> for NonceSharesMessage {
             sellers_redirect_tx_input_nonce_share:
             nonces.sellers_redirect_tx_input_nonce_share.serialize().into(),
             buyers_claim_tx_input_nonce_share:
-            nonces.buyers_claim_tx_input_nonce_share.map(|n| n.serialize().into()).unwrap_or_default(),
+            nonces.buyers_claim_tx_input_nonce_share.serialize().into(),
             sellers_claim_tx_input_nonce_share:
-            nonces.sellers_claim_tx_input_nonce_share.map(|n| n.serialize().into()).unwrap_or_default(),
+            nonces.sellers_claim_tx_input_nonce_share.serialize().into(),
         }
     }
 }
@@ -266,7 +254,7 @@ impl From<ExchangedSigs<'_, ByRef>> for PartialSignaturesMessage {
             peers_redirect_tx_input_partial_signature:
             value.peers_redirect_tx_input_partial_signature.serialize().into(),
             peers_claim_tx_input_partial_signature:
-            value.peers_claim_tx_input_partial_signature.map(|s| s.serialize().into()).unwrap_or_default(),
+            value.peers_claim_tx_input_partial_signature.serialize().into(),
             swap_tx_input_partial_signature:
             value.swap_tx_input_partial_signature.map(|s| s.serialize().into()),
             swap_tx_input_sighash:
