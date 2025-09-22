@@ -17,22 +17,22 @@ prost = "0.14.1"
 protocol = { path = "../protocol" }
 rand = { workspace = true }
 rand_chacha = { workspace = true }
-serde = { version = "1.0.219", features = ["derive"] }
-serde_with = { version = "3.14.0", features = ["base64", "hex"] }
+serde = { version = "1.0.226", features = ["derive"] }
+serde_with = { version = "3.14.1", features = ["base64", "hex"] }
 thiserror = "2.0.16"
 tokio = { version = "1.47.1", features = ["macros", "rt-multi-thread", "time"] }
 tokio-stream = "0.1.17"
-tonic = "0.14.1"
-tonic-prost = "0.14.1"
+tonic = "0.14.2"
+tonic-prost = "0.14.2"
 tracing = "0.1.41"
 unimock = { version = "0.6.7", optional = true }
 # Dependencies used only by the binary target(s):
 # TODO: Consider making a workspace of separate packages to avoid pulling these into the library:
-clap = { version = "4.5.46", features = ["derive"] }
+clap = { version = "4.5.48", features = ["derive"] }
 tracing-subscriber = { version = "0.3.20", features = ["env-filter"] }
 
 [build-dependencies]
-tonic-prost-build = "0.14.1"
+tonic-prost-build = "0.14.2"
 
 [dev-dependencies]
 rpc = { path = ".", features = ["unimock"] }
@@ -41,28 +41,5 @@ assert_cmd = "2.0.17"
 const_format = "0.2.34"
 predicates = "3.1.3"
 
-[lints.rust]
-rust-2024-compatibility = "warn"
-# Most of the time, changing drop order is harmless ('rust-2024-compatibility' lint):
-tail_expr_drop_order = { level = "allow", priority = 1 }
-
-[lints.clippy]
-pedantic = "warn"
-# Enable selected 'nursery' and 'restriction' lints...
-allow_attributes = "warn"
-allow_attributes_without_reason = "warn"
-branches_sharing_code = "warn"
-exhaustive_enums = "warn"
-iter_on_empty_collections = "warn"
-iter_on_single_items = "warn"
-missing_const_for_fn = "warn"
-renamed_function_params = "warn"
-significant_drop_tightening = "warn"
-str_to_string = "warn"
-try_err = "warn"
-unused_trait_names = "warn"
-use_self = "warn"
-# Panics shall generally only result from bugs in callee code, so this gives too many false positives:
-missing_panics_doc = { level = "allow", priority = 1 }
-# Probably shouldn't annotate every (public) pure fn with '#[must_use]', so too many false positives:
-must_use_candidate = { level = "allow", priority = 1 }
+[lints]
+workspace = true

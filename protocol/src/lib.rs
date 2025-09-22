@@ -1,25 +1,24 @@
-// FIXME: Temporarily suppressed warnings from protocol crate in order to get a clean build:
-#![allow(warnings)]
-
-use bdk_electrum::bdk_core::bitcoin;
-use bdk_electrum::bdk_core::bitcoin::key::{Keypair, Secp256k1, TweakedKeypair};
-use bdk_electrum::bdk_core::bitcoin::secp256k1::Message;
-use bdk_electrum::bdk_core::bitcoin::sighash::{Prevouts, SighashCache};
-use bdk_electrum::bdk_core::bitcoin::{TapSighashType, Witness};
-use bdk_wallet::bitcoin::key::TapTweak;
-use musig2::secp::{Point, Scalar};
-use musig2::KeyAggContext;
-
-pub mod protocol_musig_adaptor;
 pub mod nigiri;
+pub mod protocol_musig_adaptor;
 pub mod wallet_service;
 
 #[cfg(test)]
 mod tests {
+    // FIXME: Temporarily suppressed warnings in order to get a clean build:
+    #![allow(warnings)]
+
+    use bdk_electrum::bdk_core::bitcoin;
+    use bdk_electrum::bdk_core::bitcoin::key::{Keypair, Secp256k1, TweakedKeypair};
+    use bdk_electrum::bdk_core::bitcoin::secp256k1::Message;
+    use bdk_electrum::bdk_core::bitcoin::sighash::{Prevouts, SighashCache};
+    use bdk_electrum::bdk_core::bitcoin::{Amount, TapSighashType, Witness};
+    use bdk_wallet::bitcoin::key::TapTweak as _;
+    use musig2::KeyAggContext;
+    use musig2::secp::{Point, Scalar};
+
     use crate::nigiri;
     use crate::protocol_musig_adaptor::{BMPContext, BMPProtocol, ProtocolRole};
     use crate::wallet_service::WalletService;
-    use bdk_electrum::bdk_core::bitcoin::Amount;
 
     #[test]
     fn test_initial_tx_creation() -> anyhow::Result<()> {
@@ -177,90 +176,90 @@ mod tests {
         nigiri::tiktok();
         Ok(())
     }
-}
 
-//noinspection ALL
-#[test]
-fn test_q_tik() -> anyhow::Result<()> {
-    // create all transaction and Broadcast DepositTx already
-    let (alice, bob) = crate::tests::initial_tx_creation()?;
-    // test!(alice.swap_tx.)
+    //noinspection ALL
+    #[test]
+    fn test_q_tik() -> anyhow::Result<()> {
+        // create all transaction and Broadcast DepositTx already
+        let (alice, bob) = initial_tx_creation()?;
+        // test!(alice.swap_tx.)
 
-    // message
-    let tx = bob.swap_tx.tx.clone().unwrap();
-    let prevout = &bob.swap_tx.calc_prevouts(&bob.deposit_tx)?;
-    let prevouts = Prevouts::All(prevout);
-    let input_index = 0;
+        // message
+        let tx = bob.swap_tx.tx.clone().unwrap();
+        let prevout = &bob.swap_tx.calc_prevouts(&bob.deposit_tx)?;
+        let prevouts = Prevouts::All(prevout);
+        let input_index = 0;
 
-    let sighash_type = TapSighashType::Default;
+        let sighash_type = TapSighashType::Default;
 
-    let mut sighasher = SighashCache::new(tx);
-    let sighash = sighasher
-        .taproot_key_spend_signature_hash(input_index, &prevouts, sighash_type)
-        .expect("failed to construct sighash");
-    let msg = Message::from(sighash);
+        let mut sighasher = SighashCache::new(tx);
+        let sighash = sighasher
+            .taproot_key_spend_signature_hash(input_index, &prevouts, sighash_type)
+            .expect("failed to construct sighash");
+        let msg = Message::from(sighash);
 
-    // path 1: secp sig  -----------------------------
+        // path 1: secp sig  -----------------------------
 
-    // let grab the keys and produce new sig
-    let seckeys: Vec<musig2::secp::Scalar>
-        = if &alice.q_tik.pub_point < &bob.q_tik.pub_point {
-        vec![alice.q_tik.sec, bob.q_tik.sec]
-    } else {
-        vec![bob.q_tik.sec, alice.q_tik.sec]
-    };
-    // dbg!(&seckeys);
-    let agg_ctx = alice.q_tik.key_agg_context.clone().unwrap();
+        // let grab the keys and produce new sig
+        let seckeys: Vec<musig2::secp::Scalar>
+            = if &alice.q_tik.pub_point < &bob.q_tik.pub_point {
+            vec![alice.q_tik.sec, bob.q_tik.sec]
+        } else {
+            vec![bob.q_tik.sec, alice.q_tik.sec]
+        };
+        // dbg!(&seckeys);
+        let agg_ctx = alice.q_tik.key_agg_context.clone().unwrap();
 
-    let agg_sec: Scalar = alice.q_tik.key_agg_context.as_ref().unwrap().aggregated_seckey(seckeys)?;
-    let secp = Secp256k1::new();
-    let keypair = Keypair::from_seckey_slice(&secp, &agg_sec.serialize())?;
-    let tweaked: TweakedKeypair = keypair.tap_tweak(&secp, None);
-    let sig1 = secp.sign_schnorr(&msg, &keypair); // wsill end up in Bad Signature
-    // let sig1 = secp.sign_schnorr(&msg, &tweaked.to_inner());
-    // Update the witness stack.
-    let signature_secp = bitcoin::taproot::Signature { signature: sig1, sighash_type };
-    let path1pubpoint = Point::from_slice(&keypair.public_key().serialize())?;
-    let path1tweakpoint = Point::from_slice(&tweaked.to_inner().public_key().serialize())?;
+        let agg_sec: Scalar = alice.q_tik.key_agg_context.as_ref().unwrap().aggregated_seckey(seckeys)?;
+        let secp = Secp256k1::new();
+        let keypair = Keypair::from_seckey_slice(&secp, &agg_sec.serialize())?;
+        let tweaked: TweakedKeypair = keypair.tap_tweak(&secp, None);
+        let sig1 = secp.sign_schnorr(&msg, &keypair); // wsill end up in Bad Signature
+        // let sig1 = secp.sign_schnorr(&msg, &tweaked.to_inner());
+        // Update the witness stack.
+        let signature_secp = bitcoin::taproot::Signature { signature: sig1, sighash_type };
+        let path1pubpoint = Point::from_slice(&keypair.public_key().serialize())?;
+        let path1tweakpoint = Point::from_slice(&tweaked.to_inner().public_key().serialize())?;
 
-    // KeyAgg with no_merkle -------
-    // dbg!(&agg_ctx);
-    let old_d: Point = agg_ctx.aggregated_pubkey();
-    let d: Point = agg_ctx.clone()
-        .with_unspendable_taproot_tweak()?
-        .aggregated_pubkey();
-    // How to do the signature with Point d and secure key?
+        // KeyAgg with no_merkle -------
+        // dbg!(&agg_ctx);
+        let old_d: Point = agg_ctx.aggregated_pubkey();
+        let d: Point = agg_ctx.clone()
+            .with_unspendable_taproot_tweak()?
+            .aggregated_pubkey();
+        // How to do the signature with Point d and secure key?
 
-    // AggKey ----------------------------------------------
-    // dbg!(&alice.q_tik.key_agg_context.unwrap());
-    let aggkey = alice.q_tik.agg_point.unwrap();
+        // AggKey ----------------------------------------------
+        // dbg!(&alice.q_tik.key_agg_context.unwrap());
+        let aggkey = alice.q_tik.agg_point.unwrap();
 
-    // recalc ---------------------------
-    let ac = agg_ctx.pubkeys();
-    let pks = if ac[0] < ac[1] { [ac[0], ac[1]] } else { [ac[1], ac[0]] };
-    let newctx = KeyAggContext::new(pks)?;
-    dbg!(&newctx,&ac,&pks);
-    let newaggkey: Point = newctx.aggregated_pubkey();
-    let newctx2 = newctx.with_unspendable_taproot_tweak()?;
-    let newtweaked: Point = newctx2.aggregated_pubkey();
+        // recalc ---------------------------
+        let ac = agg_ctx.pubkeys();
+        let pks = if ac[0] < ac[1] { [ac[0], ac[1]] } else { [ac[1], ac[0]] };
+        let newctx = KeyAggContext::new(pks)?;
+        dbg!(&newctx,&ac,&pks);
+        let newaggkey: Point = newctx.aggregated_pubkey();
+        let newctx2 = newctx.with_unspendable_taproot_tweak()?;
+        let newtweaked: Point = newctx2.aggregated_pubkey();
 
-    assert_eq!(&newaggkey, &newctx2.aggregated_pubkey_untweaked(), "newaggkey not equal");
+        assert_eq!(&newaggkey, &newctx2.aggregated_pubkey_untweaked(), "newaggkey not equal");
 
 
-    // verify ------------------------------------------
-    dbg!(&path1pubpoint,&path1tweakpoint, &d, &aggkey, &old_d,&newtweaked,&newaggkey);
+        // verify ------------------------------------------
+        dbg!(&path1pubpoint,&path1tweakpoint, &d, &aggkey, &old_d,&newtweaked,&newaggkey);
 
-    assert_eq!(&d.serialize(), &tweaked.to_inner().public_key().serialize(), "pubkey not equal");
-    // assert_eq!(dser, my_agg_point.serialize(), "my pubkey not equal");
+        assert_eq!(&d.serialize(), &tweaked.to_inner().public_key().serialize(), "pubkey not equal");
+        // assert_eq!(dser, my_agg_point.serialize(), "my pubkey not equal");
 
-    // use signature and broadcast ------------------------------------------
-    *sighasher.witness_mut(input_index).unwrap() = Witness::p2tr_key_spend(&signature_secp);
+        // use signature and broadcast ------------------------------------------
+        *sighasher.witness_mut(input_index).unwrap() = Witness::p2tr_key_spend(&signature_secp);
 
-    // Get the signed transaction.
-    let tx = sighasher.into_transaction();
+        // Get the signed transaction.
+        let tx = sighasher.into_transaction();
 
-    let txid = alice.ctx.funds.client.transaction_broadcast(&tx)?;
-    dbg!(txid);
-    nigiri::tiktok();
-    Ok(())
+        let txid = alice.ctx.funds.client.transaction_broadcast(&tx)?;
+        dbg!(txid);
+        nigiri::tiktok();
+        Ok(())
+    }
 }

@@ -1,3 +1,6 @@
+// FIXME: Temporarily suppressed warnings in order to get a clean build:
+#![allow(warnings)]
+
 // Bitcoin and BDK-related imports
 
 use crate::protocol_musig_adaptor::MemWallet;
