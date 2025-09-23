@@ -1,5 +1,8 @@
 pub mod nigiri;
 pub mod protocol_musig_adaptor;
+pub mod psbt;
+mod swap;
+pub mod transaction;
 pub mod wallet_service;
 
 #[cfg(test)]

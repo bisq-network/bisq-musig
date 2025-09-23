@@ -12,14 +12,12 @@ drop-stream = "0.3.2"
 futures-util = { version = "0.3.31", default-features = false, features = ["alloc"] }
 guardian = "1.3.0"
 musig2 = { workspace = true }
-paste = "1.0.15"
 prost = "0.14.1"
 protocol = { path = "../protocol" }
 rand = { workspace = true }
-rand_chacha = { workspace = true }
 serde = { version = "1.0.226", features = ["derive"] }
 serde_with = { version = "3.14.1", features = ["base64", "hex"] }
-thiserror = "2.0.16"
+thiserror = { workspace = true }
 tokio = { version = "1.47.1", features = ["macros", "rt-multi-thread", "time"] }
 tokio-stream = "0.1.17"
 tonic = "0.14.2"
@@ -38,7 +36,7 @@ tonic-prost-build = "0.14.2"
 rpc = { path = ".", features = ["unimock"] }
 anyhow = { workspace = true }
 assert_cmd = "2.0.17"
-const_format = "0.2.34"
+const_format = { workspace = true }
 predicates = "3.1.3"
 
 [lints]

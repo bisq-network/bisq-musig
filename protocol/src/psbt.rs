@@ -4,8 +4,8 @@ use bdk_wallet::bitcoin::opcodes::all::{OP_PUSHBYTES_27, OP_RETURN};
 use bdk_wallet::bitcoin::taproot::Signature;
 use bdk_wallet::bitcoin::transaction::Version;
 use bdk_wallet::bitcoin::{
-    absolute, psbt, script, Address, Amount, FeeRate, Network, OutPoint, Psbt, ScriptBuf, Sequence,
-    TapSighashType, Transaction, TxIn, TxOut, Weight, Witness,
+    Address, Amount, FeeRate, Network, OutPoint, Psbt, ScriptBuf, Sequence, TapSighashType,
+    Transaction, TxIn, TxOut, Weight, Witness, absolute, psbt, script,
 };
 use rand::{RngCore, SeedableRng as _};
 use rand_chacha::ChaCha20Rng;
@@ -38,7 +38,7 @@ pub trait TradeWallet {
     fn sign_selected_inputs(&self, psbt: &mut Psbt, is_selected: &dyn Fn(&OutPoint) -> bool) -> Result<()>;
 }
 
-pub(crate) struct MockTradeWallet<Cs: Iterator<Item=TxOutput>, As: Iterator<Item=Address>> {
+struct MockTradeWallet<Cs: Iterator<Item=TxOutput>, As: Iterator<Item=Address>> {
     funding_coins: Cs,
     new_addresses: As,
     signature_map: BTreeMap<OutPoint, Signature>,
@@ -147,7 +147,7 @@ impl<Cs: Iterator<Item=TxOutput>, As: Iterator<Item=Address>> TradeWallet for Mo
 // When the half-PSBTs are merged, the placeholders are replaced with the actual payout UTXOs. The
 // injected randomness of the (trade-private) OP_RETURN datagrams ensures that a _deterministic_
 // shuffling of the merged deposit PSBT inputs & outputs is unpredictable to any 3rd party.
-pub fn half_deposit_placeholder_spk<R: RngCore + ?Sized>(rng: &mut R) -> ScriptBuf {
+pub(crate) fn half_deposit_placeholder_spk<R: RngCore + ?Sized>(rng: &mut R) -> ScriptBuf {
     let mut data = [0u8; 27];
     rng.fill_bytes(&mut data);
     script::Builder::new()
@@ -157,7 +157,7 @@ pub fn half_deposit_placeholder_spk<R: RngCore + ?Sized>(rng: &mut R) -> ScriptB
 }
 
 //noinspection SpellCheckingInspection
-pub(crate) fn mock_buyer_trade_wallet() -> impl TradeWallet {
+pub fn mock_buyer_trade_wallet() -> impl TradeWallet {
     let funding_coins = [
         TxOutput::mock_1_btc_coin("658654575bbbeb46e965bd9eb37fd3be550a7e0fa2d64bc5f218763155602300:0",
             "0000000000000000000000000000000000000000000000000000000000000001"),
@@ -178,7 +178,7 @@ pub(crate) fn mock_buyer_trade_wallet() -> impl TradeWallet {
 }
 
 //noinspection SpellCheckingInspection
-pub(crate) fn mock_seller_trade_wallet() -> impl TradeWallet {
+pub fn mock_seller_trade_wallet() -> impl TradeWallet {
     let funding_coins = [
         TxOutput::mock_1_btc_coin("4a5ecc72ec8db78f11c6785f560a13f6f32eac66d160a8157d30956695ccf523:0",
             "0000000000000000000000000000000000000000000000000000000000000002"),
@@ -211,11 +211,11 @@ fn signature_map(funding_coins: &[TxOutput], signatures: &[&'static str]) -> BTr
     funding_coins.iter().map(|o| o.outpoint).zip(signatures).collect()
 }
 
-pub fn prevout_set(psbt: &Psbt) -> BTreeSet<OutPoint> {
+pub(crate) fn prevout_set(psbt: &Psbt) -> BTreeSet<OutPoint> {
     psbt.unsigned_tx.input.iter().map(|input| input.previous_output).collect()
 }
 
-pub fn check_placeholder_output(psbt: &Psbt, expected_deposit: Amount) -> Result<()> {
+pub(crate) fn check_placeholder_output(psbt: &Psbt, expected_deposit: Amount) -> Result<()> {
     let Some(TxOut { value, script_pubkey }) = psbt.unsigned_tx.output.first() else {
         return Err(TransactionErrorKind::InvalidPsbt);
     };
@@ -226,7 +226,7 @@ pub fn check_placeholder_output(psbt: &Psbt, expected_deposit: Amount) -> Result
     Ok(())
 }
 
-pub fn check_receiver_outputs(psbt: &Psbt, trade_fee_receivers: &[Receiver]) -> Result<()> {
+pub(crate) fn check_receiver_outputs(psbt: &Psbt, trade_fee_receivers: &[Receiver]) -> Result<()> {
     if psbt.unsigned_tx.output.len() <= trade_fee_receivers.len() ||
         (0..trade_fee_receivers.len())
             .any(|i| psbt.unsigned_tx.output[i + 1] != (&trade_fee_receivers[i]).into()) {
@@ -284,7 +284,12 @@ fn is_well_formed(psbt: &Psbt) -> bool {
         psbt.unsigned_tx.input.iter().all(|i| i.script_sig.is_empty() && i.witness.is_empty())
 }
 
-pub fn merge_psbt_halves(buyer_psbt: &Psbt, seller_psbt: &Psbt, target_fee_rate: FeeRate, num_receivers: usize) -> Result<Psbt> {
+pub(crate) fn merge_psbt_halves(
+    buyer_psbt: &Psbt,
+    seller_psbt: &Psbt,
+    target_fee_rate: FeeRate,
+    num_receivers: usize,
+) -> Result<Psbt> {
     fn re<T: Clone>(dest: &mut Vec<T>, src: &[T]) -> Vec<T> {
         let mut cloned_src = Vec::with_capacity(src.len() + dest.len());
         cloned_src.extend(src.iter().cloned());
@@ -352,7 +357,7 @@ pub fn merge_psbt_halves(buyer_psbt: &Psbt, seller_psbt: &Psbt, target_fee_rate:
     Ok(merged_psbt)
 }
 
-pub fn set_payouts_and_shuffle(psbt: &mut Psbt, buyer_payout: &mut TxOutput, seller_payout: &mut TxOutput) {
+pub(crate) fn set_payouts_and_shuffle(psbt: &mut Psbt, buyer_payout: &mut TxOutput, seller_payout: &mut TxOutput) {
     let seed = psbt.unsigned_tx.compute_txid().to_byte_array();
     psbt.unsigned_tx.output[0] = buyer_payout.prevout.clone();
     psbt.unsigned_tx.output[1] = seller_payout.prevout.clone();

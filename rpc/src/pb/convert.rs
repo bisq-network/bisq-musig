@@ -6,6 +6,7 @@ use bdk_wallet::{Balance, LocalOutput};
 use musig2::secp::{MaybeScalar, Point, Scalar};
 use musig2::PubNonce;
 use prost::UnknownEnumValue;
+use protocol::transaction::Receiver;
 use tonic::{Result, Status};
 
 use crate::pb::musigrpc::{
@@ -18,7 +19,6 @@ use crate::protocol::{
     ExchangedAddresses, ExchangedNonces, ExchangedSigs, ProtocolErrorKind, Role,
 };
 use crate::storage::{ByRef, ByVal};
-use crate::transaction::Receiver;
 use crate::wallet::TxConfidence;
 
 pub(crate) mod hex {

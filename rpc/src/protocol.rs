@@ -12,17 +12,17 @@ use musig2::{
     AggNonce, KeyAggContext, LiftedSignature, NonceSeed, PartialSignature, PubNonce, SecNonce,
     SecNonceBuilder,
 };
-use std::collections::BTreeMap;
-use std::sync::{Arc, LazyLock, Mutex};
-use thiserror::Error;
-
-use crate::psbt::{mock_buyer_trade_wallet, mock_seller_trade_wallet, TradeWallet};
-use crate::storage::{ByOptVal, ByRef, ByVal, Storage, ValStorage};
-use crate::transaction::{
+use protocol::psbt::{mock_buyer_trade_wallet, mock_seller_trade_wallet, TradeWallet};
+use protocol::transaction::{
     DepositTxBuilder, ForwardingTxBuilder, NetworkParams as _, Receiver, ReceiverList,
     RedirectTxBuilder, WarningTxBuilder, WithWitnesses as _, ANCHOR_AMOUNT,
     SIGNED_REDIRECT_TX_BASE_WEIGHT,
 };
+use std::collections::BTreeMap;
+use std::sync::{Arc, LazyLock, Mutex};
+use thiserror::Error;
+
+use crate::storage::{ByOptVal, ByRef, ByVal, Storage, ValStorage};
 
 pub trait TradeModelStore {
     fn add_trade_model(&self, trade_model: TradeModel);
@@ -1002,5 +1002,5 @@ pub enum ProtocolErrorKind {
     DecodeLiftedSignature(#[from] musig2::errors::DecodeError<LiftedSignature>),
     ZeroScalar(#[from] musig2::secp::errors::ZeroScalarError),
     AddressParse(#[from] bdk_wallet::bitcoin::address::ParseError),
-    Transaction(#[from] crate::transaction::TransactionErrorKind),
+    Transaction(#[from] protocol::transaction::TransactionErrorKind),
 }

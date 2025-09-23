@@ -3,12 +3,12 @@ use bdk_wallet::bitcoin::amount::CheckedSum as _;
 use bdk_wallet::bitcoin::opcodes::all::{OP_CHECKSIG, OP_CSV, OP_DROP};
 use bdk_wallet::bitcoin::psbt::ExtractTxError;
 use bdk_wallet::bitcoin::sighash::{Prevouts, SighashCache};
-use bdk_wallet::bitcoin::taproot::{Signature, TaprootBuilder, TAPROOT_ANNEX_PREFIX};
+use bdk_wallet::bitcoin::taproot::{Signature, TAPROOT_ANNEX_PREFIX, TaprootBuilder};
 use bdk_wallet::bitcoin::transaction::Version;
 use bdk_wallet::bitcoin::{
-    absolute, relative, script, secp256k1, Address, Amount, FeeRate, Network, OutPoint, Psbt,
-    ScriptBuf, Sequence, TapNodeHash, TapSighash, TapSighashType, Transaction, TxIn, TxOut, Weight,
-    Witness, XOnlyPublicKey,
+    Address, Amount, FeeRate, Network, OutPoint, Psbt, ScriptBuf, Sequence, TapNodeHash,
+    TapSighash, TapSighashType, Transaction, TxIn, TxOut, Weight, Witness, XOnlyPublicKey,
+    absolute, relative, script, secp256k1,
 };
 use paste::paste;
 use rand::RngCore;
@@ -19,8 +19,8 @@ use std::sync::{Arc, LazyLock};
 use thiserror::Error;
 
 use crate::psbt::{
-    check_placeholder_output, check_receiver_outputs, merge_psbt_halves, prevout_set,
-    set_payouts_and_shuffle, TradeWallet,
+    TradeWallet, check_placeholder_output, check_receiver_outputs, merge_psbt_halves, prevout_set,
+    set_payouts_and_shuffle,
 };
 
 pub const REGTEST_WARNING_LOCK_TIME: LockTime = LockTime::from_height(5);
@@ -174,7 +174,7 @@ impl TxOutput {
         Self { outpoint, prevout, internal_key: None }
     }
 
-    pub fn estimated_input_weight(&self) -> Option<Weight> {
+    pub(crate) fn estimated_input_weight(&self) -> Option<Weight> {
         Some(Weight::from_wu(match (&self.prevout.script_pubkey, self.internal_key) {
             // Assumes default sighash type:
             // weight = 230 = 4 * (36 + 1 + 4) (non-witness part) + 2 + 64 (signature)
@@ -627,9 +627,9 @@ impl From<ExtractTxError> for TransactionErrorKind {
 
 #[cfg(test)]
 mod tests {
+    use bdk_wallet::bitcoin::Network;
     use bdk_wallet::bitcoin::consensus;
     use bdk_wallet::bitcoin::hex::test_hex_unwrap as hex;
-    use bdk_wallet::bitcoin::Network;
     use const_format::str_index;
     use rand::SeedableRng as _;
     use rand_chacha::ChaCha20Rng;
