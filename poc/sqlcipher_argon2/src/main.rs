@@ -3,7 +3,7 @@
 //! - Encrypted SQLite database using SQLCipher
 //! - Wallet data storage and retrieval
 
-use argon2::{password_hash::SaltString, Argon2, PasswordHasher};
+use argon2::{password_hash::SaltString,  Argon2};
 use rand::rngs::OsRng;
 use rusqlite::{params, Connection, Result as SqlResult};
 use std::fs;
@@ -107,14 +107,11 @@ impl EncryptedWallet {
         fs::write(&salt_path, salt.as_str())?;
 
         let argon2 = Argon2::default();
-        let password_hash = argon2
-            .hash_password(password.as_bytes(), &salt)
+        let mut key_bytes = [0u8; 32]; // 256-bit key
+        argon2
+            .hash_password_into(password.as_bytes(), salt.as_str().as_bytes(), &mut key_bytes)
             .map_err(|e| anyhow::anyhow!(e.to_string()))?;
-
-        // Extract the hash portion for SQLCipher key (64 hex chars)
-        let output = password_hash.hash.unwrap();
-        let key_bytes = output.as_bytes();
-        let key_hex = hex::encode(&key_bytes[..32]); // Use first 32 bytes (256 bits)
+        let key_hex = hex::encode(key_bytes);
 
         // Create encrypted database connection
         let conn = Connection::open(db_path)?;
@@ -151,12 +148,11 @@ impl EncryptedWallet {
         let salt =
             SaltString::from_b64(salt_str.as_str()).map_err(|e| anyhow::anyhow!(e.to_string()))?;
         let argon2 = Argon2::default();
-        let password_hash = argon2
-            .hash_password(password.as_bytes(), &salt)
+        let mut key_bytes = [0u8; 32]; // 256-bit key
+        argon2
+            .hash_password_into(password.as_bytes(), salt.as_str().as_bytes(), &mut key_bytes)
             .map_err(|e| anyhow::anyhow!(e.to_string()))?;
-        let output = password_hash.hash.unwrap();
-        let key_bytes = output.as_bytes();
-        let key_hex = hex::encode(&key_bytes[..32]);
+        let key_hex = hex::encode(key_bytes);
 
         // Open the encrypted database
         let conn = Connection::open(db_path)?;
