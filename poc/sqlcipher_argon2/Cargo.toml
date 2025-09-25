@@ -5,10 +5,12 @@ edition = "2021"
 
 [dependencies]
 rusqlite = { version = "0.37.0", features = ["bundled-sqlcipher"] }
-argon2 = { version = "0.5.3", default-features = false, features = ["alloc"]}
+argon2 = { version = "0.5.3", default-features = false, features = ["zeroize"] }
+base64 = "0.22.1"
 hex = "0.4"
 anyhow = "1.0"
 rand = "0.8.5"
+zeroize = "1.8.1"
 
 [profile.dev]
 # Faster compilation for development

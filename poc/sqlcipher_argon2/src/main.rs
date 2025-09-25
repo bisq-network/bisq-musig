@@ -3,18 +3,24 @@
 //! - Encrypted SQLite database using SQLCipher
 //! - Wallet data storage and retrieval
 
-use argon2::{password_hash::SaltString,  Argon2};
-use rand::rngs::OsRng;
+use argon2::{Argon2, Block, Params};
+use base64::{engine::general_purpose, Engine as _};
+use rand::{rngs::OsRng, RngCore};
 use rusqlite::{params, Connection, Result as SqlResult};
 use std::fs;
+use zeroize::Zeroize;
 
 fn main() -> anyhow::Result<()> {
     println!("SQLCipher + Argon2 POC");
     println!("================================================");
 
-    let db_path = "wallet.db";
-    let password = "super_secure_password_123";
+    run_demo("wallet.db", "super_secure_password_123")?;
 
+    println!("POC completed successfully!");
+    Ok(())
+}
+
+fn run_demo(db_path: &str, password: &str) -> anyhow::Result<()> {
     // Demo 1: Create table
     println!("Creating new encrypted wallet...");
     let wallet = EncryptedWallet::create_wallet(db_path, password)?;
@@ -23,13 +29,13 @@ fn main() -> anyhow::Result<()> {
     println!("Adding wallet data...");
     let wallet_id = wallet.add_wallet(
         "My Bitcoin Wallet",
-        "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about"
+        "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about",
     )?;
     println!("Added wallet with ID: {wallet_id}");
 
     let wallet_id2 = wallet.add_wallet(
         "My Ethereum Wallet",
-        "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon"
+        "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon",
     )?;
     println!("Added wallet with ID: {wallet_id2}");
 
@@ -60,14 +66,11 @@ fn main() -> anyhow::Result<()> {
 
     // Demo 6: Try wrong password (this should fail)
     println!("Testing wrong password...");
-    // drop(reopened_wallet);
-
     match EncryptedWallet::open_wallet(db_path, "wrong_password") {
         Ok(_) => println!("ERROR: Should have failed with wrong password!"),
         Err(e) => println!("Correctly rejected wrong password: {e}"),
     }
 
-    println!("POC completed successfully!");
     println!(
         "Database file '{}' contains encrypted wallet data.",
         wallet.db_path
@@ -103,32 +106,17 @@ impl EncryptedWallet {
         }
 
         // Derive encryption key from password using Argon2
-        let salt = SaltString::generate(&mut OsRng);
-        fs::write(&salt_path, salt.as_str())?;
+        let mut salt = [0u8; 16];
+        OsRng.fill_bytes(&mut salt);
+        fs::write(&salt_path, general_purpose::STANDARD.encode(salt))?;
 
-        let argon2 = Argon2::default();
-        let mut key_bytes = [0u8; 32]; // 256-bit key
-        argon2
-            .hash_password_into(password.as_bytes(), salt.as_str().as_bytes(), &mut key_bytes)
-            .map_err(|e| anyhow::anyhow!(e.to_string()))?;
-        let key_hex = hex::encode(key_bytes);
+        let key_hex = derive_key_from_password(password, &salt)?;
 
         // Create encrypted database connection
-        let conn = Connection::open(db_path)?;
-
-        // Set SQLCipher encryption key
-        conn.pragma_update(None, "key", format!("x'{key_hex}'"))?;
+        let conn = setup_database_connection(db_path, &key_hex)?;
 
         // Create wallet data table
-        conn.execute(
-            "CREATE TABLE wallets (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                name TEXT NOT NULL,
-                seed_phrase TEXT NOT NULL,
-                created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-            )",
-            [],
-        )?;
+        create_wallet_table(&conn)?;
 
         println!("Created encrypted wallet database at: {db_path}");
         println!("Salt stored at: {salt_path}");
@@ -143,22 +131,13 @@ impl EncryptedWallet {
     pub fn open_wallet(db_path: &str, password: &str) -> anyhow::Result<Self> {
         let salt_path = format!("{db_path}.salt");
         let salt_str = fs::read_to_string(&salt_path)?;
+        let salt = general_purpose::STANDARD.decode(salt_str.as_bytes())?;
 
         // Derive the correct key using stored salt
-        let salt =
-            SaltString::from_b64(salt_str.as_str()).map_err(|e| anyhow::anyhow!(e.to_string()))?;
-        let argon2 = Argon2::default();
-        let mut key_bytes = [0u8; 32]; // 256-bit key
-        argon2
-            .hash_password_into(password.as_bytes(), salt.as_str().as_bytes(), &mut key_bytes)
-            .map_err(|e| anyhow::anyhow!(e.to_string()))?;
-        let key_hex = hex::encode(key_bytes);
+        let key_hex = derive_key_from_password(password, &salt)?;
 
         // Open the encrypted database
-        let conn = Connection::open(db_path)?;
-
-        // Set the encryption key
-        conn.pragma_update(None, "key", format!("x'{key_hex}'"))?;
+        let conn = setup_database_connection(db_path, &key_hex)?;
 
         // Verify we can read the database by checking table count
         let table_count: i64 = conn.query_row(
@@ -232,4 +211,38 @@ impl EncryptedWallet {
 
         Ok(wallets)
     }
+}
+
+/// Derives a 256-bit key from a password and salt using Argon2.
+fn derive_key_from_password(password: &str, salt: &[u8]) -> anyhow::Result<String> {
+    let argon2 = Argon2::default();
+    let mut memory: Vec<Block> = vec![Block::default(); Params::DEFAULT_M_COST as usize];
+    let mut key_bytes = [0u8; 32]; // 256-bit key
+    argon2
+        .hash_password_into_with_memory(password.as_bytes(), salt, &mut key_bytes, &mut memory)
+        .map_err(|e| anyhow::anyhow!(e.to_string()))?;
+    let key_hex = hex::encode(key_bytes);
+    key_bytes.zeroize();
+    Ok(key_hex)
+}
+
+/// Sets up the database connection and applies the encryption key.
+fn setup_database_connection(db_path: &str, key_hex: &str) -> anyhow::Result<Connection> {
+    let conn = Connection::open(db_path)?;
+    conn.pragma_update(None, "key", format!("x'{key_hex}'"))?;
+    Ok(conn)
+}
+
+/// Creates the `wallets` table in the database.
+fn create_wallet_table(conn: &Connection) -> SqlResult<()> {
+    conn.execute(
+        "CREATE TABLE wallets (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL,
+            seed_phrase TEXT NOT NULL,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        )",
+        [],
+    )?;
+    Ok(())
 }
