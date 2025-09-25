@@ -1,7 +1,4 @@
-use bdk_electrum::{
-    electrum_client::{self, Client},
-    BdkElectrumClient,
-};
+mod chain_data_source;
 
 use bdk_wallet::{
     bitcoin::{bip32::Xpriv, hex::DisplayHex, Amount, Network},
@@ -19,8 +16,7 @@ use std::{
     vec,
 };
 
-#[allow(unused)]
-const ELECTRUM_URL: &str = "ssl://electrum.blockstream.info:6000";
+use crate::chain_data_source::ChainDataSource;
 
 pub trait BMPWalletPersister: WalletPersister {
     type DB;
@@ -125,7 +121,7 @@ impl BMPWalletPersister for Connection {
         let mut statement = db.prepare(&format!("SELECT key FROM {}", keys_table_name))?;
 
         let row_iter = statement.query_map([], |row| {
-            anyhow::Result::Ok((row.get::<_, String>("key")?,))
+            Ok((row.get::<_, String>("key")?,))
         })?;
 
         for row in row_iter {
@@ -174,7 +170,6 @@ impl BMPWalletPersister for Connection {
 #[allow(unused)]
 pub struct BMPWallet<P: BMPWalletPersister> {
     wallet: PersistedWallet<P>,
-    client: BdkElectrumClient<Client>,
     imported_keys: Vec<Scalar>,
     db: P,
 }
@@ -203,6 +198,8 @@ pub trait WalletApi {
     fn decrypt(password: &str);
 
     fn persist(&mut self) -> anyhow::Result<bool>;
+
+    fn sync_all(&mut self, data_source: &impl ChainDataSource) -> anyhow::Result<bool>;
 }
 
 impl WalletApi for BMPWallet<Connection> {
@@ -226,6 +223,42 @@ impl WalletApi for BMPWallet<Connection> {
             }
             None => Ok(false),
         }
+    }
+
+    fn sync_all(&mut self, data_source: &impl ChainDataSource) -> anyhow::Result<bool> {
+        // 1. Sync the main wallet
+        data_source.sync(&mut self.wallet)?;
+
+        // 2. Sync the imported keys, we can spawn threads later on to speed up the process
+        for key in self.imported_keys.clone() {
+            let pbk = key.base_point_mul();
+            let db_name = pbk.serialize_xonly().to_lower_hex_string();
+            let db_path = format!("bmp_{}.db3", db_name);
+
+            let mut db = Connection::open(db_path)?;
+            let imported_wallet_opt = Wallet::load()
+                .check_network(self.wallet.network())
+                .load_wallet(&mut db)?;
+
+            let mut imported_wallet = match imported_wallet_opt {
+                Some(wallet) => wallet,
+                None => {
+                    let descriptor = format!("tr({})", key.serialize().to_lower_hex_string());
+                    Wallet::create_single(descriptor)
+                        .network(self.wallet.network())
+                        .create_wallet(&mut db)?
+                }
+            };
+
+            data_source.sync(&mut imported_wallet)?;
+
+            // For having accurate Wallet::calculate_fee and Wallet::calculate_fee_rate
+            for utxo in imported_wallet.list_unspent() {
+                self.insert_txout(utxo.outpoint, utxo.txout);
+            }
+        }
+
+        self.persist()
     }
 
     fn new(network: Network) -> anyhow::Result<Self>
@@ -260,8 +293,6 @@ impl WalletApi for BMPWallet<Connection> {
             Some(Self::SEEDS_TABLE_NAME),
         )?;
 
-        let client = BdkElectrumClient::new(electrum_client::Client::new(ELECTRUM_URL)?);
-
         let mnemonic = Mnemonic::from_entropy(&seed)?;
         let words = mnemonic.to_string();
 
@@ -269,7 +300,6 @@ impl WalletApi for BMPWallet<Connection> {
 
         Ok(Self {
             wallet,
-            client,
             imported_keys: vec![],
             db,
         })
@@ -284,11 +314,9 @@ impl WalletApi for BMPWallet<Connection> {
         if let Some(wallet) = wallet_opt {
             let imported_keys =
                 Connection::load_imported_keys(&mut db, Self::IMPORTED_KEYS_TABLE_NAME)?;
-            let client = BdkElectrumClient::new(electrum_client::Client::new(ELECTRUM_URL)?);
 
             return Ok(Self {
                 wallet,
-                client,
                 imported_keys,
                 db,
             });
@@ -352,6 +380,7 @@ impl DerefMut for BMPWallet<Connection> {
 mod tests {
 
     use crate::{BMPWallet, WalletApi};
+    use bdk_electrum::{electrum_client, BdkElectrumClient};
     use bdk_wallet::{
         bitcoin::{hashes::Hash, AddressType, Amount, BlockHash, Network},
         chain::{self, BlockId},
@@ -485,6 +514,15 @@ mod tests {
         assert_eq!(loaded_wallet.imported_keys, bmp_wallet.imported_keys);
 
         drop(permit);
+        Ok(())
+    }
+
+    #[test]
+    fn test_sync() -> anyhow::Result<()> {
+        let mut bmp_wallet = BMPWallet::new(Network::Bitcoin)?;
+        let client = BdkElectrumClient::new(electrum_client::Client::new("URL")?);
+
+        let _ = bmp_wallet.sync_all(&client);
         Ok(())
     }
 }

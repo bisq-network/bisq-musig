@@ -41,7 +41,7 @@ If you want to get a feeling about this project, check it out and start the test
 , please see this section [Running Integration Tests](./adaptor/README.md).
 Accepted contributions are eligible for compensation, so you could earn money for your work.
 
-## Setting up precommit hooks
+## Setting up precommit hooks (Optional)
 
 The project comes bundle with a git pre-commit hook script that lints and format the code before each commits.
 To set it up you need to run the following command.
