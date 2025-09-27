@@ -376,11 +376,14 @@ impl DerefMut for BMPWallet<Connection> {
         &mut self.wallet
     }
 }
+
+#[cfg(test)]
+pub mod test_utils;
 #[cfg(test)]
 mod tests {
 
+    use crate::test_utils::MockedBDKElectrum;
     use crate::{BMPWallet, WalletApi};
-    use bdk_electrum::{electrum_client, BdkElectrumClient};
     use bdk_wallet::{
         bitcoin::{hashes::Hash, AddressType, Amount, BlockHash, Network},
         chain::{self, BlockId},
@@ -519,10 +522,24 @@ mod tests {
 
     #[test]
     fn test_sync() -> anyhow::Result<()> {
+        let permit = SEMAPHORE.acquire();
+        let _tmp_dir = tear_up();
+
         let mut bmp_wallet = BMPWallet::new(Network::Bitcoin)?;
-        let client = BdkElectrumClient::new(electrum_client::Client::new("URL")?);
+        let client = MockedBDKElectrum {};
+
+        println!("Wallet balance before syncing {}", bmp_wallet.balance());
+        assert_eq!(bmp_wallet.balance(), Amount::from_int_btc(0));
 
         let _ = bmp_wallet.sync_all(&client);
+
+        assert_eq!(bmp_wallet.balance(), Amount::from_int_btc(1));
+
+        println!("Wallet balance after syncing {}", bmp_wallet.balance());
+
+        println!("{:#?}", bmp_wallet.tx_graph());
+
+        drop(permit);
         Ok(())
     }
 }
