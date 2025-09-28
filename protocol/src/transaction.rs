@@ -619,6 +619,8 @@ pub enum TransactionErrorKind {
     SigFromSlice(#[from] bdk_wallet::bitcoin::taproot::SigFromSliceError),
     Psbt(#[from] bdk_wallet::bitcoin::psbt::Error),
     ExtractTx(#[from] Box<ExtractTxError>),
+    CreateTx(#[from] bdk_wallet::error::CreateTxError),
+    Signer(#[from] bdk_wallet::signer::SignerError),
 }
 
 impl From<ExtractTxError> for TransactionErrorKind {

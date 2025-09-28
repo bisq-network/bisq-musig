@@ -7,6 +7,7 @@ use bdk_wallet::bitcoin::{
     Address, Amount, FeeRate, Network, OutPoint, Psbt, ScriptBuf, Sequence, TapSighashType,
     Transaction, TxIn, TxOut, Weight, Witness, absolute, psbt, script,
 };
+use bdk_wallet::{KeychainKind, TxOrdering, Wallet};
 use rand::{RngCore, SeedableRng as _};
 use rand_chacha::ChaCha20Rng;
 use std::collections::{BTreeMap, BTreeSet};
@@ -126,34 +127,13 @@ impl<Cs: Iterator<Item=TxOutput>, As: Iterator<Item=Address>> TradeWallet for Mo
         for (input, TxIn { previous_output, .. })
         in psbt.inputs.iter_mut().zip(&psbt.unsigned_tx.input) {
             if is_selected(previous_output) {
-                let signature = input.tap_key_sig.insert(*self.signature_map.get(previous_output)
-                    .ok_or(TransactionErrorKind::MissingSignature)?);
+                let signature = self.signature_map.get(previous_output)
+                    .ok_or(TransactionErrorKind::MissingSignature)?;
                 input.final_script_witness = Some(Witness::p2tr_key_spend(signature));
             }
         }
         Ok(())
     }
-}
-
-// The outputs of each trader's half-deposit PSBT consists of a temporary OP_RETURN placeholder with
-// a 27-byte random datagram, burning their trade deposit, followed by any fee receivers(s) in the
-// case of the seller (who the Rust side shall deem responsible for paying the trade fees), followed
-// by optional change output(s).
-//
-// A 27-byte-length datagram is chosen to make the estimated weights of the signed half-deposit
-// PSBTs sum to 2 wu more than the final signed deposit tx weight. (Attaining an exact match is not
-// possible, due to the 4 wu granularity of non-witness part of the tx.)
-//
-// When the half-PSBTs are merged, the placeholders are replaced with the actual payout UTXOs. The
-// injected randomness of the (trade-private) OP_RETURN datagrams ensures that a _deterministic_
-// shuffling of the merged deposit PSBT inputs & outputs is unpredictable to any 3rd party.
-pub(crate) fn half_deposit_placeholder_spk<R: RngCore + ?Sized>(rng: &mut R) -> ScriptBuf {
-    let mut data = [0u8; 27];
-    rng.fill_bytes(&mut data);
-    script::Builder::new()
-        .push_opcode(OP_RETURN)
-        .push_slice(data)
-        .into_script()
 }
 
 //noinspection SpellCheckingInspection
@@ -209,6 +189,109 @@ fn signature_map(funding_coins: &[TxOutput], signatures: &[&'static str]) -> BTr
         sighash_type: TapSighashType::Default,
     });
     funding_coins.iter().map(|o| o.outpoint).zip(signatures).collect()
+}
+
+impl TradeWallet for Wallet {
+    fn network(&self) -> Network { self.network() }
+
+    fn new_address(&mut self) -> Result<Address> {
+        Ok(self.next_unused_address(KeychainKind::External).address)
+    }
+
+    fn create_half_deposit_psbt(
+        &mut self,
+        deposit_amount: Amount,
+        fee_rate: FeeRate,
+        trade_fee_receivers: &[Receiver],
+        rng: &mut dyn RngCore,
+    ) -> Result<Psbt> {
+        let mut builder = self.build_tx();
+        builder
+            .ordering(TxOrdering::Untouched)
+            .nlocktime(absolute::LockTime::ZERO)
+            .fee_rate(fee_rate)
+            .add_recipient(half_deposit_placeholder_spk(rng), deposit_amount);
+        for receiver in trade_fee_receivers {
+            builder.add_recipient(receiver.address.script_pubkey(), receiver.amount);
+        }
+        let mut psbt = builder.finish()?;
+        // Calculate tx fee overpay unconditionally, as this performs additional checks on the PSBT:
+        let overpay_msat: u64 = half_psbt_fee_overpay_msat(&psbt, fee_rate)
+            .ok_or(TransactionErrorKind::Overflow)?
+            .try_into()
+            .map_err(|_| TransactionErrorKind::InvalidPsbt)?;
+        let change_output_index = 1 + trade_fee_receivers.len();
+        if psbt.unsigned_tx.output.len() > change_output_index {
+            // Correct any tx fee overpay due to overly conservative input witness size estimation
+            // by BDK (as each witness is assumed to potentially have a non-default sighash type in
+            // the case of p2tr and not grind for low R in the case of p2wpkh), and also due to the
+            // fact that each would-be-signed half-deposit PSBT is 1 wu bigger than ideal.
+            let overpay = Amount::from_sat(overpay_msat / 1000);
+            psbt.unsigned_tx.output[change_output_index].value += overpay;
+        }
+        psbt.redact_sensitive_fields();
+        Ok(psbt)
+    }
+
+    fn sign_selected_inputs(&self, psbt: &mut Psbt, is_selected: &dyn Fn(&OutPoint) -> bool) -> Result<()> {
+        if !is_well_formed(psbt) {
+            return Err(TransactionErrorKind::InvalidPsbt);
+        }
+        let mut psbt_copy = psbt.clone();
+        self.sign(&mut psbt_copy, bdk_wallet::SignOptions::default())?;
+        for i in 0..psbt.inputs.len() {
+            if is_selected(&psbt.unsigned_tx.input[i].previous_output) {
+                psbt.inputs[i].final_script_sig = psbt_copy.inputs[i].final_script_sig.take();
+                psbt.inputs[i].final_script_witness = psbt_copy.inputs[i].final_script_witness.take();
+            }
+        }
+        Ok(())
+    }
+}
+
+trait Redact {
+    fn redact_sensitive_fields(&mut self);
+}
+
+impl Redact for Psbt {
+    fn redact_sensitive_fields(&mut self) {
+        self.inputs.iter_mut().for_each(psbt::Input::redact_sensitive_fields);
+        self.outputs.iter_mut().for_each(psbt::Output::redact_sensitive_fields);
+    }
+}
+
+impl Redact for psbt::Input {
+    fn redact_sensitive_fields(&mut self) {
+        self.tap_key_origins.clear();
+    }
+}
+
+impl Redact for psbt::Output {
+    fn redact_sensitive_fields(&mut self) {
+        self.tap_key_origins.clear();
+        self.tap_internal_key = None;
+    }
+}
+
+// The outputs of each trader's half-deposit PSBT consists of a temporary OP_RETURN placeholder with
+// a 27-byte random datagram, burning their trade deposit, followed by any fee receivers(s) in the
+// case of the seller (who the Rust side shall deem responsible for paying the trade fees), followed
+// by optional change output(s).
+//
+// A 27-byte-length datagram is chosen to make the estimated weights of the signed half-deposit
+// PSBTs sum to 2 wu more than the final signed deposit tx weight. (Attaining an exact match is not
+// possible, due to the 4 wu granularity of non-witness part of the tx.)
+//
+// When the half-PSBTs are merged, the placeholders are replaced with the actual payout UTXOs. The
+// injected randomness of the (trade-private) OP_RETURN datagrams ensures that a _deterministic_
+// shuffling of the merged deposit PSBT inputs & outputs is unpredictable to any 3rd party.
+pub(crate) fn half_deposit_placeholder_spk<R: RngCore + ?Sized>(rng: &mut R) -> ScriptBuf {
+    let mut data = [0u8; 27];
+    rng.fill_bytes(&mut data);
+    script::Builder::new()
+        .push_opcode(OP_RETURN)
+        .push_slice(data)
+        .into_script()
 }
 
 pub(crate) fn prevout_set(psbt: &Psbt) -> BTreeSet<OutPoint> {
@@ -372,4 +455,51 @@ pub(crate) fn set_payouts_and_shuffle(psbt: &mut Psbt, buyer_payout: &mut TxOutp
 
     let txid = psbt.unsigned_tx.compute_txid();
     [buyer_payout.outpoint.txid, seller_payout.outpoint.txid] = [txid; 2];
+}
+
+#[cfg(test)]
+mod tests {
+    use bdk_wallet::psbt::PsbtUtils as _;
+    use bdk_wallet::test_utils;
+
+    use super::*;
+
+    //noinspection SpellCheckingInspection
+    #[test]
+    fn test_bdk_trade_wallet() -> Result<()> {
+        let descriptor = test_utils::get_test_tr_single_sig_xprv();
+        let mut wallet = test_utils::get_funded_wallet_single(descriptor).0;
+        let mut rng = rand::rng();
+
+        let deposit_amount = Amount::from_sat(40_000);
+        let fee_rate = FeeRate::from_sat_per_vb_unchecked(10);
+        let receiver_address = "bcrt1qwk6p86mzqmstcsg99qlu2mhsp3766u68jktv6k"
+            .parse::<Address<_>>()?.require_network(Network::Regtest)?;
+        let trade_fee_receivers = [
+            Receiver { address: receiver_address, amount: Amount::from_sat(5_000) }
+        ];
+
+        // Create a test half-deposit PSBT with one 50_000 sat input, one 40_000 sat OP_RETURN
+        // output, one 5_000 sat trade fee output and one change output.
+        let mut psbt = wallet.create_half_deposit_psbt(deposit_amount, fee_rate, &trade_fee_receivers, &mut rng)?;
+        assert_eq!([40_000, 5_000, 3_202], psbt.unsigned_tx.output.first_chunk().unwrap().clone()
+            .map(|o| o.value.to_sat()));
+
+        let overpay_msat = half_psbt_fee_overpay_msat(&psbt, fee_rate).unwrap();
+        assert!((0..1000).contains(&overpay_msat));
+
+        // (The PSBT halves would not ever be signed in production, only the merged and shuffled
+        // Deposit Tx resulting from them.)
+        wallet.sign_selected_inputs(&mut psbt, &|_| true)?;
+
+        let fee_amount = psbt.fee_amount().unwrap();
+        let actual_weight = psbt.extract_tx()?.weight();
+        // The ideal weights of each would-be-signed deposit PSBT half are 1 wu less than their
+        // actual signed tx weights. They sum exactly to the weight of the final signed Deposit Tx
+        // and should accordingly each give rise to the target fee rate (10 sat/vB in this case).
+        let ideal_weight = actual_weight - Weight::from_wu(1);
+        assert!(fee_rate * actual_weight > fee_amount);
+        assert_eq!(fee_rate * ideal_weight, fee_amount);
+        Ok(())
+    }
 }
