@@ -230,6 +230,8 @@ impl WalletApi for BMPWallet<Connection> {
         // 1. Sync the main wallet
         data_source.sync(&mut self.wallet)?;
 
+        let mut final_imported_balance = Balance::default();
+
         // 2. Sync the imported keys, we can spawn threads later on to speed up the process
         for key in self.imported_keys.clone() {
 
@@ -257,13 +259,17 @@ impl WalletApi for BMPWallet<Connection> {
 
             data_source.sync(&mut imported_wallet)?;
 
-            self.imported_balance = self.imported_balance.clone() + imported_wallet.balance();
+            final_imported_balance = final_imported_balance + imported_wallet.balance();
 
             // For having accurate Wallet::calculate_fee and Wallet::calculate_fee_rate
             for utxo in imported_wallet.list_unspent() {
                 self.insert_txout(utxo.outpoint, utxo.txout);
             }
+
+            imported_wallet.persist(&mut db)?;
         }
+
+        self.imported_balance = final_imported_balance;
 
         self.persist()
     }
@@ -577,6 +583,7 @@ mod tests {
         assert_eq!(bmp_wallet.balance(), Amount::from_int_btc(3));
 
         println!("Wallet balance after syncing {}", bmp_wallet.balance());
+
         drop(permit);
         Ok(())
     }

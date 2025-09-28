@@ -19,14 +19,14 @@ impl ChainDataSource for BdkElectrumClient<Client> {
     const RECOVERY_HEIGHT: usize = 190_000;
 
     fn sync(&self, persister: &mut PersistedWallet<impl BMPWalletPersister>) -> anyhow::Result<()> {
-        let request = persister.start_full_scan();
-        let updates = self
-            .full_scan(request, Self::STOP_GAP, Self::BATCH_SIZE, false)
-            .expect("Should be able to start full scan request");
-
         // Populate the electrum client's transaction cache so it doesn't redownload transaction we
         // already have.
         self.populate_tx_cache(persister.tx_graph().full_txs().map(|tx_node| tx_node.tx));
+        let request = persister.start_full_scan();
+
+        let updates = self
+            .full_scan(request, Self::STOP_GAP, Self::BATCH_SIZE, false)
+            .expect("Should be able to start full scan request");
 
         persister.apply_update(updates)?;
 

@@ -40,7 +40,7 @@ impl ChainDataSource for MockedBDKElectrum {
             },
         );
 
-        receive_output_in_latest_block(persister, Amount::from_int_btc(1));
+        receive_output_in_latest_block(persister, Amount::ONE_BTC);
 
         Ok(())
     }
