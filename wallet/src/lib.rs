@@ -232,7 +232,9 @@ impl WalletApi for BMPWallet<Connection> {
 
         let mut final_imported_balance = Balance::default();
 
-        // 2. Sync the imported keys, we can spawn threads later on to speed up the process
+        // 2. Sync the imported keys
+        // @TODO: we can spawn threads later on to speed up the process
+
         for key in self.imported_keys.clone() {
 
             let pbk = key.base_point_mul();
@@ -253,7 +255,7 @@ impl WalletApi for BMPWallet<Connection> {
                     
                     Wallet::create_single(descriptor)
                         .network(self.wallet.network())
-                        .create_wallet(&mut db).unwrap()
+                        .create_wallet(&mut db)?
                 }
             };
 
@@ -428,7 +430,7 @@ mod tests {
 
     #[test]
     fn test_create_wallet() -> anyhow::Result<()> {
-        let permit = SEMAPHORE.acquire();
+        let _permit = SEMAPHORE.acquire();
         let _tmp_dir = tear_up();
 
         let mut bmp_wallet = BMPWallet::new(Network::Regtest)?;
@@ -457,14 +459,12 @@ mod tests {
         );
 
         assert_ne!(new_receiving_addr, receiving_addr);
-
-        drop(permit);
         Ok(())
     }
 
     #[test]
     fn test_load_wallet() -> anyhow::Result<()> {
-        let permit = SEMAPHORE.acquire();
+        let _permit = SEMAPHORE.acquire();
         let _tmp_dir = tear_up();
 
         let stored_seed: String;
@@ -505,14 +505,12 @@ mod tests {
 
         // After reloading with previously used address make sure the next generated one is different
         assert_ne!(new_receiving_addr, last_generated_addr);
-
-        drop(permit);
         Ok(())
     }
 
     #[test]
     fn test_imported_keys() -> anyhow::Result<()> {
-        let permit = SEMAPHORE.acquire();
+        let _permit = SEMAPHORE.acquire();
         let _tmp_dir = tear_up();
 
         let mut bmp_wallet = BMPWallet::new(Network::Regtest)?;
@@ -530,14 +528,12 @@ mod tests {
         let loaded_wallet = BMPWallet::load_wallet(Network::Regtest)?;
 
         assert_eq!(loaded_wallet.imported_keys, bmp_wallet.imported_keys);
-
-        drop(permit);
         Ok(())
     }
 
     #[test]
     fn test_sync() -> anyhow::Result<()> {
-        let permit = SEMAPHORE.acquire();
+        let _permit = SEMAPHORE.acquire();
         let _tmp_dir = tear_up();
 
         let mut bmp_wallet = BMPWallet::new(Network::Bitcoin)?;
@@ -553,14 +549,12 @@ mod tests {
         println!("Wallet balance after syncing {}", bmp_wallet.balance());
 
         println!("{:#?}", bmp_wallet.tx_graph());
-
-        drop(permit);
         Ok(())
     }
 
     #[test]
     fn test_sync_with_imported_keys() -> anyhow::Result<()> {
-        let permit = SEMAPHORE.acquire();
+        let _permit = SEMAPHORE.acquire();
         let _tmp_dir = tear_up();
 
         let pk1 = new_private_key();
@@ -583,8 +577,6 @@ mod tests {
         assert_eq!(bmp_wallet.balance(), Amount::from_int_btc(3));
 
         println!("Wallet balance after syncing {}", bmp_wallet.balance());
-
-        drop(permit);
         Ok(())
     }
 }
