@@ -12,4 +12,4 @@ It currently provides the following features:
 
 `cd wallet`
 
-`cargo test -- --test-threads=1`
+`cargo test`
