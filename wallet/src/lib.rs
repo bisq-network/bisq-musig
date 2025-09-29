@@ -1,7 +1,4 @@
-use bdk_electrum::{
-    electrum_client::{self, Client},
-    BdkElectrumClient,
-};
+mod chain_data_source;
 
 use bdk_wallet::{
     bitcoin::{bip32::Xpriv, hex::DisplayHex, Amount, Network},
@@ -9,7 +6,7 @@ use bdk_wallet::{
     keys::bip39::Mnemonic,
     rusqlite::{self, named_params, Connection},
     template::{Bip86, DescriptorTemplate},
-    AddressInfo, ChangeSet, KeychainKind, PersistedWallet, Wallet, WalletPersister,
+    AddressInfo, Balance, ChangeSet, KeychainKind, PersistedWallet, Wallet, WalletPersister,
 };
 
 use rand::RngCore;
@@ -19,8 +16,7 @@ use std::{
     vec,
 };
 
-#[allow(unused)]
-const ELECTRUM_URL: &str = "ssl://electrum.blockstream.info:6000";
+use crate::chain_data_source::ChainDataSource;
 
 pub trait BMPWalletPersister: WalletPersister {
     type DB;
@@ -125,7 +121,7 @@ impl BMPWalletPersister for Connection {
         let mut statement = db.prepare(&format!("SELECT key FROM {}", keys_table_name))?;
 
         let row_iter = statement.query_map([], |row| {
-            anyhow::Result::Ok((row.get::<_, String>("key")?,))
+            Ok((row.get::<_, String>("key")?,))
         })?;
 
         for row in row_iter {
@@ -174,8 +170,8 @@ impl BMPWalletPersister for Connection {
 #[allow(unused)]
 pub struct BMPWallet<P: BMPWalletPersister> {
     wallet: PersistedWallet<P>,
-    client: BdkElectrumClient<Client>,
     imported_keys: Vec<Scalar>,
+    imported_balance: Balance,
     db: P,
 }
 
@@ -203,6 +199,8 @@ pub trait WalletApi {
     fn decrypt(password: &str);
 
     fn persist(&mut self) -> anyhow::Result<bool>;
+
+    fn sync_all(&mut self, data_source: &impl ChainDataSource) -> anyhow::Result<bool>;
 }
 
 impl WalletApi for BMPWallet<Connection> {
@@ -226,6 +224,56 @@ impl WalletApi for BMPWallet<Connection> {
             }
             None => Ok(false),
         }
+    }
+
+    fn sync_all(&mut self, data_source: &impl ChainDataSource) -> anyhow::Result<bool> {
+        // 1. Sync the main wallet
+        data_source.sync(&mut self.wallet)?;
+
+        let mut final_imported_balance = Balance::default();
+
+        // 2. Sync the imported keys
+        // @TODO: we can spawn threads later on to speed up the process
+
+        for key in self.imported_keys.clone() {
+
+            let pbk = key.base_point_mul();
+            let pubk = pbk.serialize_xonly().to_lower_hex_string();
+            let db_path = format!("bmp_{}.db3", pubk);
+
+            let mut db = Connection::open(db_path)?;
+            let imported_wallet_opt = Wallet::load()
+                .check_network(self.wallet.network())
+                .extract_keys()
+                .load_wallet(&mut db)?;
+
+            let mut imported_wallet = match imported_wallet_opt {
+                Some(wallet) => wallet,
+                None => {
+
+                    let descriptor = format!("tr({})", pubk);
+                    
+                    Wallet::create_single(descriptor)
+                        .network(self.wallet.network())
+                        .create_wallet(&mut db)?
+                }
+            };
+
+            data_source.sync(&mut imported_wallet)?;
+
+            final_imported_balance = final_imported_balance + imported_wallet.balance();
+
+            // For having accurate Wallet::calculate_fee and Wallet::calculate_fee_rate
+            for utxo in imported_wallet.list_unspent() {
+                self.insert_txout(utxo.outpoint, utxo.txout);
+            }
+
+            imported_wallet.persist(&mut db)?;
+        }
+
+        self.imported_balance = final_imported_balance;
+
+        self.persist()
     }
 
     fn new(network: Network) -> anyhow::Result<Self>
@@ -260,8 +308,6 @@ impl WalletApi for BMPWallet<Connection> {
             Some(Self::SEEDS_TABLE_NAME),
         )?;
 
-        let client = BdkElectrumClient::new(electrum_client::Client::new(ELECTRUM_URL)?);
-
         let mnemonic = Mnemonic::from_entropy(&seed)?;
         let words = mnemonic.to_string();
 
@@ -269,8 +315,8 @@ impl WalletApi for BMPWallet<Connection> {
 
         Ok(Self {
             wallet,
-            client,
             imported_keys: vec![],
+            imported_balance: Balance::default(),
             db,
         })
     }
@@ -284,12 +330,11 @@ impl WalletApi for BMPWallet<Connection> {
         if let Some(wallet) = wallet_opt {
             let imported_keys =
                 Connection::load_imported_keys(&mut db, Self::IMPORTED_KEYS_TABLE_NAME)?;
-            let client = BdkElectrumClient::new(electrum_client::Client::new(ELECTRUM_URL)?);
 
             return Ok(Self {
                 wallet,
-                client,
                 imported_keys,
+                imported_balance: Balance::default(),
                 db,
             });
         }
@@ -314,7 +359,7 @@ impl WalletApi for BMPWallet<Connection> {
     }
 
     fn balance(&self) -> Amount {
-        self.wallet.balance().trusted_spendable()
+        (self.imported_balance.clone() + self.wallet.balance()).trusted_spendable()
     }
 
     fn get_seed_phrase(&self) -> anyhow::Result<String> {
@@ -348,9 +393,13 @@ impl DerefMut for BMPWallet<Connection> {
         &mut self.wallet
     }
 }
+
+#[cfg(test)]
+pub mod test_utils;
 #[cfg(test)]
 mod tests {
 
+    use crate::test_utils::MockedBDKElectrum;
     use crate::{BMPWallet, WalletApi};
     use bdk_wallet::{
         bitcoin::{hashes::Hash, AddressType, Amount, BlockHash, Network},
@@ -381,10 +430,10 @@ mod tests {
 
     #[test]
     fn test_create_wallet() -> anyhow::Result<()> {
-        let permit = SEMAPHORE.acquire();
+        let _permit = SEMAPHORE.acquire();
         let _tmp_dir = tear_up();
 
-        let mut bmp_wallet = BMPWallet::new(Network::Bitcoin)?;
+        let mut bmp_wallet = BMPWallet::new(Network::Regtest)?;
         assert_eq!(bmp_wallet.imported_keys.len(), 0);
         assert_eq!(bmp_wallet.balance(), Amount::from_sat(0));
 
@@ -410,14 +459,12 @@ mod tests {
         );
 
         assert_ne!(new_receiving_addr, receiving_addr);
-
-        drop(permit);
         Ok(())
     }
 
     #[test]
     fn test_load_wallet() -> anyhow::Result<()> {
-        let permit = SEMAPHORE.acquire();
+        let _permit = SEMAPHORE.acquire();
         let _tmp_dir = tear_up();
 
         let stored_seed: String;
@@ -458,14 +505,12 @@ mod tests {
 
         // After reloading with previously used address make sure the next generated one is different
         assert_ne!(new_receiving_addr, last_generated_addr);
-
-        drop(permit);
         Ok(())
     }
 
     #[test]
     fn test_imported_keys() -> anyhow::Result<()> {
-        let permit = SEMAPHORE.acquire();
+        let _permit = SEMAPHORE.acquire();
         let _tmp_dir = tear_up();
 
         let mut bmp_wallet = BMPWallet::new(Network::Regtest)?;
@@ -483,8 +528,55 @@ mod tests {
         let loaded_wallet = BMPWallet::load_wallet(Network::Regtest)?;
 
         assert_eq!(loaded_wallet.imported_keys, bmp_wallet.imported_keys);
+        Ok(())
+    }
 
-        drop(permit);
+    #[test]
+    fn test_sync() -> anyhow::Result<()> {
+        let _permit = SEMAPHORE.acquire();
+        let _tmp_dir = tear_up();
+
+        let mut bmp_wallet = BMPWallet::new(Network::Bitcoin)?;
+        let client = MockedBDKElectrum {};
+
+        println!("Wallet balance before syncing {}", bmp_wallet.balance());
+        assert_eq!(bmp_wallet.balance(), Amount::from_int_btc(0));
+
+        let _ = bmp_wallet.sync_all(&client);
+
+        assert_eq!(bmp_wallet.balance(), Amount::from_int_btc(1));
+
+        println!("Wallet balance after syncing {}", bmp_wallet.balance());
+
+        println!("{:#?}", bmp_wallet.tx_graph());
+        Ok(())
+    }
+
+    #[test]
+    fn test_sync_with_imported_keys() -> anyhow::Result<()> {
+        let _permit = SEMAPHORE.acquire();
+        let _tmp_dir = tear_up();
+
+        let pk1 = new_private_key();
+        let pk2 = new_private_key();
+
+        let mut bmp_wallet = BMPWallet::new(Network::Regtest)?;
+
+        bmp_wallet.import_private_key(pk1);
+        bmp_wallet.import_private_key(pk2);
+
+        assert_eq!(bmp_wallet.imported_keys.len(), 2);
+
+        let client = MockedBDKElectrum {};
+
+        println!("Wallet balance before syncing {}", bmp_wallet.balance());
+        assert_eq!(bmp_wallet.balance(), Amount::from_int_btc(0));
+
+        let _ = bmp_wallet.sync_all(&client);
+
+        assert_eq!(bmp_wallet.balance(), Amount::from_int_btc(3));
+
+        println!("Wallet balance after syncing {}", bmp_wallet.balance());
         Ok(())
     }
 }
