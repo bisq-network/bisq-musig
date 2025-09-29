@@ -1,0 +1,24 @@
+[package]
+name = "sqlcipher-argon2-poc"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+rusqlite = { version = "0.37.0", features = ["bundled-sqlcipher"] }
+argon2 = { version = "0.5.3", default-features = false, features = ["zeroize"] }
+base64 = "0.22.1"
+hex = "0.4"
+anyhow = "1.0"
+rand = "0.8.5"
+zeroize = "1.8.1"
+
+[profile.dev]
+# Faster compilation for development
+opt-level = 1
+
+[profile.release]
+# Security-focused release build
+opt-level = 3
+lto = true
+codegen-units = 1
+panic = "abort"
