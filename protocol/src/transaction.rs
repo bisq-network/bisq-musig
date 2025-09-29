@@ -3,26 +3,24 @@ use bdk_wallet::bitcoin::amount::CheckedSum as _;
 use bdk_wallet::bitcoin::opcodes::all::{OP_CHECKSIG, OP_CSV, OP_DROP};
 use bdk_wallet::bitcoin::psbt::ExtractTxError;
 use bdk_wallet::bitcoin::sighash::{Prevouts, SighashCache};
-use bdk_wallet::bitcoin::taproot::{Signature, TaprootBuilder, TAPROOT_ANNEX_PREFIX};
+use bdk_wallet::bitcoin::taproot::{Signature, TAPROOT_ANNEX_PREFIX, TaprootBuilder};
 use bdk_wallet::bitcoin::transaction::Version;
 use bdk_wallet::bitcoin::{
-    absolute, relative, script, secp256k1, Address, Amount, FeeRate, Network, OutPoint, Psbt,
-    ScriptBuf, Sequence, TapNodeHash, TapSighash, TapSighashType, Transaction, TxIn, TxOut, Weight,
-    Witness, XOnlyPublicKey,
+    Address, Amount, FeeRate, Network, OutPoint, Psbt, ScriptBuf, Sequence, TapNodeHash,
+    TapSighash, TapSighashType, Transaction, TxIn, TxOut, Weight, Witness, XOnlyPublicKey,
+    absolute, relative, script, secp256k1,
 };
 use paste::paste;
 use rand::RngCore;
 use relative::LockTime;
 use std::collections::BTreeSet;
-use std::error::Error as _;
 use std::str::FromStr as _;
 use std::sync::{Arc, LazyLock};
 use thiserror::Error;
-use tracing::warn;
 
 use crate::psbt::{
-    check_placeholder_output, check_receiver_outputs, merge_psbt_halves, prevout_set,
-    set_payouts_and_shuffle, TradeWallet,
+    TradeWallet, check_placeholder_output, check_receiver_outputs, merge_psbt_halves, prevout_set,
+    set_payouts_and_shuffle,
 };
 
 pub const REGTEST_WARNING_LOCK_TIME: LockTime = LockTime::from_height(5);
@@ -98,15 +96,8 @@ pub struct Receiver<V: NetworkValidation = NetworkChecked> {
 }
 
 impl Receiver<NetworkUnchecked> {
-    #[expect(clippy::unnecessary_wraps,
-    reason = "temporarily skipping errors to avoid breaking the Bisq2 client, until it is updated")]
     pub fn require_network(self, required: Network) -> Result<Receiver> {
-        let address = self.address.clone().require_network(required)
-            .unwrap_or_else(|e| {
-                warn!("Skipping {e}: {}", e.source().unwrap());
-                self.address.assume_checked()
-            });
-        Ok(Receiver { address, amount: self.amount })
+        Ok(Receiver { address: self.address.require_network(required)?, amount: self.amount })
     }
 }
 
@@ -172,14 +163,24 @@ macro_rules! make_getter_setter {
 }
 
 #[derive(Clone, Debug)]
-pub struct TxOutput(pub(crate) OutPoint, pub(crate) TxOut, pub(crate) Option<XOnlyPublicKey>);
+pub struct TxOutput {
+    pub outpoint: OutPoint,
+    pub prevout: TxOut,
+    pub(crate) internal_key: Option<XOnlyPublicKey>,
+}
 
 impl TxOutput {
-    pub fn estimated_input_weight(&self) -> Option<Weight> {
-        Some(Weight::from_wu(match (&self.1.script_pubkey, self.2) {
+    pub const fn new(outpoint: OutPoint, prevout: TxOut) -> Self {
+        Self { outpoint, prevout, internal_key: None }
+    }
+
+    pub(crate) fn estimated_input_weight(&self) -> Option<Weight> {
+        Some(Weight::from_wu(match (&self.prevout.script_pubkey, self.internal_key) {
             // Assumes default sighash type:
+            // weight = 230 = 4 * (36 + 1 + 4) (non-witness part) + 2 + 64 (signature)
             (s, Some(k)) if s.is_p2tr() && *s == Self::keyspend_only_spk(k) => 230,
             // Assumes low-R nonce grinding:
+            // weight = 272 = 4 * (36 + 1 + 4) (non-witness part) + 3 + 33 (pubkey) + 72 (signature)
             (s, None) if s.is_p2wpkh() => 272,
             // Other spk types are forbidden, as they lead to either tx malleability or an
             // arbitrarily long and unstructured witness program, or no standard spends:
@@ -190,10 +191,11 @@ impl TxOutput {
     pub(crate) fn mock_1_btc_coin(outpoint: &'static str, internal_key: &'static str) -> Self {
         let internal_key = XOnlyPublicKey::from_str(internal_key)
             .expect("for mocking only; assumed valid X-only pubkey hex str");
-        Self(outpoint.parse().expect("for mocking only; assumed valid outpoint str"), TxOut {
-            value: Amount::ONE_BTC,
-            script_pubkey: Self::keyspend_only_spk(internal_key),
-        }, Some(internal_key))
+        Self {
+            outpoint: outpoint.parse().expect("for mocking only; assumed valid outpoint str"),
+            prevout: TxOut { value: Amount::ONE_BTC, script_pubkey: Self::keyspend_only_spk(internal_key) },
+            internal_key: Some(internal_key),
+        }
     }
 
     fn keyspend_only_spk(internal_key: XOnlyPublicKey) -> ScriptBuf {
@@ -237,7 +239,7 @@ impl WithWitnesses for Transaction {
 
     fn find_key_spend_signature(&self, input: &TxOutput) -> Result<Signature> {
         for (input_index, TxIn { previous_output, .. }) in self.input.iter().enumerate() {
-            if previous_output == &input.0 {
+            if previous_output == &input.outpoint {
                 return self.key_spend_signature(input_index);
             }
         }
@@ -255,14 +257,14 @@ trait WithFixedInputs<const N: usize> {
             lock_time.to_sequence()
         };
         Ok(self.inputs()?.map(|input|
-            TxIn { previous_output: input.0, sequence, ..TxIn::default() }))
+            TxIn { previous_output: input.outpoint, sequence, ..TxIn::default() }))
     }
 
     fn key_spend_sighash(&self, tx: &Transaction, input_index: usize) -> Result<TapSighash> {
-        let prevouts = self.inputs()?.map(|input| &input.1);
+        let prevouts = self.inputs()?.map(|input| &input.prevout);
         let prevouts = Prevouts::All(&prevouts);
         let mut cache = SighashCache::new(tx);
-        Ok(cache.taproot_key_spend_signature_hash(input_index, &prevouts, TapSighashType::All)?)
+        Ok(cache.taproot_key_spend_signature_hash(input_index, &prevouts, TapSighashType::Default)?)
     }
 }
 
@@ -340,15 +342,15 @@ impl DepositTxBuilder {
         let mut psbt = merge_psbt_halves(buyer_psbt, seller_psbt, target_fee_rate, num_receivers)?;
 
         // Set the payout outputs of the PSBT and shuffle all its inputs and outputs.
-        let mut buyer_payout = TxOutput(OutPoint::null(), TxOut {
+        let mut buyer_payout = TxOutput::new(OutPoint::null(), TxOut {
             value: self.buyers_security_deposit()?.checked_add(*self.trade_amount()?)
                 .ok_or(TransactionErrorKind::Overflow)?,
             script_pubkey: self.buyer_payout_address()?.script_pubkey(),
-        }, None);
-        let mut seller_payout = TxOutput(OutPoint::null(), TxOut {
+        });
+        let mut seller_payout = TxOutput::new(OutPoint::null(), TxOut {
             value: *self.sellers_security_deposit()?,
             script_pubkey: self.seller_payout_address()?.script_pubkey(),
-        }, None);
+        });
         set_payouts_and_shuffle(&mut psbt, &mut buyer_payout, &mut seller_payout);
 
         // Initialize the computed fields.
@@ -422,7 +424,7 @@ impl WarningTxBuilder {
     pub fn compute_unsigned_tx(&mut self) -> Result<&mut Self> {
         let escrow_output = TxOut {
             value: Self::escrow_amount(
-                [self.buyer_input()?.1.value, self.seller_input()?.1.value],
+                [self.buyer_input()?.prevout.value, self.seller_input()?.prevout.value],
                 *self.fee_rate()?,
             ).ok_or(TransactionErrorKind::Overflow)?,
             script_pubkey: self.escrow_address()?.script_pubkey(),
@@ -444,7 +446,7 @@ impl WarningTxBuilder {
     pub fn escrow(&self) -> Result<TxOutput> {
         let txid = self.unsigned_tx()?.compute_txid();
         let output = self.unsigned_tx()?.output[0].clone();
-        Ok(TxOutput(OutPoint::new(txid, 0), output, None))
+        Ok(TxOutput::new(OutPoint::new(txid, 0), output))
     }
 
     pub fn buyer_input_sighash(&self) -> Result<TapSighash> {
@@ -552,7 +554,7 @@ impl ForwardingTxBuilder {
 
     pub fn compute_unsigned_tx(&mut self) -> Result<&mut Self> {
         let output = vec![TxOut {
-            value: Self::payout_amount(self.input()?.1.value, *self.fee_rate()?)
+            value: Self::payout_amount(self.input()?.prevout.value, *self.fee_rate()?)
                 .ok_or(TransactionErrorKind::Overflow)?,
             script_pubkey: self.payout_address()?.script_pubkey(),
         }];
@@ -617,6 +619,8 @@ pub enum TransactionErrorKind {
     SigFromSlice(#[from] bdk_wallet::bitcoin::taproot::SigFromSliceError),
     Psbt(#[from] bdk_wallet::bitcoin::psbt::Error),
     ExtractTx(#[from] Box<ExtractTxError>),
+    CreateTx(#[from] bdk_wallet::error::CreateTxError),
+    Signer(#[from] bdk_wallet::signer::SignerError),
 }
 
 impl From<ExtractTxError> for TransactionErrorKind {
@@ -625,9 +629,9 @@ impl From<ExtractTxError> for TransactionErrorKind {
 
 #[cfg(test)]
 mod tests {
+    use bdk_wallet::bitcoin::Network;
     use bdk_wallet::bitcoin::consensus;
     use bdk_wallet::bitcoin::hex::test_hex_unwrap as hex;
-    use bdk_wallet::bitcoin::Network;
     use const_format::str_index;
     use rand::SeedableRng as _;
     use rand_chacha::ChaCha20Rng;

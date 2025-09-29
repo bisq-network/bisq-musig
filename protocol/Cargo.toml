@@ -9,4 +9,14 @@ bdk_electrum = { workspace = true }
 bdk_wallet = { workspace = true }
 dotenv = "0.15.0"
 musig2 = { workspace = true }
+paste = "1.0.15"
 rand = { workspace = true }
+rand_chacha = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+bdk_wallet = { workspace = true, features = ["test-utils"] }
+const_format = { workspace = true }
+
+[lints]
+workspace = true
