@@ -1,22 +1,16 @@
 mod chain_data_source;
 
-use bdk_wallet::{
-    bitcoin::{bip32::Xpriv, hex::DisplayHex, Amount, Network},
-    chain::Merge,
-    keys::bip39::Mnemonic,
-    rusqlite::{self, named_params, Connection},
-    template::{Bip86, DescriptorTemplate},
-    AddressInfo, Balance, ChangeSet, KeychainKind, PersistedWallet, Wallet, WalletPersister,
-};
+use bdk_wallet::{bitcoin::{bip32::Xpriv, hex::DisplayHex, Amount, Network}, chain::Merge, keys::bip39::Mnemonic, rusqlite::{self, named_params, Connection}, template::{Bip86, DescriptorTemplate}, AddressInfo, Balance, ChangeSet, KeychainKind, PersistedWallet, TxOrdering, Wallet, WalletPersister};
 
+use crate::chain_data_source::ChainDataSource;
+use bdk_electrum::bdk_core::bitcoin::{Address, FeeRate, OutPoint, Psbt, ScriptBuf};
+use bdk_wallet::bitcoin::absolute;
 use rand::RngCore;
 use secp::Scalar;
 use std::{
     ops::{Deref, DerefMut},
     vec,
 };
-
-use crate::chain_data_source::ChainDataSource;
 
 pub trait BMPWalletPersister: WalletPersister {
     type DB;
@@ -368,6 +362,7 @@ impl WalletApi for BMPWallet<Connection> {
 
     // Import an external private from the HD wallet
     // After importing a rescan should be triggered
+    // TODO move this implementation to trait ProtocolWalletApi
     fn import_private_key(&mut self, pk: Scalar) {
         self.imported_keys.push(pk);
     }
@@ -393,12 +388,81 @@ impl DerefMut for BMPWallet<Connection> {
         &mut self.wallet
     }
 }
+/*
+The Protocol Wallet API is used by the protocol to create and sign transactions.
+It's the part of functionality being exposed only to the protocol.
+The protocol will see `ProtocolWalletApi` and the GUI will see `WalletApi`, both are implemented in the BMPWallet.
+ */
+pub trait ProtocolWalletApi {
+    fn network(&self) -> Network;
+
+    fn new_address(&mut self) -> anyhow::Result<Address>;
+
+    /* this creates a PSBT for use with the depositTx (but not limited to). You specify the receipients, consisting of the
+    deposit- (and trade-)amount and spk, and the trade_fee_outputs.
+    This method returns a PSBT with added inputs sufficient to pay the outputs and an optional change output.
+    NOTE: There might be no change output, if not needed.
+    The method guarantees that it won't reorder the outputs.
+     */
+    fn create_psbt(
+        &mut self,
+        recipients: Vec<(ScriptBuf, Amount)>,
+        fee_rate: FeeRate,
+    ) -> anyhow::Result<Psbt>;
+
+    fn sign_selected_inputs(&self, psbt: &mut Psbt, is_selected: &dyn Fn(&OutPoint) -> bool) -> anyhow::Result<()>;
+
+    // Import an external private from the HD wallet
+    // After importing a rescan should be triggered
+    fn import_private_key(&mut self, pk: Scalar);
+}
+
+/*
+This is a sample implementation, only for demonstration purpose.
+It doesn't make sense to implement the ProtocolWalletApi trait for Wallet, it should be implemented for BMPWallet.
+ */
+impl ProtocolWalletApi for Wallet {
+    fn network(&self) -> Network { self.network() }
+
+    fn new_address(&mut self) -> anyhow::Result<Address> {
+        Ok(self.next_unused_address(KeychainKind::External).address)
+    }
+
+
+    fn create_psbt(
+        &mut self,
+        recipients: Vec<(ScriptBuf, Amount)>,
+        fee_rate: FeeRate,
+    ) -> anyhow::Result<Psbt> {
+        let mut builder = self.build_tx();
+        builder
+            .ordering(TxOrdering::Untouched)
+            .nlocktime(absolute::LockTime::ZERO)
+            .fee_rate(fee_rate)
+            .set_recipients(recipients);
+        Ok(builder.finish()?)
+    }
+
+    fn sign_selected_inputs(&self, psbt: &mut Psbt, is_selected: &dyn Fn(&OutPoint) -> bool) -> anyhow::Result<()> {
+        self.sign(psbt, bdk_wallet::SignOptions::default())?;
+        for i in 0..psbt.inputs.len() {
+            if is_selected(&psbt.unsigned_tx.input[i].previous_output) {
+                psbt.inputs[i].final_script_sig = psbt.inputs[i].final_script_sig.take();
+                psbt.inputs[i].final_script_witness = psbt.inputs[i].final_script_witness.take();
+            }
+        }
+        Ok(())
+    }
+
+    fn import_private_key(&mut self, _pk: Scalar) {
+        todo!()
+    }
+}
 
 #[cfg(test)]
 pub mod test_utils;
 #[cfg(test)]
 mod tests {
-
     use crate::test_utils::MockedBDKElectrum;
     use crate::{BMPWallet, WalletApi};
     use bdk_wallet::{
