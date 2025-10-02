@@ -10,7 +10,7 @@ pub trait ProtocolWalletApi {
 
     fn new_address(&mut self) -> anyhow::Result<Address>;
 
-    ///  this creates a PSBT for use with the depositTx (but not limited to). You specify the receipients, consisting of the
+    ///  this creates a PSBT for use with the depositTx (but not limited to). You specify the recipients, consisting of the
     /// deposit- (and trade-)amount and spk, and the trade_fee_outputs.
     /// This method returns a PSBT with added inputs sufficient to pay the outputs and an optional change output.
     /// NOTE: There might be no change output, if not needed.
@@ -28,10 +28,9 @@ pub trait ProtocolWalletApi {
     fn import_private_key(&mut self, pk: Scalar);
 }
 
-/*
-This is a sample implementation, only for demonstration purpose.
-It doesn't make sense to implement the protocol_wallet_api trait for Wallet, it should be implemented for BMPWallet.
- */
+
+/// This is a sample implementation, only for demonstration purpose.
+/// It doesn't make sense to implement the protocol_wallet_api trait for Wallet, it should be implemented for BMPWallet.
 impl ProtocolWalletApi for Wallet {
     fn network(&self) -> Network { self.network() }
 
