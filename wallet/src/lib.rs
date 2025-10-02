@@ -1,22 +1,14 @@
 mod chain_data_source;
 
-use bdk_wallet::{
-    bitcoin::{bip32::Xpriv, hex::DisplayHex, Amount, Network},
-    chain::Merge,
-    keys::bip39::Mnemonic,
-    rusqlite::{self, named_params, Connection},
-    template::{Bip86, DescriptorTemplate},
-    AddressInfo, Balance, ChangeSet, KeychainKind, PersistedWallet, Wallet, WalletPersister,
-};
+use bdk_wallet::{bitcoin::{bip32::Xpriv, hex::DisplayHex, Amount, Network}, chain::Merge, keys::bip39::Mnemonic, rusqlite::{self, named_params, Connection}, template::{Bip86, DescriptorTemplate}, AddressInfo, Balance, ChangeSet, KeychainKind, PersistedWallet, Wallet, WalletPersister};
 
+use crate::chain_data_source::ChainDataSource;
 use rand::RngCore;
 use secp::Scalar;
 use std::{
     ops::{Deref, DerefMut},
     vec,
 };
-
-use crate::chain_data_source::ChainDataSource;
 
 pub trait BMPWalletPersister: WalletPersister {
     type DB;
@@ -368,6 +360,7 @@ impl WalletApi for BMPWallet<Connection> {
 
     // Import an external private from the HD wallet
     // After importing a rescan should be triggered
+    // TODO move this implementation to trait ProtocolWalletApi
     fn import_private_key(&mut self, pk: Scalar) {
         self.imported_keys.push(pk);
     }
@@ -396,9 +389,10 @@ impl DerefMut for BMPWallet<Connection> {
 
 #[cfg(test)]
 pub mod test_utils;
+pub mod protocol_wallet_api;
+
 #[cfg(test)]
 mod tests {
-
     use crate::test_utils::MockedBDKElectrum;
     use crate::{BMPWallet, WalletApi};
     use bdk_wallet::{
