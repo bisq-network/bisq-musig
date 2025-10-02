@@ -629,9 +629,8 @@ impl From<ExtractTxError> for TransactionErrorKind {
 
 #[cfg(test)]
 mod tests {
-    use bdk_wallet::bitcoin::Network;
-    use bdk_wallet::bitcoin::consensus;
     use bdk_wallet::bitcoin::hex::test_hex_unwrap as hex;
+    use bdk_wallet::bitcoin::{Network, consensus};
     use const_format::str_index;
     use rand::SeedableRng as _;
     use rand_chacha::ChaCha20Rng;

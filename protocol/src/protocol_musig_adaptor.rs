@@ -1,5 +1,4 @@
-use crate::wallet_service::WalletService;
-use bdk_electrum::{electrum_client, BdkElectrumClient};
+use bdk_electrum::{BdkElectrumClient, electrum_client};
 use bdk_wallet::bitcoin::absolute::LockTime;
 use bdk_wallet::bitcoin::bip32::Xpriv;
 use bdk_wallet::bitcoin::hashes::sha256t::Hash;
@@ -7,19 +6,26 @@ use bdk_wallet::bitcoin::key::Secp256k1;
 use bdk_wallet::bitcoin::sighash::{Prevouts, SighashCache};
 use bdk_wallet::bitcoin::taproot::Signature;
 use bdk_wallet::bitcoin::transaction::Version;
-use bdk_wallet::bitcoin::{absolute, transaction, Address, Amount, FeeRate, KnownHrp, Network, OutPoint, Psbt, PublicKey, ScriptBuf, Sequence, TapSighashTag, TapSighashType, Transaction, TxIn, TxOut, Txid, Weight, Witness};
+use bdk_wallet::bitcoin::{
+    Address, Amount, FeeRate, KnownHrp, Network, OutPoint, Psbt, PublicKey, ScriptBuf, Sequence,
+    TapSighashTag, TapSighashType, Transaction, TxIn, TxOut, Txid, Weight, Witness,
+};
 use bdk_wallet::coin_selection::BranchAndBoundCoinSelection;
 use bdk_wallet::miniscript::ToPublicKey as _;
 use bdk_wallet::template::{Bip86, DescriptorTemplate as _};
-use bdk_wallet::{bitcoin, AddressInfo, KeychainKind, SignOptions, TxBuilder, Wallet};
+use bdk_wallet::{AddressInfo, KeychainKind, SignOptions, TxBuilder, Wallet};
 use musig2::secp::MaybePoint::Valid;
 use musig2::secp::{MaybePoint, MaybeScalar, Point, Scalar};
-// use musig2::secp256k1::Scalar;
-use musig2::{AdaptorSignature, AggNonce, KeyAggContext, LiftedSignature, PartialSignature, PubNonce, SecNonce, SecNonceBuilder};
+use musig2::{
+    AdaptorSignature, AggNonce, KeyAggContext, LiftedSignature, PartialSignature, PubNonce,
+    SecNonce, SecNonceBuilder,
+};
 use rand::{Rng as _, RngCore as _};
 use std::io::Write as _;
 use std::ops::{Add as _, Sub as _};
 use std::str::FromStr as _;
+
+use crate::wallet_service::WalletService;
 
 pub struct MemWallet {
     pub wallet: Wallet,
@@ -56,12 +62,14 @@ impl ProtocolRole {
         }
     }
 }
+
 // TODO think about stop_gap and batch_size
 const STOP_GAP: usize = 50;
 const BATCH_SIZE: usize = 5;
 const ELECTRUM_URL: &str =
 // "ssl://electrum.blockstream.info:60002";
     "localhost:50000"; //TODO move to env
+
 impl MemWallet {
     pub fn new() -> anyhow::Result<Self> {
         let mut seed: [u8; 32] = [0u8; 32];
@@ -92,7 +100,7 @@ impl MemWallet {
     }
 
     pub(crate) fn sync(&mut self) -> anyhow::Result<()> {
-        // Populate the electrum client's transaction cache so it doesn't redownload transaction we
+        // Populate the electrum client's transaction cache so it doesn't re-download transaction we
         // already have.
         self.client
             .populate_tx_cache(self.wallet.tx_graph().full_txs().map(|tx_node| tx_node.tx));
@@ -141,6 +149,7 @@ impl MemWallet {
         Ok(tx.compute_txid())
     }
 }
+
 #[derive(Debug)]
 pub struct Round1Parameter {
     // DepositTx --------
@@ -148,13 +157,14 @@ pub struct Round1Parameter {
     pub q_a: Point,
     pub dep_part_psbt: Psbt,
     // Swap Tx -----
-    // public nounce
-    // Seller address where to send the swap amount to
-    pub swap_script: Option<ScriptBuf>, // only set from Seller
+    // public nonce
+    // Seller address where to send the swap amount to -- only set from Seller:
+    pub swap_script: Option<ScriptBuf>,
     pub warn_anchor_spend: ScriptBuf,
     pub claim_spend: ScriptBuf,
     pub redirect_anchor_spend: ScriptBuf,
 }
+
 #[derive(Debug)]
 pub struct Round2Parameter {
     // DepositTx --------
@@ -172,6 +182,7 @@ pub struct Round2Parameter {
     pub redirect_alice_nonce: PubNonce,
     pub redirect_bob_nonce: PubNonce,
 }
+
 #[derive(Debug)]
 pub struct Round3Parameter {
     // DepositTx --------
@@ -185,6 +196,7 @@ pub struct Round3Parameter {
     pub claim_part_sig: PartialSignature,
     pub redirect_part_sig: PartialSignature,
 }
+
 #[derive(Debug)]
 pub struct Round4Parameter {
     pub deposit_tx_signed: Psbt,
@@ -192,20 +204,24 @@ pub struct Round4Parameter {
 
 /**
 this context is for the whole process and need to be persisted by the caller
-*/
+ */
 pub struct BMPContext {
-    // first of all, everything which is general to the protcol itself
+    // first of all, everything which is general to the protocol itself
     pub funds: MemWallet,
     pub role: ProtocolRole,
     pub seller_amount: Amount,
     pub buyer_amount: Amount,
 }
+
 pub struct BMPProtocol {
     pub(crate) ctx: BMPContext,
-    pub(crate) p_tik: AggKey, // Point securing Seller deposit and trade amount
-    pub(crate) q_tik: AggKey, // Point securing Buyer deposit
+    // Point securing Seller deposit and trade amount:
+    pub(crate) p_tik: AggKey,
+    // Point securing Buyer deposit:
+    pub(crate) q_tik: AggKey,
     pub(crate) deposit_tx: DepositTx,
-    round: u8, // which round are we in.
+    // which round are we in:
+    round: u8,
     pub(crate) swap_tx: SwapTx,
     pub(crate) warning_tx_me: WarningTx,
     pub(crate) warning_tx_peer: WarningTx,
@@ -225,6 +241,7 @@ impl BMPContext {
         })
     }
 }
+
 impl BMPProtocol {
     pub fn new(ctx: BMPContext) -> anyhow::Result<Self> {
         let role = ctx.role;
@@ -283,7 +300,7 @@ impl BMPProtocol {
         self.p_tik.aggregate_key(bob.p_a)?;
         self.q_tik.aggregate_key(bob.q_a)?;
         // now we have the aggregated key
-        // so we can contruct the Deposit Tx
+        // so we can construct the Deposit Tx
         let deposit_tx_merged = self.deposit_tx.build_and_merge_tx(&mut self.ctx, &bob.dep_part_psbt, &self.p_tik, &self.q_tik)?;
         self.warning_tx_me.build(&mut self.ctx, &self.p_tik, &self.q_tik, &self.deposit_tx)?;
         self.warning_tx_peer.anchor_spend = Some(bob.warn_anchor_spend);
@@ -293,12 +310,12 @@ impl BMPProtocol {
         let warn_bob_p_nonce = self.warning_tx_peer.sig_p.as_ref().unwrap().pub_nonce.clone();
         let warn_bob_q_nonce = self.warning_tx_peer.sig_q.as_ref().unwrap().pub_nonce.clone();
 
-        // given the depositTx, we can create SwapTx for Alice.
+        // given the DepositTx, we can create SwapTx for Alice.
         self.swap_tx.build(self.q_tik.clone(), &deposit_tx_merged.unsigned_tx, bob.swap_script)?;
-        // let start the signing process for swaptx already.
+        // let start the signing process for SwapTx already.
         let swap_pub_nonce = self.swap_tx.get_pub_nonce(); // could be one round earlier, if we solve secure nonce generation
 
-        //ClaimTx
+        // ClaimTx
         let (tik, other_tik) = match self.ctx.role {
             ProtocolRole::Seller => (&self.q_tik, &self.p_tik),
             ProtocolRole::Buyer => (&self.p_tik, &self.q_tik)
@@ -309,8 +326,8 @@ impl BMPProtocol {
         self.claim_tx_peer.build(&mut self.ctx, other_tik, &self.warning_tx_peer)?;
         let claim_bob_nonce = self.claim_tx_peer.sig.as_ref().unwrap().pub_nonce.clone();
 
-        // RedirectTX
-        self.redirect_tx_me.build(&mut self.ctx, other_tik, &self.warning_tx_peer)?; // redirect TX is overcross alice reference Bob warningTx
+        // RedirectTx
+        self.redirect_tx_me.build(&mut self.ctx, other_tik, &self.warning_tx_peer)?; // RedirectTx overcrosses; Alice references Bob's WarningTx
         let redirect_alice_nonce = self.redirect_tx_me.sig.as_ref().unwrap().pub_nonce.clone();
         self.redirect_tx_peer.anchor_spend = Some(bob.redirect_anchor_spend);
         self.redirect_tx_peer.build(&mut self.ctx, tik, &self.warning_tx_me)?;
@@ -351,14 +368,13 @@ impl BMPProtocol {
         let (_p_part_me, _q_part_me) = self.warning_tx_me.build_partial_sig(&self.ctx, &bob.warn_bob_p_nonce, &bob.warn_bob_q_nonce, &self.deposit_tx)?;
 
         let (p_part_peer, q_part_peer) = self.warning_tx_peer.build_partial_sig(&self.ctx, &bob.warn_alice_p_nonce, &bob.warn_alice_q_nonce, &self.deposit_tx)?;
-        //ClaimTx
+        // ClaimTx
         self.claim_tx_me.build_partial_sig(&self.ctx, &bob.claim_bob_nonce, &self.warning_tx_me)?; // no need to send my partial sig to peer
         let claim_part_sig = self.claim_tx_peer.build_partial_sig(&self.ctx, &bob.claim_alice_nonce, &self.warning_tx_peer)?; // sign bobs transaction that I constructed
 
-        //RedirectTx
+        // RedirectTx
         self.redirect_tx_me.build_partial_sig(&self.ctx, &bob.redirect_bob_nonce, &self.warning_tx_peer)?;
         let redirect_part_sig = self.redirect_tx_peer.build_partial_sig(&self.ctx, &bob.redirect_alice_nonce, &self.warning_tx_me)?; // sign bobs transaction that I constructed
-
 
         Ok(Round3Parameter {
             deposit_txid: txid, // only for verification that we actually are on the same page
@@ -378,7 +394,7 @@ impl BMPProtocol {
         self.warning_tx_me.aggregate_sigs(bob.p_part_peer, bob.q_part_peer)?;
         self.claim_tx_me.aggregate_sigs(bob.claim_part_sig)?;
         self.redirect_tx_me.aggregate_sigs(bob.redirect_part_sig)?;
-        // TODO  final check
+        // TODO final check
         self.deposit_tx.sign(&mut self.ctx)?;
         Ok(Round4Parameter {
             deposit_tx_signed: self.deposit_tx.merged_psbt.clone().unwrap()
@@ -403,6 +419,7 @@ impl BMPProtocol {
         r.get_agg_adr().unwrap()
     }
 }
+
 /**
 `RedirectTx` -- this redirects the funds from the `WarningTx` to the DAO.
 This is expected if the traders have some sor of conflict, which they cannot resolve themselves.
@@ -414,7 +431,7 @@ can raise the fees with CPFP to get it mined before `ClaimTx` can be broadcast.
 
 `RedirectTx` Bob spends from `WarningTx` Alice, that's important.
 Sending funds to the DAO is done by having a list of addresses (from contributors) and percentages. (must add up to 100%)
-*/
+ */
 #[derive(Default)]
 pub struct RedirectTx {
     pub sig: Option<TMuSig2>,
@@ -465,12 +482,13 @@ impl RedirectTx {
 
         Ok(tx)
     }
+
     fn build_partial_sig(&mut self, _ctx: &BMPContext, peer_nonce: &PubNonce, warning_tx: &WarningTx) -> anyhow::Result<PartialSignature> {
         let tx = self.tx.as_ref().unwrap();
         let prevouts_warn_tx = warning_tx.get_tx().calc_prevouts(&tx.input)?;
         // let p_index = tx.output_index(p_)
         let musig = self.sig.as_mut().unwrap();
-        let index = 0; //TODO calculate this, if input0 from warningtx
+        let index = 0; // TODO calculate this, if input0 from warningTx
         let part_sig = musig.generate_partial_sig(index, peer_nonce, &prevouts_warn_tx, tx)?;
         Ok(part_sig)
     }
@@ -495,7 +513,8 @@ impl RedirectTx {
 
     /**
     sum of all f32 must be 1
-    */
+     */
+    //noinspection SpellCheckingInspection
     fn get_dao_bm() -> Vec<(Address, f32)> {
         // TODO this needs a real implementation, and check that sum of ratios is 1
         vec![
@@ -504,17 +523,19 @@ impl RedirectTx {
         ]
     }
 }
+
 /**
 `ClaimTx` -- One version for Alice and one for Bob.
 If the other side will not react on the `WarningTx` (by sending the `RedirectTx`)
 then Alice can claim the total amounts for herself.
-*/
+ */
 #[derive(Default)]
 pub struct ClaimTx {
     pub sig: Option<TMuSig2>,
     pub tx: Option<Transaction>,
     pub claim_spend: Option<ScriptBuf>,
 }
+
 impl ClaimTx {
     pub fn new() -> Self { Self::default() }
 
@@ -547,13 +568,14 @@ impl ClaimTx {
 
         Ok(tx)
     }
+
     fn build_partial_sig(&mut self, _ctx: &BMPContext, peer_nonce: &PubNonce, warning_tx: &WarningTx) -> anyhow::Result<PartialSignature> {
         let warn_tx = warning_tx.tx.as_ref().unwrap();
         let tx = self.tx.as_ref().unwrap();
         let prevouts_warn_tx = warn_tx.calc_prevouts(&tx.input)?;
         // let p_index = tx.output_index(p_)
         let musig = self.sig.as_mut().unwrap();
-        let index = 0; //TODO calculate this, if input0 from warningtx
+        let index = 0; // TODO calculate this, if input0 from warningTx
         let part_sig = musig.generate_partial_sig(index, peer_nonce, &prevouts_warn_tx, tx)?;
         Ok(part_sig)
     }
@@ -580,10 +602,12 @@ impl ClaimTx {
 /**
 `WarningTx` -- there is one version for Alice and one for Bob.
 That means each party generates both transaction and sign them.
-*/
+ */
 pub struct WarningTx {
-    role: ProtocolRole, // is that my WarningTx? (mainly for safety checking)
-    pub anchor_spend: Option<ScriptBuf>, // where to send the anchor sats to?
+    // is that my WarningTx? (mainly for safety checking):
+    role: ProtocolRole,
+    // where to send the anchor sats to:
+    pub anchor_spend: Option<ScriptBuf>,
     pub sig_p: Option<TMuSig2>,
     pub sig_q: Option<TMuSig2>,
     pub key_spend: Option<AggKey>,
@@ -635,26 +659,27 @@ impl WarningTx {
         let tx = Transaction {
             output: vec![output0.clone(), output1],
             input: vec![deposit_tx.get_txin_for(p_tik)?, deposit_tx.get_txin_for(q_tik)?],
-            lock_time: absolute::LockTime::ZERO,
-            version: transaction::Version::TWO,
+            lock_time: LockTime::ZERO,
+            version: Version::TWO,
         };
         self.tx = Some(tx.clone());
-        dbg!(ctx.role, self.role,  tx.clone().compute_txid()); //output0.script_pubkey); //
+        dbg!(ctx.role, self.role, tx.compute_txid()); //output0.script_pubkey); //
         Ok(tx)
     }
+
     fn build_partial_sig(&mut self, _ctx: &BMPContext, peer_nonce_p: &PubNonce, peer_nonce_q: &PubNonce, deposit_tx: &DepositTx) -> anyhow::Result<(PartialSignature, PartialSignature)> {
         let dep_tx = deposit_tx.tx.as_ref().unwrap();
         let tx = self.tx.as_ref().unwrap();
-        let prevouts_deposittx = dep_tx.calc_prevouts(&tx.input)?;
+        let prevouts_deposit_tx = dep_tx.calc_prevouts(&tx.input)?;
         // let p_index = tx.output_index(p_)
         let p_musig = self.sig_p.as_mut().unwrap();
         let p_index = 0; //TODO calculate this
-        dbg!("p",&p_index);
-        let p_part = p_musig.generate_partial_sig(p_index, peer_nonce_p, &prevouts_deposittx, tx)?;
+        dbg!("p", &p_index);
+        let p_part = p_musig.generate_partial_sig(p_index, peer_nonce_p, &prevouts_deposit_tx, tx)?;
         let q_musig = self.sig_q.as_mut().unwrap();
         let q_index = 1; // TODO calculate this index
         dbg!("q", &q_index);
-        let q_part = q_musig.generate_partial_sig(q_index, peer_nonce_q, &prevouts_deposittx, tx)?;
+        let q_part = q_musig.generate_partial_sig(q_index, peer_nonce_q, &prevouts_deposit_tx, tx)?;
 
         Ok((p_part, q_part))
     }
@@ -681,11 +706,13 @@ impl WarningTx {
         me.funds.client.transaction_broadcast(self.tx.as_ref().unwrap()).unwrap()
     }
 }
+
 /**
 Only the seller gets a `SwapTx`, this is the only asymmetric part of the p3
-*/
+ */
 pub struct SwapTx {
-    pub role: ProtocolRole, // this transaction is only for Alice, however even Bob will construct it for signing.
+    // this transaction is only for Alice, however even Bob will construct it for signing:
+    pub role: ProtocolRole,
     pub swap_spend: Option<ScriptBuf>,
     // SwapTx get funded by a adaptor MuSig2 signature
     pub fund_sig: Option<TMuSig2>,
@@ -703,7 +730,7 @@ impl SwapTx {
     /**
     even though only the seller gets a `SwapTx` transaction, both parties are constructing the transaction
     and only the buyer will send the seller the signature.
-    */
+     */
     const fn new(role: ProtocolRole) -> Self {
         Self {
             role,
@@ -724,7 +751,7 @@ impl SwapTx {
         let Some(use_spend) = (match self.role {
             ProtocolRole::Seller => self.swap_spend.clone(),
             ProtocolRole::Buyer => swap_spend_opt,
-        }) else { panic!("No spend-consdition from role {:?}", self.role) };
+        }) else { panic!("No spend-condition from role {:?}", self.role) };
 
         let buyer_deposit_out = OutPoint::new(deposit_tx.compute_txid(), dep_index);
         let buyer_deposit_amount = deposit_tx.output.get(dep_index as usize).unwrap().value;
@@ -737,35 +764,35 @@ impl SwapTx {
         };
         // TODO do real calculation of fees
         let payout_amount = buyer_deposit_amount.sub(Amount::from_sat(1000)); // TODO fee calculation?
-        // anchor output not neccessary, because Seller can spend the output for CPFP
+        // anchor output not necessary, because Seller can spend the output for CPFP
         let output = TxOut {
             value: payout_amount,
             script_pubkey: use_spend,
         };
         let unsigned_tx = Transaction {
-            version: transaction::Version::TWO,  // Post BIP-68.
-            lock_time: absolute::LockTime::ZERO, // Ignore the locktime.
-            input: vec![input],                  // Input goes into index 0.
-            output: vec![output],         // Outputs, order does not matter.
+            version: Version::TWO,     // Post BIP-68.
+            lock_time: LockTime::ZERO, // Ignore the locktime.
+            input: vec![input],        // Input goes into index 0.
+            output: vec![output],      // Outputs, order does not matter.
         };
         self.tx = Some(unsigned_tx.clone());
         Ok(unsigned_tx)
     }
 
-    pub fn build_partial_sig(&mut self, _ctx: &BMPContext, other_nonce: &PubNonce, pubp_a: Point, deposit_tx: &DepositTx) -> anyhow::Result<PartialSignature> {
+    pub fn build_partial_sig(&mut self, _ctx: &BMPContext, other_nonce: &PubNonce, p_a: Point, deposit_tx: &DepositTx) -> anyhow::Result<PartialSignature> {
         let input_index: usize = 0; // SwapTx has only one input
-        // SwapTx is asymetric, both parties need to agree on P_a being the public adaptor
+        // SwapTx is asymmetric, both parties need to agree on P_a being the public adaptor
         // P_a is the Public key which Alice (the seller) contributes to 2of2 Multisig to lock the deposit and trade amount in the DepositTx
-        // if secrect key of P_a is revealed to Bob, then we has both partial keys to it and is able to spend it.
-        let pub_adaptor = pubp_a;
+        // if secret key of P_a is revealed to Bob, then we has both partial keys to it and is able to spend it.
+        let pub_adaptor = p_a;
         let swap_tx = self.tx.as_ref().unwrap();
-        let prevouts_deposittx = &self.calc_prevouts(deposit_tx)?;
+        let prevouts_deposit_tx = &self.calc_prevouts(deposit_tx)?;
         let fund_sig = self.fund_sig.as_mut().unwrap();
         fund_sig.generate_adapted_partial_sig(
             input_index,
             Valid(pub_adaptor),
             other_nonce,
-            prevouts_deposittx,
+            prevouts_deposit_tx,
             swap_tx)
     }
 
@@ -796,10 +823,11 @@ impl SwapTx {
             anyhow::bail!("Only the seller can complete the SwapTx.")
         }
     }
+
     /**
     if Bob finds a `SwapTx` on chain (or in mempool), we can (and should) extract Alice key for
     unlocking the seller's deposit and fund, which is as adaptive secret in the signature
-    */
+     */
     pub fn reveal(&self, swap_tx: &Transaction, p_tik: &mut AggKey) -> anyhow::Result<()> {
         let signature = TMuSig2::extract_p2tr_key_path_signature(swap_tx, 0)?;
         // calculate the aggregated secret key as well.
@@ -828,12 +856,11 @@ pub struct DepositTx {
     pub tx: Option<Transaction>,
 }
 
-
 impl DepositTx {
     fn new() -> Self { Self::default() }
 
     pub fn generate_part_tx(&mut self, ctx: &mut BMPContext, p_a: &Point, q_a: &Point) -> anyhow::Result<Psbt> {
-        // we are using our point as receipient address, but it will be changed to the musig address later.
+        // we are using our point as recipient address, but it will be changed to the musig address later.
         let (funded_by_me, amount) = match ctx.role {
             ProtocolRole::Seller => (p_a, ctx.seller_amount), // pub
             ProtocolRole::Buyer => (q_a, ctx.buyer_amount),
@@ -844,17 +871,17 @@ impl DepositTx {
             funded_by_me.key_spend_no_merkle_address()?.script_pubkey(), amount,
         );
         builder.fee_rate(FeeRate::from_sat_per_vb(20).unwrap()); // TODO feerates shall come from pricenodes
-        let pbst = builder.finish()?;
-        self.part_psbt = Some(pbst.clone());
-        // dbg!(&pbst.unsigned_tx.output);
-        Ok(pbst)
+        let psbt = builder.finish()?;
+        self.part_psbt = Some(psbt.clone());
+        // dbg!(&psbt.unsigned_tx.output);
+        Ok(psbt)
     }
 
     pub fn build_and_merge_tx(&mut self, ctx: &mut BMPContext, other_psbt: &Psbt, p_tik: &AggKey, q_tik: &AggKey) -> anyhow::Result<Psbt> {
         let my_psbt = self.part_psbt.as_ref().unwrap();
         //sanity check that Bob doesn't send UTXOs owned by alice.
-        for pbst_input in &other_psbt.inputs {
-            let scriptbuf = pbst_input.witness_utxo.clone().unwrap().script_pubkey;
+        for psbt_input in &other_psbt.inputs {
+            let scriptbuf = psbt_input.witness_utxo.clone().unwrap().script_pubkey;
             assert!(!ctx.funds.wallet.is_mine(scriptbuf.clone()),
                 // bob is trying to trick me.
                 "Fraud detected. Bob send me my own scriptbuf {scriptbuf:?}");
@@ -917,12 +944,12 @@ impl DepositTx {
                                   psbt_bob: &Psbt,   // bobs psbt should be same as mine but have bob's sig
     ) -> anyhow::Result<Txid> {
         // I expect to find all sigs missing in psbt_alice to be in psbt_bob
-        // also I expect that both psbts are the same exect for the sigs.
+        // also I expect that both psbts are the same except for the sigs.
         let mut my_psbt = self.merged_psbt.as_ref().unwrap().clone();
 
         // dbg!(&my_psbt.unsigned_tx);
         // dbg!(&psbt_bob.unsigned_tx);
-        assert!(my_psbt.unsigned_tx == psbt_bob.unsigned_tx);
+        assert_eq!(my_psbt.unsigned_tx, psbt_bob.unsigned_tx);
 
         for (i, alice_input) in my_psbt.inputs.iter_mut().enumerate() {
             if alice_input.final_script_witness.is_none() {
@@ -934,9 +961,9 @@ impl DepositTx {
         self.tx = Some(tx.clone());
         self.merged_psbt = None; // remove used data
         // TODO both alice and bob will broadcast, is that a bug or a feature?
-        let depo_txid = ctx.funds.transaction_broadcast(&tx)?;
-        dbg!("DepositTx txid: {:?}", &depo_txid);
-        Ok(depo_txid)
+        let deposit_txid = ctx.funds.transaction_broadcast(&tx)?;
+        dbg!("DepositTx txid: {:?}", &deposit_txid);
+        Ok(deposit_txid)
     }
 
     fn _get_outpoint_for(self, script: &ScriptBuf) -> anyhow::Result<OutPoint> {
@@ -957,8 +984,7 @@ impl DepositTx {
 
 /**
 `MuSig2` interaction, it represents the Key not only our side of the equation
-*/
-
+ */
 #[derive(PartialEq, Clone)]
 #[derive(Debug)]
 pub struct AggKey {
@@ -1000,27 +1026,30 @@ impl AggKey {
         self.other_point = Some(point_from_bob);
         Ok(result)
     }
+
     // check https://bitcoin.stackexchange.com/questions/116384/what-are-the-steps-to-convert-a-private-key-to-a-taproot-address
     pub(crate) fn get_agg_adr(&self) -> anyhow::Result<Address> {
         self.key_agg_context.as_ref().unwrap().aggregated_pubkey_untweaked::<Point>().key_spend_no_merkle_address()
     }
+
     pub(crate) fn get_agg_script_pubkey(&self) -> anyhow::Result<ScriptBuf> {
         Ok(self.get_agg_adr()?.script_pubkey())
     }
 }
+
 /**
  `MuSig2` (non-adaptive), constructing a signature
 
 round n: `new(agg_key)` -> `pub_nonce`
 round n+1: generate partial adapted sig -> part-sig
 round n+2: aggregate sig (and publish)
-*//**
+ *//**
 adaptive `MuSig2`, constructing a signature
 
 round n: `new(agg_key)` -> `pub_nonce`
 round n+1: generate partial adapted sig -> part-sig
 round n+2: aggregate sig (and publish)
-*/
+ */
 pub struct TMuSig2 {
     pub agg_key: AggKey,
     sec_nonce: SecNonce,
@@ -1033,9 +1062,12 @@ pub struct TMuSig2 {
 #[derive(Debug)]
 pub struct Adaptor {
     pub partial_sig: PartialSignature,
-    pub input_index: usize, // which input in our transaction is going to use this signature?
-    pub pub_adaptor: MaybePoint, // this is the image for which the other party must provide the pre-image in order to use this sig.
-    pub msg: Hash<TapSighashTag>, // message to be signed
+    // which input in our transaction is going to use this signature:
+    pub input_index: usize,
+    // this is the image for which the other party must provide the pre-image in order to use this sig:
+    pub pub_adaptor: MaybePoint,
+    // message to be signed:
+    pub msg: Hash<TapSighashTag>,
     pub adaptor_signature: Option<AdaptorSignature>,
 }
 
@@ -1050,7 +1082,7 @@ impl TMuSig2 {
         let sec_nonce = SecNonceBuilder::new(seed)
             .with_aggregated_pubkey(agg_key.agg_point.unwrap())
             .with_extra_input(&seed2) //TODO does this help? Or do we need more random?
-            // TODO check  BIP327 for nonce generation.
+            // TODO check BIP327 for nonce generation.
             .build();
         let pub_nonce = sec_nonce.public_nonce();
         Self { agg_key, sec_nonce, pub_nonce, agg_nonce: None, other_nonce: None, adaptor_sig: None }
@@ -1108,10 +1140,11 @@ impl TMuSig2 {
     const fn _get_part_sig(&self) -> PartialSignature {
         self.adaptor_sig.as_ref().unwrap().partial_sig
     }
+
     /**
     this is probably only called by Alice, the seller as the swapTx is only contructed by her.
     the aggregated sig is still not valid, needs to be adapted.
-    */
+     */
     pub fn aggregate_sigs(&mut self, other_sig: PartialSignature) -> anyhow::Result<()> {
         let my_adaptor = self.adaptor_sig.as_mut().unwrap();
         // verify other_sig is strictly not necessary but fail fast is always good
@@ -1147,6 +1180,7 @@ impl TMuSig2 {
             .expect("invalid aggregated adaptor signature");
         Ok(())
     }
+
     pub fn sign(&mut self, sec_adaptor: MaybeScalar, tx: Transaction) -> anyhow::Result<Transaction> {
         let my_adaptor = self.adaptor_sig.as_mut().unwrap();
         // Decrypt the signature with the adaptor secret.
@@ -1162,9 +1196,9 @@ impl TMuSig2 {
         )
             .expect("invalid decrypted adaptor signature");
 
-        // valid_signature must be made into Taprrot signature, means we need to tweak with merkle_root (even if we don't have a merkle root)
+        // valid_signature must be made into Taproot signature, means we need to tweak with merkle_root (even if we don't have a merkle root)
         // stuff the valid signature into the transaction
-        let ts = bitcoin::taproot::Signature::from_slice(valid_signature.serialize().as_ref())?;
+        let ts = Signature::from_slice(valid_signature.serialize().as_ref())?;
 
         let mut sighasher = SighashCache::new(tx);
         *sighasher.witness_mut(my_adaptor.input_index).unwrap() = Witness::p2tr_key_spend(&ts);
@@ -1172,9 +1206,10 @@ impl TMuSig2 {
         // dbg!(&tx);
         Ok(tx)
     }
+
     /**
     Now let say Alice has posted the `SwapTx`, then Bob wants to reveal the secret for the public adaptor from the Transaction.
-    */
+     */
     pub fn reveal(&self, final_sig: &Signature) -> anyhow::Result<Scalar> {
         // LiftedSignature::from_bytes(Sign)
         let sig = self.adaptor_sig.as_ref().unwrap().adaptor_signature.unwrap();
@@ -1199,6 +1234,7 @@ impl TMuSig2 {
         tik.agg_sec = Some(agg_sec);
         Ok(())
     }
+
     pub fn extract_p2tr_key_path_signature(tx: &Transaction, input_index: usize) -> anyhow::Result<Signature> {
         // Ensure the input index is valid
         if input_index >= tx.input.len() {
@@ -1239,9 +1275,11 @@ impl TMuSig2 {
         sighash.to_raw_hash()
     }
 }
+
 trait PointExt {
     fn key_spend_no_merkle_address(&self) -> anyhow::Result<Address>;
 }
+
 impl PointExt for Point {
     fn key_spend_no_merkle_address(&self) -> anyhow::Result<Address> {
         let pubkey = PublicKey::from_slice(&self.serialize())?.to_x_only_pubkey();
@@ -1256,14 +1294,15 @@ trait TransactionExt {
     fn get_outpoint_for(&self, key: &AggKey) -> anyhow::Result<OutPoint>;
     fn get_txin_for(&self, key: &AggKey) -> anyhow::Result<TxIn>;
     /**
-    For Taproot signing, we need for all inputs of this transactions to look into the outpoint of `TxIn` and find the referenced transaction output (`TxOut`).
+    For Taproot signing, we need for all inputs of this transactions to look into the outpoint of`TxIn` and find the referenced transaction output (`TxOut`).
     this must be supplied for signing.
      */
     fn calc_prevouts(&self, inputs: &[TxIn]) -> anyhow::Result<Vec<TxOut>>;
 }
+
 impl TransactionExt for Transaction {
     fn output_index(&self, key: &AggKey) -> u32 {
-        let s = key.get_agg_script_pubkey().unwrap(); // TODO change unwrp into anyhow::Result
+        let s = key.get_agg_script_pubkey().unwrap(); // TODO change unwrap into anyhow::Result
         u32::try_from(self.output.iter().position(|output| output.script_pubkey == s).unwrap()).unwrap()
     }
     fn get_outpoint_for(&self, key: &AggKey) -> anyhow::Result<OutPoint> {
@@ -1305,9 +1344,10 @@ impl TransactionExt for Transaction {
         Ok(prevouts)
     }
 }
+
 /*
 why sort the inputs and outputs?
-Alice and Bob both create the transaction, if the transaction hasn't the exact same Txid, the trnasactions will not be viewed as the same.
+Alice and Bob both create the transaction, if the transaction hasn't the exact same Txid, the transactions will not be viewed as the same.
 And for the Txid the ordering of inputs and output does count.
 Note: This sort algo needs some care to make it privacy preserving.
 */
