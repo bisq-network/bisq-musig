@@ -26,7 +26,7 @@ fi
 
 echo -e "${BLUE}PRE-COMMIT: Running cargo clippy --quiet${RESET}"
 
-CLIPPY_OUTPUT=$(cargo clippy --quiet --message-format=json \
+CLIPPY_OUTPUT=$(cargo clippy --quiet --all-targets --message-format=json \
   | jq -r '.message.rendered? // empty')
 
 GIT_DIFF_FILES=$(git diff --cached --name-only --diff-filter=ACM)

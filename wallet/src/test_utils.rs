@@ -1,10 +1,10 @@
-use bdk_wallet::{
-    bitcoin::{hashes::Hash, Amount, BlockHash},
-    chain::BlockId,
-    test_utils::{insert_checkpoint, receive_output_in_latest_block},
-    PersistedWallet,
-};
+use bdk_wallet::bitcoin::hashes::Hash;
+use bdk_wallet::bitcoin::{Amount, BlockHash};
+use bdk_wallet::chain::BlockId;
+use bdk_wallet::test_utils::{insert_checkpoint, receive_output_in_latest_block};
+use bdk_wallet::PersistedWallet;
 
+use crate::bmp_wallet::BMPWalletPersister;
 use crate::chain_data_source::ChainDataSource;
 pub struct MockedBDKElectrum;
 
@@ -14,10 +14,7 @@ impl ChainDataSource for MockedBDKElectrum {
     const BATCH_SIZE: usize = 10;
     const STOP_GAP: usize = 10;
 
-    fn sync(
-        &self,
-        persister: &mut PersistedWallet<impl crate::BMPWalletPersister>,
-    ) -> anyhow::Result<()> {
+    fn sync(&self, persister: &mut PersistedWallet<impl BMPWalletPersister>) -> anyhow::Result<()> {
         insert_checkpoint(
             persister,
             BlockId {
