@@ -48,7 +48,7 @@ impl MemWallet {
 }
 
 #[derive(PartialEq, Eq, Clone, Copy, Debug)]
-#[expect(clippy::exhaustive_enums, reason = "should be exhaustive in this case")]
+#[expect(clippy::exhaustive_enums)]
 pub enum ProtocolRole {
     Seller,
     Buyer,
