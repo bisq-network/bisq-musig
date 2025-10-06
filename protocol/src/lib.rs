@@ -104,9 +104,9 @@ mod tests {
     fn test_warning() -> anyhow::Result<()> {
         // create all transaction and Broadcast DepositTx already
         let (alice, _bob) = initial_tx_creation()?;
-        dbg!(&alice.warning_tx_me.tx);
+        dbg!(alice.warning_tx_me.signed_tx()?);
         // alice broadcasts WarningTx
-        dbg!(alice.warning_tx_me.broadcast(&alice.ctx));
+        dbg!(alice.warning_tx_me.broadcast(&alice.ctx))?;
         nigiri::tiktok();
         Ok(())
     }
@@ -117,7 +117,7 @@ mod tests {
         let (alice, _bob) = initial_tx_creation()?;
         // dbg!(&alice.warning_tx_me.tx);
         // alice broadcasts WarningTx
-        alice.warning_tx_me.broadcast(&alice.ctx);
+        alice.warning_tx_me.broadcast(&alice.ctx)?;
         nigiri::tiktok();
         nigiri::tiktok(); // we have set time-delay t2 to 2 Blocks
         dbg!(&alice.claim_tx_me.tx);
@@ -142,7 +142,7 @@ mod tests {
     fn test_claim_too_early() -> anyhow::Result<()> {
         // create all transaction and Broadcast DepositTx already
         let (alice, _bob) = initial_tx_creation()?;
-        alice.warning_tx_me.broadcast(&alice.ctx);
+        alice.warning_tx_me.broadcast(&alice.ctx)?;
         // nigiri::tiktok();
         nigiri::tiktok(); // we have set time-delay t2 to 2 Blocks
 
@@ -167,7 +167,7 @@ mod tests {
         let (alice, bob) = initial_tx_creation()?;
         // dbg!(&alice.warning_tx_me.tx);
         // alice broadcasts WarningTx
-        let bob_warn_id = bob.warning_tx_me.broadcast(&bob.ctx);
+        let bob_warn_id = bob.warning_tx_me.broadcast(&bob.ctx)?;
         nigiri::tiktok();
         dbg!(bob_warn_id);
 
