@@ -171,7 +171,7 @@ mod tests {
         nigiri::tiktok();
         dbg!(bob_warn_id);
 
-        let tx = alice.redirect_tx_me.broadcast(&alice.ctx);
+        let tx = alice.redirect_tx_me.broadcast(&alice.ctx)?;
         dbg!(tx);
         nigiri::tiktok();
         Ok(())

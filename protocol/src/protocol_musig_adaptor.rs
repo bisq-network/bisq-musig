@@ -24,7 +24,9 @@ use std::io::Write as _;
 use std::ops::Sub as _;
 use std::str::FromStr as _;
 
-use crate::transaction::{DepositTxBuilder, ReceiverList, WarningTxBuilder};
+use crate::transaction::{
+    DepositTxBuilder, Receiver, ReceiverList, RedirectTxBuilder, WarningTxBuilder,
+};
 use crate::wallet_service::WalletService;
 
 pub struct MemWallet {
@@ -329,10 +331,10 @@ impl BMPProtocol {
         let claim_bob_nonce = self.claim_tx_peer.sig.as_ref().unwrap().pub_nonce.clone();
 
         // RedirectTx
-        self.redirect_tx_me.build(&mut self.ctx, other_tik, &self.warning_tx_peer)?; // RedirectTx overcrosses; Alice references Bob's WarningTx
+        self.redirect_tx_me.build(other_tik, &self.warning_tx_peer)?; // RedirectTx overcrosses; Alice references Bob's WarningTx
         let redirect_alice_nonce = self.redirect_tx_me.sig.as_ref().unwrap().pub_nonce.clone();
         self.redirect_tx_peer.anchor_spend = Some(bob.redirect_anchor_spend);
-        self.redirect_tx_peer.build(&mut self.ctx, tik, &self.warning_tx_me)?;
+        self.redirect_tx_peer.build(tik, &self.warning_tx_me)?;
         let redirect_bob_nonce = self.redirect_tx_peer.sig.as_ref().unwrap().pub_nonce.clone();
 
         Ok(Round2Parameter {
@@ -375,8 +377,8 @@ impl BMPProtocol {
         let claim_part_sig = self.claim_tx_peer.build_partial_sig(&self.ctx, &bob.claim_alice_nonce, &self.warning_tx_peer)?; // sign bobs transaction that I constructed
 
         // RedirectTx
-        self.redirect_tx_me.build_partial_sig(&self.ctx, &bob.redirect_bob_nonce, &self.warning_tx_peer)?;
-        let redirect_part_sig = self.redirect_tx_peer.build_partial_sig(&self.ctx, &bob.redirect_alice_nonce, &self.warning_tx_me)?; // sign bobs transaction that I constructed
+        self.redirect_tx_me.build_partial_sig(&bob.redirect_bob_nonce)?;
+        let redirect_part_sig = self.redirect_tx_peer.build_partial_sig(&bob.redirect_alice_nonce)?; // sign bobs transaction that I constructed
 
         Ok(Round3Parameter {
             deposit_txid: txid, // only for verification that we actually are on the same page
@@ -436,62 +438,44 @@ Sending funds to the DAO is done by having a list of addresses (from contributor
 #[derive(Default)]
 pub struct RedirectTx {
     pub sig: Option<TMuSig2>,
-    pub tx: Option<Transaction>,
+    pub builder: RedirectTxBuilder,
     pub anchor_spend: Option<ScriptBuf>,
 }
 
 impl RedirectTx {
     pub fn new() -> Self { Self::default() }
 
-    fn build(&mut self, _ctx: &mut BMPContext, tik: &AggKey, warn_tx: &WarningTx) -> anyhow::Result<Transaction> {
+    fn build(&mut self, tik: &AggKey, warn_tx: &WarningTx) -> anyhow::Result<()> {
         self.sig = Some(TMuSig2::new(tik.clone()));
 
-        let warn_funds = &warn_tx.funds_as_output();
+        let warn_funds = &warn_tx.builder.escrow()?.prevout;
         let amount = warn_funds.value.sub(Amount::from_sat(1000)); //TODO calc fee rate.sub(); subtract ANCHOR_AMOUNT
 
         let dao_bm = Self::get_dao_bm();
-        let mut outputs: Vec<TxOut> = dao_bm
-            .iter()
-            .map(|(address, ratio)| TxOut {
+        let receivers: Vec<Receiver> = dao_bm
+            .into_iter()
+            .map(|(address, ratio)| Receiver {
                 #[expect(clippy::cast_possible_truncation, clippy::cast_sign_loss, clippy::cast_precision_loss,
                 reason = "imprecision in amounts calculation to be addressed later")] // TODO: Improve precision:
-                value: Amount::from_sat((amount.to_sat() as f32 * *ratio) as u64), // Calculate proportional value
-                script_pubkey: address.script_pubkey(),         // Convert DAO address to script_pubkey
+                amount: Amount::from_sat((amount.to_sat() as f64 * ratio) as u64), // Calculate proportional value
+                address,
             })
             .collect();
 
-        let anchor_output = TxOut {
-            value: ANCHOR_AMOUNT,
-            script_pubkey: self.anchor_spend.clone().ok_or(anyhow::anyhow!("missing anchor_spend"))?,
-        };
-        outputs.push(anchor_output);
-        let t1 = Sequence::from_height(1); // TODO define as const and find a good value
-        // let t1 = Sequence::from_seconds_ceil(1)?; // TODO define as const and find a good value
-        let input0 = TxIn {
-            previous_output: warn_tx.funds_as_outpoint(),
-            script_sig: ScriptBuf::default(),
-            sequence: t1,
-            witness: Witness::default(), // will be changed when signing.
-        };
-        let tx = Transaction {
-            version: Version::TWO,
-            input: vec![input0],
-            output: outputs,
-            lock_time: LockTime::ZERO,
-        };
-        self.tx = Some(tx.clone());
-
-        Ok(tx)
+        let t1 = relative::LockTime::from_height(1); // TODO: define as const and find a good value
+        self.builder
+            .set_input(warn_tx.builder.escrow()?)
+            .set_receivers(receivers.into())
+            .set_anchor_address(Address::from_script(self.anchor_spend.as_ref().unwrap(), Network::Regtest)?) // TODO: Improve.
+            .set_lock_time(t1)
+            .compute_unsigned_tx()?;
+        Ok(())
     }
 
-    fn build_partial_sig(&mut self, _ctx: &BMPContext, peer_nonce: &PubNonce, warning_tx: &WarningTx) -> anyhow::Result<PartialSignature> {
-        let tx = self.tx.as_ref().unwrap();
-        let prevouts_warn_tx = warning_tx.unsigned_tx()?.calc_prevouts(&tx.input)?;
-        // let p_index = tx.output_index(p_)
+    fn build_partial_sig(&mut self, peer_nonce: &PubNonce) -> anyhow::Result<PartialSignature> {
         let musig = self.sig.as_mut().unwrap();
-        let index = 0; // TODO calculate this, if input0 from warningTx
-        let part_sig = musig.generate_partial_sig(index, peer_nonce, &prevouts_warn_tx, tx)?;
-        Ok(part_sig)
+        let msg = self.builder.input_sighash()?.into();
+        musig.generate_partial_sig_raw(0, peer_nonce, msg)
     }
 
     pub fn aggregate_sigs(&mut self, part_sig: PartialSignature) -> anyhow::Result<()> {
@@ -499,24 +483,22 @@ impl RedirectTx {
         sig.aggregate_sigs(part_sig)?;
 
         // now stuff those signatures into the transaction
-        let mut tx = self.tx.clone().unwrap();
-        // dbg!("before signing tx: {:?}",&tx);
-        tx = sig.sign(MaybeScalar::Zero, tx)?;
-        self.tx = Some(tx);
-        // dbg!("signed tx {:?}",&self.tx);
+        self.builder
+            .set_input_signature(sig.taproot_signature(MaybeScalar::Zero)?)
+            .compute_signed_tx()?;
         Ok(())
     }
 
     #[cfg(test)] // not yet used in production
-    pub(crate) fn broadcast(&self, me: &BMPContext) -> Txid {
-        me.funds.client.transaction_broadcast(self.tx.as_ref().unwrap()).unwrap()
+    pub(crate) fn broadcast(&self, me: &BMPContext) -> anyhow::Result<Txid> {
+        Ok(me.funds.client.transaction_broadcast(self.builder.signed_tx()?)?)
     }
 
     /**
-    sum of all f32 must be 1
+    sum of all f64 must be 1
      */
     //noinspection SpellCheckingInspection
-    fn get_dao_bm() -> Vec<(Address, f32)> {
+    fn get_dao_bm() -> Vec<(Address, f64)> {
         // TODO this needs a real implementation, and check that sum of ratios is 1
         vec![
             (Address::from_str("bcrt1p88h9s6lq8jw3ehdlljp7sa85kwpp9lvyrl077twvjnackk4lxt0sffnlrk").unwrap().assume_checked(), 0.6),
@@ -613,8 +595,6 @@ pub struct WarningTx {
     pub sig_p: Option<TMuSig2>,
     pub sig_q: Option<TMuSig2>,
 }
-
-const ANCHOR_AMOUNT: Amount = Amount::from_sat(330); // 330 is std amount for anchors
 
 impl WarningTx {
     pub fn unsigned_tx(&self) -> anyhow::Result<&Transaction> { Ok(self.builder.unsigned_tx()?) }
