@@ -25,7 +25,6 @@ tail_expr_drop_order = { level = "allow", priority = 1 }
 pedantic = "warn"
 # Enable selected 'nursery' and 'restriction' lints...
 allow_attributes = "warn"
-allow_attributes_without_reason = "warn"
 branches_sharing_code = "warn"
 exhaustive_enums = "warn"
 iter_on_empty_collections = "warn"
