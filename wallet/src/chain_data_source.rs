@@ -1,7 +1,8 @@
-use bdk_electrum::{BdkElectrumClient, electrum_client::Client};
+use bdk_electrum::electrum_client::Client;
+use bdk_electrum::BdkElectrumClient;
 use bdk_wallet::PersistedWallet;
 
-use crate::BMPWalletPersister;
+use crate::bmp_wallet::BMPWalletPersister;
 
 pub trait ChainDataSource {
     const RECOVERY_HEIGHT: usize;
@@ -13,6 +14,7 @@ pub trait ChainDataSource {
 }
 
 impl ChainDataSource for BdkElectrumClient<Client> {
+    // @TODO: revisit these values for having suitable one
     const STOP_GAP: usize = 10;
     const BATCH_SIZE: usize = 16;
     const RECOVERY_LOOKAHEAD: usize = 50;
