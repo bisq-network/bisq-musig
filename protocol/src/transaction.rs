@@ -264,6 +264,7 @@ trait WithFixedInputs<const N: usize> {
         let prevouts = self.inputs()?.map(|input| &input.prevout);
         let prevouts = Prevouts::All(&prevouts);
         let mut cache = SighashCache::new(tx);
+        // TODO: Report missing validation to rust-bitcoin if index is not correct.
         Ok(cache.taproot_key_spend_signature_hash(input_index, &prevouts, TapSighashType::Default)?)
     }
 }

@@ -10,14 +10,14 @@ mod tests {
     use bdk_electrum::bdk_core::bitcoin;
     use bdk_electrum::bdk_core::bitcoin::key::{Keypair, Secp256k1, TweakedKeypair};
     use bdk_electrum::bdk_core::bitcoin::secp256k1::Message;
-    use bdk_electrum::bdk_core::bitcoin::sighash::{Prevouts, SighashCache};
-    use bdk_electrum::bdk_core::bitcoin::{Amount, TapSighashType, Witness};
+    use bdk_electrum::bdk_core::bitcoin::{Amount, TapSighashType};
     use bdk_wallet::bitcoin::key::TapTweak as _;
     use musig2::KeyAggContext;
     use musig2::secp::{Point, Scalar};
 
     use crate::nigiri;
     use crate::protocol_musig_adaptor::{BMPContext, BMPProtocol, ProtocolRole};
+    use crate::transaction::WithWitnesses as _;
     use crate::wallet_service::WalletService;
 
     #[test]
@@ -185,17 +185,7 @@ mod tests {
         // test!(alice.swap_tx.)
 
         // message
-        let tx = bob.swap_tx.unsigned_tx()?.clone();
-        let prevout = &bob.swap_tx.calc_prevouts(&bob.deposit_tx)?;
-        let prevouts = Prevouts::All(prevout);
-        let input_index = 0;
-
-        let sighash_type = TapSighashType::Default;
-
-        let mut sighasher = SighashCache::new(tx);
-        let sighash = sighasher
-            .taproot_key_spend_signature_hash(input_index, &prevouts, sighash_type)
-            .expect("failed to construct sighash");
+        let sighash = bob.swap_tx.builder.input_sighash()?;
         let msg = Message::from(sighash);
 
         // path 1: secp sig  -----------------------------
@@ -217,6 +207,7 @@ mod tests {
         let sig1 = secp.sign_schnorr(&msg, &keypair); // will end up in Bad Signature
         // let sig1 = secp.sign_schnorr(&msg, &tweaked.to_inner());
         // Update the witness stack.
+        let sighash_type = TapSighashType::Default;
         let signature_secp = bitcoin::taproot::Signature { signature: sig1, sighash_type };
         let path1pubpoint = Point::from_slice(&keypair.public_key().serialize())?;
         let path1tweakpoint = Point::from_slice(&tweaked.to_keypair().public_key().serialize())?;
@@ -251,10 +242,10 @@ mod tests {
         // assert_eq!(dser, my_agg_point.serialize(), "my pubkey not equal");
 
         // use signature and broadcast ------------------------------------------
-        *sighasher.witness_mut(input_index).unwrap() = Witness::p2tr_key_spend(&signature_secp);
 
         // Get the signed transaction.
-        let tx = sighasher.into_transaction();
+        let tx = bob.swap_tx.unsigned_tx()?.clone()
+            .with_key_spend_witness(0, &signature_secp);
 
         let txid = alice.ctx.funds.client.transaction_broadcast(&tx)?;
         dbg!(txid);
