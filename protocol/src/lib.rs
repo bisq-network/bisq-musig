@@ -79,12 +79,12 @@ mod tests {
     fn test_swap() -> anyhow::Result<()> {
         // create all transaction and Broadcast DepositTx already
         let (mut alice, mut bob) = initial_tx_creation()?;
-        dbg!(&alice.swap_tx.tx);
-        dbg!(&bob.swap_tx.tx);
+        dbg!(alice.swap_tx.unsigned_tx()?);
+        dbg!(bob.swap_tx.unsigned_tx()?);
 
         // alice broadcasts SwapTx
         let alice_swap = alice.swap_tx.sign(&alice.p_tik)?;
-        dbg!(alice.swap_tx.broadcast(&alice.ctx));
+        dbg!(alice.swap_tx.broadcast(&alice.ctx)?);
         nigiri::tiktok();
         // bob must find the transaction and retrieve P_a from it and then spend DepositTx-Output0 to his wallet.
         // TODO need to read the transaction from blockchain looking for bob.swap_tx.txid
@@ -106,7 +106,7 @@ mod tests {
         let (alice, _bob) = initial_tx_creation()?;
         dbg!(alice.warning_tx_me.signed_tx()?);
         // alice broadcasts WarningTx
-        dbg!(alice.warning_tx_me.broadcast(&alice.ctx))?;
+        dbg!(alice.warning_tx_me.broadcast(&alice.ctx)?);
         nigiri::tiktok();
         Ok(())
     }
@@ -120,7 +120,7 @@ mod tests {
         alice.warning_tx_me.broadcast(&alice.ctx)?;
         nigiri::tiktok();
         nigiri::tiktok(); // we have set time-delay t2 to 2 Blocks
-        dbg!(&alice.claim_tx_me.tx);
+        dbg!(alice.claim_tx_me.signed_tx()?);
 
         // according to BIP-68 min time to wait is 512sec
         // let mut remaining_time = 532;
@@ -148,7 +148,7 @@ mod tests {
 
         let rtx = alice.claim_tx_me.broadcast(&alice.ctx);
         match rtx {
-            Ok(_) => panic!("ClaimTx should not go through, because its been broadcast too early.
+            Ok(_) => panic!("ClaimTx should not go through, because it's been broadcast too early.
             HINT: Do not run this test in parallel with other tests, use --test-threads=1"),
             Err(e) => {
                 let error_message = format!("{e:?}");
@@ -185,7 +185,7 @@ mod tests {
         // test!(alice.swap_tx.)
 
         // message
-        let tx = bob.swap_tx.tx.clone().unwrap();
+        let tx = bob.swap_tx.unsigned_tx()?.clone();
         let prevout = &bob.swap_tx.calc_prevouts(&bob.deposit_tx)?;
         let prevouts = Prevouts::All(prevout);
         let input_index = 0;
