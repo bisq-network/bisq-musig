@@ -3,13 +3,15 @@ use std::vec;
 
 use bdk_wallet::bitcoin::bip32::Xpriv;
 use bdk_wallet::bitcoin::hex::DisplayHex;
-use bdk_wallet::bitcoin::{Amount, Network};
+use bdk_wallet::bitcoin::{Amount, Network, PrivateKey, Psbt, ScriptBuf, XOnlyPublicKey};
 use bdk_wallet::chain::Merge;
 use bdk_wallet::keys::bip39::Mnemonic;
 use bdk_wallet::rusqlite::{self, named_params, Connection};
+use bdk_wallet::signer::{InputSigner, SignerContext, SignerError, SignerWrapper};
 use bdk_wallet::template::{Bip86, DescriptorTemplate};
 use bdk_wallet::{
-    AddressInfo, Balance, ChangeSet, KeychainKind, PersistedWallet, Wallet, WalletPersister,
+    AddressInfo, Balance, ChangeSet, KeychainKind, PersistedWallet, SignOptions, Wallet,
+    WalletPersister,
 };
 use rand::RngCore;
 use secp::Scalar;
@@ -196,6 +198,12 @@ pub trait WalletApi {
 
     fn persist(&mut self) -> anyhow::Result<bool>;
 
+    fn sign(
+        &mut self,
+        psbt: &mut Psbt,
+        sign_options: SignOptions,
+    ) -> anyhow::Result<(), SignerError>;
+
     fn sync_all(&mut self, data_source: &impl ChainDataSource) -> anyhow::Result<bool>;
 }
 
@@ -220,6 +228,51 @@ impl WalletApi for BMPWallet<Connection> {
             }
             None => Ok(false),
         }
+    }
+
+    fn sign(
+        &mut self,
+        psbt: &mut Psbt,
+        sign_options: SignOptions,
+    ) -> anyhow::Result<(), SignerError> {
+        let secp = self.secp_ctx();
+        let is_mine = |input_script: &ScriptBuf| {
+            for key in &self.imported_keys {
+                let xonly_pubkey = key.base_point_mul().serialize_xonly();
+                let xonly_pubkey = XOnlyPublicKey::from_slice(&xonly_pubkey)
+                    .expect("Should be valid xonlypub key");
+                let script = ScriptBuf::new_p2tr(secp, xonly_pubkey, None);
+
+                if script == *input_script {
+                    return (true, Some(*key));
+                }
+            }
+            (false, None)
+        };
+
+        for (input_index, input_details) in psbt.inputs.clone().iter().enumerate() {
+            let txout = input_details.witness_utxo.as_ref().unwrap();
+            let (belongs_to_me, key) = is_mine(&txout.script_pubkey);
+
+            if belongs_to_me {
+                let signing_key = key.unwrap();
+                let signer =
+                    PrivateKey::from_slice(&signing_key.serialize(), self.network()).unwrap();
+                let sw = SignerWrapper::new(
+                    signer,
+                    SignerContext::Tap {
+                        is_internal_key: true,
+                    },
+                );
+                sw.sign_input(psbt, input_index, &sign_options, secp)?;
+            }
+        }
+
+        let finalized = self.wallet.sign(psbt, sign_options)?;
+
+        assert!(finalized, "PSBT should be finalized");
+
+        Ok(())
     }
 
     fn sync_all(&mut self, data_source: &impl ChainDataSource) -> anyhow::Result<bool> {
