@@ -21,9 +21,9 @@ use std::io::Write as _;
 use std::ops::Sub as _;
 use std::str::FromStr as _;
 
+use crate::receiver::{Receiver, ReceiverList};
 use crate::transaction::{
-    DepositTxBuilder, ForwardingTxBuilder, Receiver, ReceiverList, RedirectTxBuilder,
-    WarningTxBuilder, WithWitnesses as _,
+    DepositTxBuilder, ForwardingTxBuilder, RedirectTxBuilder, WarningTxBuilder, WithWitnesses as _,
 };
 use crate::wallet_service::WalletService;
 

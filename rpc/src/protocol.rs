@@ -13,10 +13,10 @@ use musig2::{
     SecNonceBuilder,
 };
 use protocol::psbt::{mock_buyer_trade_wallet, mock_seller_trade_wallet, TradeWallet};
+use protocol::receiver::{Receiver, ReceiverList};
 use protocol::transaction::{
-    DepositTxBuilder, ForwardingTxBuilder, NetworkParams as _, Receiver, ReceiverList,
-    RedirectTxBuilder, WarningTxBuilder, WithWitnesses as _, ANCHOR_AMOUNT,
-    SIGNED_REDIRECT_TX_BASE_WEIGHT,
+    DepositTxBuilder, ForwardingTxBuilder, NetworkParams as _, RedirectTxBuilder, WarningTxBuilder,
+    WithWitnesses as _, ANCHOR_AMOUNT, SIGNED_REDIRECT_TX_BASE_WEIGHT,
 };
 use std::collections::BTreeMap;
 use std::sync::{Arc, LazyLock, Mutex};
