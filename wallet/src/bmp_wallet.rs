@@ -6,6 +6,7 @@ use bdk_wallet::bitcoin::hex::DisplayHex;
 use bdk_wallet::bitcoin::{Amount, Network, PrivateKey, Psbt, ScriptBuf, XOnlyPublicKey};
 use bdk_wallet::chain::Merge;
 use bdk_wallet::keys::bip39::Mnemonic;
+use bdk_wallet::miniscript::psbt::PsbtExt;
 use bdk_wallet::rusqlite::{self, named_params, Connection};
 use bdk_wallet::signer::{InputSigner, SignerContext, SignerError, SignerWrapper};
 use bdk_wallet::template::{Bip86, DescriptorTemplate};
@@ -235,6 +236,7 @@ impl WalletApi for BMPWallet<Connection> {
         psbt: &mut Psbt,
         sign_options: SignOptions,
     ) -> anyhow::Result<(), SignerError> {
+        //// @TODO perfomance: cache the public keys derivation
         let secp = self.secp_ctx();
         let is_mine = |input_script: &ScriptBuf| {
             for key in &self.imported_keys {
@@ -264,11 +266,11 @@ impl WalletApi for BMPWallet<Connection> {
                     },
                 );
                 sw.sign_input(psbt, input_index, &sign_options, secp)?;
+                psbt.finalize_inp_mut(secp, input_index).map_err(|_e| SignerError::External("Unable to finalized input".to_string()))?;
             }
         }
 
         let finalized = self.wallet.sign(psbt, sign_options)?;
-
         assert!(finalized, "PSBT should be finalized");
 
         Ok(())
@@ -456,7 +458,7 @@ mod tests {
     use tempfile::{tempdir, TempDir};
 
     use crate::bmp_wallet::{BMPWallet, WalletApi};
-    use crate::test_utils::{load_imported_wallet, MockedBDKElectrum};
+    use crate::test_utils::{derive_public_key, load_imported_wallet, MockedBDKElectrum};
 
     static SEMAPHORE: once_cell::sync::Lazy<Arc<Semaphore>> =
         once_cell::sync::Lazy::new(|| Semaphore::new(1));
@@ -653,24 +655,26 @@ mod tests {
 
         bmp_wallet.sign(&mut res_psbt, SignOptions::default())?;
 
-        assert!(res_psbt.inputs.iter().all(|i| i.tap_key_sig.is_some()));
+        assert!(res_psbt
+            .inputs
+            .iter()
+            .all(|i| i.final_script_witness.is_some()));
 
         Ok(())
     }
 
     #[test]
-    fn sing_inputs_main_and_imported_keys() -> anyhow::Result<()> {
+    fn sign_inputs_main_and_imported_keys() -> anyhow::Result<()> {
         let _permit = SEMAPHORE.acquire();
         let _tmp_dir = tear_up();
 
         let client = MockedBDKElectrum {};
         let mut bmp_wallet = BMPWallet::new(Network::Regtest)?;
 
-        let pk1 = new_private_key();
-        let pk2 = new_private_key();
-
-        bmp_wallet.import_private_key(pk1);
-        bmp_wallet.import_private_key(pk2);
+        let keys_to_import = [new_private_key(), new_private_key()];
+        keys_to_import
+            .iter()
+            .for_each(|k| bmp_wallet.import_private_key(*k));
 
         println!("Wallet balance before syncing {}", bmp_wallet.balance());
         assert_eq!(bmp_wallet.balance(), Amount::from_int_btc(0));
@@ -686,8 +690,8 @@ mod tests {
         let mut tx = bmp_wallet.build_tx();
         tx.add_recipient(to_address, to_spend);
 
-        let first_key_wallet = load_imported_wallet(&pk1)?;
-        let second_key_wallet = load_imported_wallet(&pk2)?;
+        let first_key_wallet = load_imported_wallet(&keys_to_import[0])?;
+        let second_key_wallet = load_imported_wallet(&keys_to_import[1])?;
 
         let first_key_unspents = first_key_wallet.list_unspent().collect::<Vec<_>>();
         let second_key_unspents = second_key_wallet.list_unspent().collect::<Vec<_>>();
@@ -698,6 +702,7 @@ mod tests {
         first_key_unspents.iter().for_each(|i| {
             let psbt_input = psbt::Input {
                 witness_utxo: Some(i.txout.clone()),
+                tap_internal_key: Some(derive_public_key(&keys_to_import[0])),
                 ..Default::default()
             };
             tx.add_foreign_utxo(i.outpoint, psbt_input, Weight::from_wu(107))
@@ -707,6 +712,7 @@ mod tests {
         second_key_unspents.iter().for_each(|i| {
             let psbt_input = psbt::Input {
                 witness_utxo: Some(i.txout.clone()),
+                tap_internal_key: Some(derive_public_key(&keys_to_import[1])),
                 ..Default::default()
             };
             tx.add_foreign_utxo(i.outpoint, psbt_input, Weight::from_wu(107))
@@ -717,7 +723,10 @@ mod tests {
 
         bmp_wallet.sign(&mut res_psbt, SignOptions::default())?;
 
-        assert!(res_psbt.inputs.iter().all(|i| i.tap_key_sig.is_some()));
+        assert!(res_psbt
+            .inputs
+            .iter()
+            .all(|i| i.final_script_witness.is_some()));
 
         Ok(())
     }

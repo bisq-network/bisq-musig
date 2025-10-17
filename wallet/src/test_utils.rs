@@ -95,3 +95,8 @@ pub fn load_imported_wallet(key: &Scalar) -> anyhow::Result<PersistedWallet<Conn
 
     Ok(imported_wallet_opt.unwrap())
 }
+
+pub fn derive_public_key(key: &Scalar) -> XOnlyPublicKey {
+    let xonly_pubkey = key.base_point_mul().serialize_xonly();
+    XOnlyPublicKey::from_slice(&xonly_pubkey).expect("Should be valid xonlypub key")
+}
