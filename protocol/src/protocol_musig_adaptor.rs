@@ -1,4 +1,5 @@
-use bdk_electrum::{BdkElectrumClient, electrum_client};
+use crate::wallet_service::WalletService;
+use bdk_electrum::{electrum_client, BdkElectrumClient};
 use bdk_wallet::bitcoin::absolute::LockTime;
 use bdk_wallet::bitcoin::bip32::Xpriv;
 use bdk_wallet::bitcoin::hashes::sha256t::Hash;
@@ -6,12 +7,8 @@ use bdk_wallet::bitcoin::key::Secp256k1;
 use bdk_wallet::bitcoin::sighash::{Prevouts, SighashCache};
 use bdk_wallet::bitcoin::taproot::Signature;
 use bdk_wallet::bitcoin::transaction::Version;
-use bdk_wallet::bitcoin::{
-    Address, Amount, FeeRate, KnownHrp, Network, OutPoint, Psbt, PublicKey, ScriptBuf, Sequence,
-    TapSighashTag, TapSighashType, Transaction, TxIn, TxOut, Txid, Weight, Witness,
-};
+use bdk_wallet::bitcoin::{Address, Amount, FeeRate, Network, OutPoint, Psbt, ScriptBuf, Sequence, TapSighashTag, TapSighashType, Transaction, TxIn, TxOut, Txid, Weight, Witness, XOnlyPublicKey};
 use bdk_wallet::coin_selection::BranchAndBoundCoinSelection;
-use bdk_wallet::miniscript::ToPublicKey as _;
 use bdk_wallet::template::{Bip86, DescriptorTemplate as _};
 use bdk_wallet::{AddressInfo, KeychainKind, SignOptions, TxBuilder, Wallet};
 use musig2::secp::MaybePoint::Valid;
@@ -24,8 +21,6 @@ use rand::{Rng as _, RngCore as _};
 use std::io::Write as _;
 use std::ops::{Add as _, Sub as _};
 use std::str::FromStr as _;
-
-use crate::wallet_service::WalletService;
 
 pub struct MemWallet {
     pub wallet: Wallet,
@@ -1282,10 +1277,11 @@ trait PointExt {
 
 impl PointExt for Point {
     fn key_spend_no_merkle_address(&self) -> anyhow::Result<Address> {
-        let pubkey = PublicKey::from_slice(&self.serialize())?.to_x_only_pubkey();
+        let point_pub = self.serialize_xonly(); // convert from secp256k1 version 0.29.1 to secp256k1 version 0.30.1
+        let untweaked_pubkey = XOnlyPublicKey::from_slice(&point_pub)?; // TODO unify versions of musig2 and bdk_wallet!
         let secp = Secp256k1::new(); // TODO make it static?
-        let adr = Address::p2tr(&secp, pubkey, None, KnownHrp::Regtest); // TODO parameterize Network
-        Ok(adr)
+        // Convert to a taproot address with no scripts
+        Ok(Address::p2tr(&secp, untweaked_pubkey, None, Network::Regtest))
     }
 }
 
