@@ -18,7 +18,6 @@ use musig2::{
 };
 use rand::{Rng as _, RngCore as _};
 use std::io::Write as _;
-use std::ops::Sub as _;
 use std::str::FromStr as _;
 
 use crate::receiver::{Receiver, ReceiverList};
@@ -446,24 +445,20 @@ impl RedirectTx {
     fn build(&mut self, tik: &AggKey, warn_tx: &WarningTx) -> anyhow::Result<()> {
         self.sig = Some(TMuSig2::new(tik.clone()));
 
-        let warn_funds = &warn_tx.builder.escrow()?.prevout;
-        let amount = warn_funds.value.sub(Amount::from_sat(1000)); //TODO calc fee rate.sub(); subtract ANCHOR_AMOUNT
+        let receiver_shares = Self::get_dao_bm();
+        let fee_rate = FeeRate::from_sat_per_vb_unchecked(10); // TODO: feerates shall come from pricenodes
 
-        let dao_bm = Self::get_dao_bm();
-        let receivers: Vec<Receiver> = dao_bm
-            .into_iter()
-            .map(|(address, ratio)| Receiver {
-                #[expect(clippy::cast_possible_truncation, clippy::cast_sign_loss, clippy::cast_precision_loss,
-                reason = "imprecision in amounts calculation to be addressed later")] // TODO: Improve precision:
-                amount: Amount::from_sat((amount.to_sat() as f64 * ratio) as u64), // Calculate proportional value
-                address,
-            })
-            .collect();
+        let escrow_amount = warn_tx.builder.escrow()?.prevout.value;
+        let available_amount_msat = RedirectTxBuilder::available_amount_msat(escrow_amount, fee_rate)
+            .ok_or(anyhow::anyhow!("Overflow computing available amount for receivers"))?;
+
+        let receivers = Receiver::compute_receivers_from_shares(receiver_shares, available_amount_msat, fee_rate)
+            .ok_or(anyhow::anyhow!("Could not compute receiver list"))?;
 
         let t1 = relative::LockTime::from_height(1); // TODO: define as const and find a good value
         self.builder
             .set_input(warn_tx.builder.escrow()?)
-            .set_receivers(receivers.into())
+            .set_receivers(receivers)
             .set_anchor_address(Address::from_script(self.anchor_spend.as_ref().unwrap(), Network::Regtest)?) // TODO: Improve.
             .set_lock_time(t1)
             .compute_unsigned_tx()?;

@@ -16,7 +16,7 @@ use protocol::psbt::{mock_buyer_trade_wallet, mock_seller_trade_wallet, TradeWal
 use protocol::receiver::{Receiver, ReceiverList};
 use protocol::transaction::{
     DepositTxBuilder, ForwardingTxBuilder, NetworkParams as _, RedirectTxBuilder, WarningTxBuilder,
-    WithWitnesses as _, ANCHOR_AMOUNT, SIGNED_REDIRECT_TX_BASE_WEIGHT,
+    WithWitnesses as _,
 };
 use std::collections::BTreeMap;
 use std::sync::{Arc, LazyLock, Mutex};
@@ -230,19 +230,15 @@ impl TradeModel {
     }
 
     pub fn redirection_amount_msat(&self) -> Option<u64> {
-        // TODO: Should this logic be moved into `transaction`?
         let split_input_amounts = [
             *self.deposit_tx_builder.trade_amount().ok()?,
             *self.deposit_tx_builder.buyers_security_deposit().ok()?,
             *self.deposit_tx_builder.sellers_security_deposit().ok()?,
         ];
-        let redirection_tx_base_fee = self.prepared_tx_fee_rate?.to_sat_per_kwu()
-            .checked_mul(SIGNED_REDIRECT_TX_BASE_WEIGHT.to_wu())?;
+        let escrow_amount =
+            WarningTxBuilder::escrow_amount(split_input_amounts, self.prepared_tx_fee_rate?)?;
 
-        WarningTxBuilder::escrow_amount(split_input_amounts, self.prepared_tx_fee_rate?)?
-            .checked_sub(ANCHOR_AMOUNT)?
-            .to_sat().checked_mul(1000)?
-            .checked_sub(redirection_tx_base_fee)
+        RedirectTxBuilder::available_amount_msat(escrow_amount, self.prepared_tx_fee_rate?)
     }
 
     pub fn init_my_key_shares(&mut self) -> Result<()> {

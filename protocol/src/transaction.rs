@@ -447,6 +447,15 @@ impl RedirectTxBuilder {
     make_getter!(unsigned_tx: Transaction);
     make_getter!(signed_tx: Transaction);
 
+    pub fn available_amount_msat(escrow_amount: Amount, fee_rate: FeeRate) -> Option<u64> {
+        let redirection_tx_base_fee = fee_rate.to_sat_per_kwu()
+            .checked_mul(SIGNED_REDIRECT_TX_BASE_WEIGHT.to_wu())?;
+        escrow_amount
+            .checked_sub(ANCHOR_AMOUNT)?
+            .to_sat().checked_mul(1000)?
+            .checked_sub(redirection_tx_base_fee)
+    }
+
     pub fn compute_unsigned_tx(&mut self) -> Result<&mut Self> {
         let mut output = Vec::with_capacity(self.receivers()?.len() + 1);
         output.extend(self.receivers()?.iter().map(TxOut::from));
@@ -584,8 +593,8 @@ impl From<ExtractTxError> for TransactionErrorKind {
 
 #[cfg(test)]
 mod tests {
+    use bdk_wallet::bitcoin::consensus;
     use bdk_wallet::bitcoin::hex::test_hex_unwrap as hex;
-    use bdk_wallet::bitcoin::{Network, consensus};
     use const_format::str_index;
     use rand::SeedableRng as _;
     use rand_chacha::ChaCha20Rng;
