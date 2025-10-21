@@ -1,3 +1,6 @@
+use std::sync::Arc;
+use std::time::Duration;
+
 use assert_cmd::assert::Assert;
 use assert_cmd::Command;
 use bdk_wallet::bitcoin::hex::test_hex_unwrap as hex;
@@ -9,8 +12,6 @@ use futures_util::stream::{self, BoxStream, StreamExt as _};
 use predicates::str;
 use rpc::server::{WalletImpl, WalletServer};
 use rpc::wallet::{TxConfidence, WalletService, WalletServiceImpl, WalletServiceMock, WalletTx};
-use std::sync::Arc;
-use std::time::Duration;
 use tokio::task::{self, JoinHandle};
 use tonic::transport::server::TcpIncoming;
 use tonic::transport::{self, Server};

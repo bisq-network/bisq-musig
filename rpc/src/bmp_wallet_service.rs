@@ -1,7 +1,8 @@
-use crate::pb::bmp_wallet;
-use crate::pb::bmp_wallet::wallet_server::Wallet;
 use tonic::{Request, Response, Result};
 use tracing::info;
+
+use crate::pb::bmp_wallet;
+use crate::pb::bmp_wallet::wallet_server::Wallet;
 
 #[derive(Debug, Default)]
 pub struct BmpWalletServiceImpl {}

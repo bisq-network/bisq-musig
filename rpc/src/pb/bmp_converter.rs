@@ -1,9 +1,11 @@
-use crate::pb::bmp_protocol as bmp_pb;
-use crate::pb::convert::TryProtoInto;
 use bdk_wallet::bitcoin::hashes::Hash as _;
-use bdk_wallet::bitcoin::{psbt::Psbt, ScriptBuf};
+use bdk_wallet::bitcoin::psbt::Psbt;
+use bdk_wallet::bitcoin::ScriptBuf;
 use protocol::protocol_musig_adaptor::{self as bmp_engine};
 use tonic::{Result, Status};
+
+use crate::pb::bmp_protocol as bmp_pb;
+use crate::pb::convert::TryProtoInto;
 
 impl TryProtoInto<bmp_engine::Round1Parameter> for bmp_pb::Round1Response {
     fn try_proto_into(self) -> Result<bmp_engine::Round1Parameter> {
@@ -28,9 +30,7 @@ impl TryFrom<bmp_engine::Round1Parameter> for bmp_pb::Round1Response {
             p_a: value.p_a.serialize().to_vec(),
             q_a: value.q_a.serialize().to_vec(),
             dep_part_psbt: value.dep_part_psbt.serialize(),
-            swap_script: value
-                .swap_script
-                .map(ScriptBuf::into_bytes),
+            swap_script: value.swap_script.map(ScriptBuf::into_bytes),
             warn_anchor_spend: value.warn_anchor_spend.into_bytes(),
             claim_spend: value.claim_spend.into_bytes(),
             redirect_anchor_spend: value.redirect_anchor_spend.into_bytes(),

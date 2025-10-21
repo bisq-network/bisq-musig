@@ -1,36 +1,34 @@
-use bdk_wallet::bitcoin::{consensus, Amount, FeeRate};
-use bdk_wallet::serde_json;
-use drop_stream::DropStreamExt as _;
-use futures_util::stream::{self, BoxStream, Stream, StreamExt as _, TryStream, TryStreamExt as _};
-use serde::Serialize;
 use std::fmt::{Display, Formatter};
 use std::marker::{Send, Sync};
 use std::pin::Pin;
 use std::sync::Arc;
 use std::task::{Context, Poll};
+
+use bdk_wallet::bitcoin::{consensus, Amount, FeeRate};
+use bdk_wallet::serde_json;
+use drop_stream::DropStreamExt as _;
+use futures_util::stream::{self, BoxStream, Stream, StreamExt as _, TryStream, TryStreamExt as _};
+use serde::Serialize;
 use tokio::time::{self, Duration};
 use tonic::{Request, Response, Result, Status};
 use tracing::{debug, error, info, instrument, trace, Span};
 
 use crate::pb::convert::{CheckInSignedRange as _, TryProtoInto};
-use crate::pb::musigrpc::musig_server;
+pub use crate::pb::musigrpc::musig_server::MusigServer;
 use crate::pb::musigrpc::{
-    CloseTradeRequest, CloseTradeResponse, DepositPsbt, DepositTxSignatureRequest,
+    musig_server, CloseTradeRequest, CloseTradeResponse, DepositPsbt, DepositTxSignatureRequest,
     NonceSharesMessage, NonceSharesRequest, PartialSignaturesMessage, PartialSignaturesRequest,
     PubKeySharesRequest, PubKeySharesResponse, PublishDepositTxRequest,
     SubscribeTxConfirmationStatusRequest, SwapTxSignatureRequest, SwapTxSignatureResponse,
     TxConfirmationStatus,
 };
-use crate::pb::walletrpc::wallet_server;
+pub use crate::pb::walletrpc::wallet_server::WalletServer;
 use crate::pb::walletrpc::{
-    ConfEvent, ConfRequest, ListUnspentRequest, ListUnspentResponse, NewAddressRequest,
-    NewAddressResponse, WalletBalanceRequest, WalletBalanceResponse,
+    wallet_server, ConfEvent, ConfRequest, ListUnspentRequest, ListUnspentResponse,
+    NewAddressRequest, NewAddressResponse, WalletBalanceRequest, WalletBalanceResponse,
 };
 use crate::protocol::{TradeModel, TradeModelStore as _, TRADE_MODELS};
 use crate::wallet::WalletService;
-
-pub use musig_server::MusigServer;
-pub use wallet_server::WalletServer;
 
 #[derive(Debug, Default)]
 pub struct MusigImpl {}

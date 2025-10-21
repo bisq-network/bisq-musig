@@ -1,3 +1,6 @@
+use std::collections::BTreeMap;
+use std::sync::{Arc, LazyLock, Mutex};
+
 use bdk_wallet::bitcoin::address::{NetworkChecked, NetworkUnchecked, NetworkValidation};
 use bdk_wallet::bitcoin::hashes::Hash as _;
 use bdk_wallet::bitcoin::key::TweakedPublicKey;
@@ -18,8 +21,6 @@ use protocol::transaction::{
     DepositTxBuilder, ForwardingTxBuilder, NetworkParams as _, RedirectTxBuilder, WarningTxBuilder,
     WithWitnesses as _,
 };
-use std::collections::BTreeMap;
-use std::sync::{Arc, LazyLock, Mutex};
 use thiserror::Error;
 
 use crate::storage::{ByOptVal, ByRef, ByVal, Storage, ValStorage};

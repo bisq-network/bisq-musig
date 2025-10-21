@@ -1,3 +1,7 @@
+use std::collections::BTreeSet;
+use std::str::FromStr as _;
+use std::sync::LazyLock;
+
 use bdk_wallet::bitcoin::amount::CheckedSum as _;
 use bdk_wallet::bitcoin::opcodes::all::{OP_CHECKSIG, OP_CSV, OP_DROP};
 use bdk_wallet::bitcoin::psbt::ExtractTxError;
@@ -12,9 +16,6 @@ use bdk_wallet::bitcoin::{
 use paste::paste;
 use rand::RngCore;
 use relative::LockTime;
-use std::collections::BTreeSet;
-use std::str::FromStr as _;
-use std::sync::LazyLock;
 use thiserror::Error;
 
 use crate::psbt::{
@@ -593,12 +594,13 @@ impl From<ExtractTxError> for TransactionErrorKind {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
     use bdk_wallet::bitcoin::consensus;
     use bdk_wallet::bitcoin::hex::test_hex_unwrap as hex;
     use const_format::str_index;
     use rand::SeedableRng as _;
     use rand_chacha::ChaCha20Rng;
-    use std::sync::Arc;
 
     use super::*;
     use crate::psbt::{mock_buyer_trade_wallet, mock_seller_trade_wallet};

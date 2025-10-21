@@ -1,12 +1,12 @@
-use protocol::nigiri;
 use std::collections::HashMap;
 use std::sync::Mutex;
-use tonic::{Request, Response, Result, Status};
-use tracing::info;
 
 use bdk_wallet::bitcoin::Amount;
+use protocol::nigiri;
 use protocol::protocol_musig_adaptor::{BMPContext, BMPProtocol, ProtocolRole, Round1Parameter};
 use protocol::wallet_service::WalletService;
+use tonic::{Request, Response, Result, Status};
+use tracing::info;
 
 use crate::pb::bmp_protocol::bmp_protocol_service_server::BmpProtocolService;
 use crate::pb::bmp_protocol::{self, InitializeRequest, InitializeResponse, Role};

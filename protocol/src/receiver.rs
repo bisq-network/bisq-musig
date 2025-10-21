@@ -1,7 +1,8 @@
+use std::sync::Arc;
+
 use bdk_wallet::bitcoin::address::{NetworkChecked, NetworkUnchecked, NetworkValidation};
 use bdk_wallet::bitcoin::amount::CheckedSum as _;
 use bdk_wallet::bitcoin::{Address, Amount, FeeRate, Network, TxOut, Weight};
-use std::sync::Arc;
 
 use crate::transaction::Result;
 

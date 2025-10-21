@@ -1,3 +1,6 @@
+use std::io::Write as _;
+use std::str::FromStr as _;
+
 use bdk_electrum::{BdkElectrumClient, electrum_client};
 use bdk_wallet::bitcoin::bip32::Xpriv;
 use bdk_wallet::bitcoin::hashes::sha256t::Hash;
@@ -17,8 +20,6 @@ use musig2::{
     SecNonce, SecNonceBuilder,
 };
 use rand::{Rng as _, RngCore as _};
-use std::io::Write as _;
-use std::str::FromStr as _;
 
 use crate::receiver::{Receiver, ReceiverList};
 use crate::transaction::{
