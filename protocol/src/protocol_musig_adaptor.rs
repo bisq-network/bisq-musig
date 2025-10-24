@@ -7,10 +7,9 @@ use bdk_wallet::bitcoin::hashes::sha256t::Hash;
 use bdk_wallet::bitcoin::key::Secp256k1;
 use bdk_wallet::bitcoin::taproot::Signature;
 use bdk_wallet::bitcoin::{
-    Address, Amount, FeeRate, KnownHrp, Network, OutPoint, Psbt, PublicKey, ScriptBuf,
-    TapSighashTag, Transaction, TxOut, Txid, relative,
+    Address, Amount, FeeRate, Network, OutPoint, Psbt, ScriptBuf, TapSighashTag, Transaction,
+    TxOut, Txid, XOnlyPublicKey, relative,
 };
-use bdk_wallet::miniscript::ToPublicKey as _;
 use bdk_wallet::template::{Bip86, DescriptorTemplate as _};
 use bdk_wallet::{AddressInfo, KeychainKind, SignOptions, Wallet};
 use musig2::secp::MaybePoint::Valid;
@@ -1080,9 +1079,10 @@ trait PointExt {
 
 impl PointExt for Point {
     fn key_spend_no_merkle_address(&self) -> anyhow::Result<Address> {
-        let pubkey = PublicKey::from_slice(&self.serialize())?.to_x_only_pubkey();
+        let point_pub = self.serialize_xonly(); // convert from secp256k1 version 0.29.1 to secp256k1 version 0.30.1
+        let untweaked_pubkey = XOnlyPublicKey::from_slice(&point_pub)?; // TODO unify versions of musig2 and bdk_wallet!
         let secp = Secp256k1::new(); // TODO make it static?
-        let adr = Address::p2tr(&secp, pubkey, None, KnownHrp::Regtest); // TODO parameterize Network
-        Ok(adr)
+        // Convert to a taproot address with no scripts
+        Ok(Address::p2tr(&secp, untweaked_pubkey, None, Network::Regtest))
     }
 }
