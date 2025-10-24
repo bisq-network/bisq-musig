@@ -94,6 +94,11 @@ impl Receiver {
                 // No further receivers with this share size or smaller can be economically added.
                 break;
             }
+            if min_output_amount.checked_mul(u64::from(num_receivers) + 1)? > new_total_to_receive {
+                // We would get stuck if we include any more outputs, since there are insufficient
+                // funds for all of them, even paying each the allowed minimum.
+                break;
+            }
             total_share = new_total_share;
             total_to_receive_msat = new_total_to_receive_msat;
             num_receivers = num_receivers.checked_add(1)?;
@@ -176,7 +181,7 @@ mod tests {
 
     //noinspection SpellCheckingInspection
     #[test]
-    fn test_compute_receivers_from_shares_one_filtered() {
+    fn test_compute_receivers_from_shares_one_filtered_normally() {
         // This is the smallest fee for which the minimum allowed receiver output amount starts
         // scaling linearly with the fee and exceeds the absolute minimum of 1000 sats, instead
         // being rounded _up_ to 1001 sats:
@@ -195,6 +200,35 @@ mod tests {
         // the remaining receivers makes another 1_672 sats available, taking him above the minimum.
         let expected_receivers: ReceiverList = receivers([
             ("bcrt1p88h9s6lq8jw3ehdlljp7sa85kwpp9lvyrl077twvjnackk4lxt0sffnlrk", 2_672),
+        ]);
+
+        let receivers = Receiver::compute_receivers_from_shares(
+            receiver_shares, available_amount_msat, fee_rate).unwrap();
+
+        assert_eq!(expected_receivers, receivers);
+    }
+
+    //noinspection SpellCheckingInspection
+    #[test]
+    fn test_compute_receivers_from_shares_one_filtered_by_min_output_saturation() {
+        let fee_rate = FeeRate::from_sat_per_vb_unchecked(10);
+        // 1999 sats for two P2TR outputs, plus 860 sats for their fee contributions:
+        let available_amount_msat = 2_859_000;
+
+        // To be paid 1000 sats each, if both were included, since the 999.5 sats owed to each
+        // receiver gets rounded up to 1000. But since this would lead to a total overpayment of 1
+        // sat, and 1000 is the minimum output amount, we are not allowed to include both.
+        let receiver_shares = receiver_shares([
+            ("bcrt1p88h9s6lq8jw3ehdlljp7sa85kwpp9lvyrl077twvjnackk4lxt0sffnlrk", 0.5),
+            ("bcrt1phhl8d90r9haqwtvw2cv4ryjl8tlnqrv48nhpy7yyks5du6mr66xq5nlwhz", 0.5),
+        ]);
+
+        // The 2nd receiver gets filtered out, in spite of just reaching the 1000 sat minimum needed
+        // to be included, since `min_output_amount` * 2 exceeds the 1999 sats available for 2 P2TR
+        // outputs. The 1st receiver is not filtered out, in spite of having the same share, since
+        // `min_output_amount` * 1 is less than the 2_429 sats available for 1 P2TR output.
+        let expected_receivers: ReceiverList = receivers([
+            ("bcrt1p88h9s6lq8jw3ehdlljp7sa85kwpp9lvyrl077twvjnackk4lxt0sffnlrk", 2_429),
         ]);
 
         let receivers = Receiver::compute_receivers_from_shares(
