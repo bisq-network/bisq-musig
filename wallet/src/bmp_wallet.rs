@@ -3,7 +3,9 @@ use std::vec;
 
 use bdk_wallet::bitcoin::bip32::Xpriv;
 use bdk_wallet::bitcoin::hex::DisplayHex;
-use bdk_wallet::bitcoin::{Amount, Network, PrivateKey, Psbt, ScriptBuf, XOnlyPublicKey};
+use bdk_wallet::bitcoin::{
+    psbt, Amount, Network, PrivateKey, Psbt, ScriptBuf, Sequence, Weight, XOnlyPublicKey,
+};
 use bdk_wallet::chain::Merge;
 use bdk_wallet::keys::bip39::Mnemonic;
 use bdk_wallet::miniscript::psbt::PsbtExt;
@@ -11,13 +13,14 @@ use bdk_wallet::rusqlite::{self, named_params, Connection};
 use bdk_wallet::signer::{InputSigner, SignerContext, SignerError, SignerWrapper};
 use bdk_wallet::template::{Bip86, DescriptorTemplate};
 use bdk_wallet::{
-    AddressInfo, Balance, ChangeSet, KeychainKind, PersistedWallet, SignOptions, Wallet,
-    WalletPersister,
+    AddressInfo, Balance, ChangeSet, KeychainKind, PersistedWallet, SignOptions, TxBuilder, Utxo,
+    Wallet, WalletPersister, WeightedUtxo,
 };
 use rand::RngCore;
 use secp::Scalar;
 
 use crate::chain_data_source::ChainDataSource;
+use crate::coin_selection::AlwaysSpendImportedFirst;
 
 pub trait BMPWalletPersister: WalletPersister {
     type DB;
@@ -198,6 +201,8 @@ pub trait WalletApi {
     fn decrypt(password: &str);
 
     fn persist(&mut self) -> anyhow::Result<bool>;
+
+    fn build_tx(&mut self) -> TxBuilder<'_, AlwaysSpendImportedFirst>;
 
     fn sign(
         &mut self,
@@ -388,6 +393,36 @@ impl WalletApi for BMPWallet<Connection> {
         }
 
         Err(anyhow::anyhow!("Unable to load wallet"))
+    }
+
+    fn build_tx(&mut self) -> TxBuilder<'_, AlwaysSpendImportedFirst> {
+        let imported_weighted_utxos = self
+            .tx_graph()
+            .floating_txouts()
+            .map(|e| {
+                let pbk = XOnlyPublicKey::from_slice(e.1.script_pubkey.as_bytes())
+                    .expect("Should be a valid xonlypubkey");
+
+                println!("Public key to use {:#?}", pbk);
+
+                WeightedUtxo {
+                    utxo: Utxo::Foreign {
+                        outpoint: e.0,
+                        sequence: Sequence::ENABLE_RBF_NO_LOCKTIME,
+                        psbt_input: Box::new(psbt::Input {
+                            witness_utxo: Some(e.1.clone()),
+                            tap_internal_key: Some(pbk),
+                            ..Default::default()
+                        }),
+                    },
+                    // @TODO: properly compute satisfaction weight for p2tr
+                    satisfaction_weight: Weight::from_wu_usize(100),
+                }
+            })
+            .collect::<Vec<_>>();
+
+        let coin_selection = AlwaysSpendImportedFirst(imported_weighted_utxos);
+        self.wallet.build_tx().coin_selection(coin_selection)
     }
 
     fn get_new_address(&mut self) -> anyhow::Result<AddressInfo> {
