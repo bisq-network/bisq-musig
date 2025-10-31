@@ -1,16 +1,18 @@
+use std::str::FromStr;
+
 use bdk_wallet::bitcoin::hashes::Hash;
 use bdk_wallet::bitcoin::hex::DisplayHex;
 use bdk_wallet::bitcoin::key::{Keypair, Secp256k1, TapTweak};
 use bdk_wallet::bitcoin::secp256k1::{schnorr, Message};
 use bdk_wallet::bitcoin::sighash::{Prevouts, SighashCache};
 use bdk_wallet::bitcoin::{
-    Amount, BlockHash, Network, PrivateKey, TapSighashType, Transaction, TxOut, Witness,
-    XOnlyPublicKey,
+    psbt, Amount, BlockHash, Network, OutPoint, PrivateKey, ScriptBuf, Sequence, TapSighashType,
+    Transaction, TxOut, Weight, Witness, XOnlyPublicKey,
 };
-use bdk_wallet::chain::BlockId;
+use bdk_wallet::chain::{self, BlockId, ChainPosition, ConfirmationBlockTime};
 use bdk_wallet::rusqlite::Connection;
 use bdk_wallet::test_utils::{insert_checkpoint, receive_output_in_latest_block};
-use bdk_wallet::{PersistedWallet, Wallet};
+use bdk_wallet::{KeychainKind, LocalOutput, PersistedWallet, Utxo, Wallet, WeightedUtxo};
 use secp::Scalar;
 
 use crate::bmp_wallet::BMPWalletPersister;
@@ -99,4 +101,75 @@ pub fn load_imported_wallet(key: &Scalar) -> anyhow::Result<PersistedWallet<Conn
 pub fn derive_public_key(key: &Scalar) -> XOnlyPublicKey {
     let xonly_pubkey = key.base_point_mul().serialize_xonly();
     XOnlyPublicKey::from_slice(&xonly_pubkey).expect("Should be valid xonlypub key")
+}
+
+pub fn foreign_utxo(value: Amount, index: u32) -> WeightedUtxo {
+    assert!(index < 10);
+    let outpoint = OutPoint::from_str(&format!(
+        "000000000000000000000000000000000000000000000000000000000000000{index}:0"
+    ))
+    .unwrap();
+    WeightedUtxo {
+        utxo: Utxo::Foreign {
+            outpoint,
+            sequence: Sequence(0xFFFFFFFD),
+            psbt_input: Box::new(psbt::Input {
+                witness_utxo: Some(TxOut {
+                    value,
+                    script_pubkey: ScriptBuf::from_bytes(vec![0, 0, 1]),
+                }),
+                non_witness_utxo: None,
+                ..Default::default()
+            }),
+        },
+        satisfaction_weight: Weight::from_wu_usize(107),
+    }
+}
+
+pub fn confirmed_utxo(
+    value: Amount,
+    index: u32,
+    confirmation_height: u32,
+    confirmation_time: u64,
+) -> WeightedUtxo {
+    local_utxo(
+        value,
+        index,
+        ChainPosition::Confirmed {
+            anchor: ConfirmationBlockTime {
+                block_id: chain::BlockId {
+                    height: confirmation_height,
+                    hash: BlockHash::all_zeros(),
+                },
+                confirmation_time,
+            },
+            transitively: None,
+        },
+    )
+}
+
+pub fn local_utxo(
+    value: Amount,
+    index: u32,
+    chain_position: ChainPosition<ConfirmationBlockTime>,
+) -> WeightedUtxo {
+    assert!(index < 10);
+    let outpoint = OutPoint::from_str(&format!(
+        "000000000000000000000000000000000000000000000000000000000000000{index}:0"
+    ))
+    .unwrap();
+    WeightedUtxo {
+        satisfaction_weight: Weight::from_wu_usize(107),
+        utxo: Utxo::Local(LocalOutput {
+            outpoint,
+            txout: TxOut {
+                value,
+                script_pubkey: ScriptBuf::from_bytes(vec![0, 0, 2]),
+            },
+            keychain: KeychainKind::External,
+            is_spent: false,
+            derivation_index: 42,
+            chain_position,
+        }),
+    }
 }
