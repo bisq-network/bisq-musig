@@ -1,6 +1,7 @@
-use bdk_wallet::bitcoin::Amount;
 use std::process::{Command, Output};
 use std::{thread, time};
+
+use bdk_wallet::bitcoin::Amount;
 
 use crate::protocol_musig_adaptor::MemWallet;
 

@@ -1,6 +1,7 @@
 pub mod nigiri;
 pub mod protocol_musig_adaptor;
 pub mod psbt;
+pub mod receiver;
 mod swap;
 pub mod transaction;
 pub mod wallet_service;
@@ -10,14 +11,14 @@ mod tests {
     use bdk_electrum::bdk_core::bitcoin;
     use bdk_electrum::bdk_core::bitcoin::key::{Keypair, Secp256k1, TweakedKeypair};
     use bdk_electrum::bdk_core::bitcoin::secp256k1::Message;
-    use bdk_electrum::bdk_core::bitcoin::sighash::{Prevouts, SighashCache};
-    use bdk_electrum::bdk_core::bitcoin::{Amount, TapSighashType, Witness};
+    use bdk_electrum::bdk_core::bitcoin::{Amount, TapSighashType};
     use bdk_wallet::bitcoin::key::TapTweak as _;
     use musig2::KeyAggContext;
     use musig2::secp::{Point, Scalar};
 
     use crate::nigiri;
     use crate::protocol_musig_adaptor::{BMPContext, BMPProtocol, ProtocolRole};
+    use crate::transaction::WithWitnesses as _;
     use crate::wallet_service::WalletService;
 
     #[test]
@@ -79,12 +80,12 @@ mod tests {
     fn test_swap() -> anyhow::Result<()> {
         // create all transaction and Broadcast DepositTx already
         let (mut alice, mut bob) = initial_tx_creation()?;
-        dbg!(&alice.swap_tx.tx);
-        dbg!(&bob.swap_tx.tx);
+        dbg!(alice.swap_tx.unsigned_tx()?);
+        dbg!(bob.swap_tx.unsigned_tx()?);
 
         // alice broadcasts SwapTx
         let alice_swap = alice.swap_tx.sign(&alice.p_tik)?;
-        dbg!(alice.swap_tx.broadcast(&alice.ctx));
+        dbg!(alice.swap_tx.broadcast(&alice.ctx)?);
         nigiri::tiktok();
         // bob must find the transaction and retrieve P_a from it and then spend DepositTx-Output0 to his wallet.
         // TODO need to read the transaction from blockchain looking for bob.swap_tx.txid
@@ -104,9 +105,9 @@ mod tests {
     fn test_warning() -> anyhow::Result<()> {
         // create all transaction and Broadcast DepositTx already
         let (alice, _bob) = initial_tx_creation()?;
-        dbg!(&alice.warning_tx_me.tx);
+        dbg!(alice.warning_tx_me.signed_tx()?);
         // alice broadcasts WarningTx
-        dbg!(alice.warning_tx_me.broadcast(&alice.ctx));
+        dbg!(alice.warning_tx_me.broadcast(&alice.ctx)?);
         nigiri::tiktok();
         Ok(())
     }
@@ -117,10 +118,10 @@ mod tests {
         let (alice, _bob) = initial_tx_creation()?;
         // dbg!(&alice.warning_tx_me.tx);
         // alice broadcasts WarningTx
-        alice.warning_tx_me.broadcast(&alice.ctx);
+        alice.warning_tx_me.broadcast(&alice.ctx)?;
         nigiri::tiktok();
         nigiri::tiktok(); // we have set time-delay t2 to 2 Blocks
-        dbg!(&alice.claim_tx_me.tx);
+        dbg!(alice.claim_tx_me.signed_tx()?);
 
         // according to BIP-68 min time to wait is 512sec
         // let mut remaining_time = 532;
@@ -142,13 +143,13 @@ mod tests {
     fn test_claim_too_early() -> anyhow::Result<()> {
         // create all transaction and Broadcast DepositTx already
         let (alice, _bob) = initial_tx_creation()?;
-        alice.warning_tx_me.broadcast(&alice.ctx);
+        alice.warning_tx_me.broadcast(&alice.ctx)?;
         // nigiri::tiktok();
         nigiri::tiktok(); // we have set time-delay t2 to 2 Blocks
 
         let rtx = alice.claim_tx_me.broadcast(&alice.ctx);
         match rtx {
-            Ok(_) => panic!("ClaimTx should not go through, because its been broadcast too early.
+            Ok(_) => panic!("ClaimTx should not go through, because it's been broadcast too early.
             HINT: Do not run this test in parallel with other tests, use --test-threads=1"),
             Err(e) => {
                 let error_message = format!("{e:?}");
@@ -167,11 +168,11 @@ mod tests {
         let (alice, bob) = initial_tx_creation()?;
         // dbg!(&alice.warning_tx_me.tx);
         // alice broadcasts WarningTx
-        let bob_warn_id = bob.warning_tx_me.broadcast(&bob.ctx);
+        let bob_warn_id = bob.warning_tx_me.broadcast(&bob.ctx)?;
         nigiri::tiktok();
         dbg!(bob_warn_id);
 
-        let tx = alice.redirect_tx_me.broadcast(&alice.ctx);
+        let tx = alice.redirect_tx_me.broadcast(&alice.ctx)?;
         dbg!(tx);
         nigiri::tiktok();
         Ok(())
@@ -185,17 +186,7 @@ mod tests {
         // test!(alice.swap_tx.)
 
         // message
-        let tx = bob.swap_tx.tx.clone().unwrap();
-        let prevout = &bob.swap_tx.calc_prevouts(&bob.deposit_tx)?;
-        let prevouts = Prevouts::All(prevout);
-        let input_index = 0;
-
-        let sighash_type = TapSighashType::Default;
-
-        let mut sighasher = SighashCache::new(tx);
-        let sighash = sighasher
-            .taproot_key_spend_signature_hash(input_index, &prevouts, sighash_type)
-            .expect("failed to construct sighash");
+        let sighash = bob.swap_tx.builder.input_sighash()?;
         let msg = Message::from(sighash);
 
         // path 1: secp sig  -----------------------------
@@ -217,6 +208,7 @@ mod tests {
         let sig1 = secp.sign_schnorr(&msg, &keypair); // will end up in Bad Signature
         // let sig1 = secp.sign_schnorr(&msg, &tweaked.to_inner());
         // Update the witness stack.
+        let sighash_type = TapSighashType::Default;
         let signature_secp = bitcoin::taproot::Signature { signature: sig1, sighash_type };
         let path1pubpoint = Point::from_slice(&keypair.public_key().serialize())?;
         let path1tweakpoint = Point::from_slice(&tweaked.to_keypair().public_key().serialize())?;
@@ -251,10 +243,10 @@ mod tests {
         // assert_eq!(dser, my_agg_point.serialize(), "my pubkey not equal");
 
         // use signature and broadcast ------------------------------------------
-        *sighasher.witness_mut(input_index).unwrap() = Witness::p2tr_key_spend(&signature_secp);
 
         // Get the signed transaction.
-        let tx = sighasher.into_transaction();
+        let tx = bob.swap_tx.unsigned_tx()?.clone()
+            .with_key_spend_witness(0, &signature_secp);
 
         let txid = alice.ctx.funds.client.transaction_broadcast(&tx)?;
         dbg!(txid);
