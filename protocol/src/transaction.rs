@@ -137,8 +137,8 @@ impl TxOutput {
             // weight = 230 = 4 * (36 + 1 + 4) (non-witness part) + 2 + 64 (signature)
             (s, Some(k)) if s.is_p2tr() && *s == Self::keyspend_only_spk(k) => 230,
             // Assumes low-R nonce grinding:
-            // weight = 272 = 4 * (36 + 1 + 4) (non-witness part) + 3 + 33 (pubkey) + 72 (signature)
-            (s, None) if s.is_p2wpkh() => 272,
+            // weight = 271 = 4 * (36 + 1 + 4) (non-witness part) + 3 + 33 (pubkey) + 71 (signature)
+            (s, None) if s.is_p2wpkh() => 271,
             // Other spk types are forbidden, as they lead to either tx malleability or an
             // arbitrarily long and unstructured witness program, or no standard spends:
             _ => return None
@@ -693,11 +693,8 @@ mod tests {
     fn test_swap_tx_builder() -> Result<()> {
         let builder = filled_swap_tx_builder(&filled_deposit_tx_builder()?)?;
         let signed_tx = builder.signed_tx()?;
-        let sighash = builder.input_sighash()?;
 
         assert_eq!(&tx(SIGNED_SWAP_TX), signed_tx);
-        // TODO: Check that the sighash is correct.
-        dbg!(sighash);
         Ok(())
     }
 
@@ -705,11 +702,8 @@ mod tests {
     fn test_warning_tx_builder() -> Result<()> {
         let builder = filled_warning_tx_builder(&filled_deposit_tx_builder()?)?;
         let signed_tx = builder.signed_tx()?;
-        let sighashes = [builder.buyer_input_sighash()?, builder.seller_input_sighash()?];
 
         assert_eq!(&tx(SIGNED_SELLERS_WARNING_TX), signed_tx);
-        // TODO: Check that the sighashes are correct.
-        dbg!(sighashes);
         Ok(())
     }
 
@@ -718,11 +712,8 @@ mod tests {
         let builder = filled_redirect_tx_builder(
             &filled_warning_tx_builder(&filled_deposit_tx_builder()?)?)?;
         let signed_tx = builder.signed_tx()?;
-        let sighash = builder.input_sighash()?;
 
         assert_eq!(&tx(SIGNED_BUYERS_REDIRECT_TX), signed_tx);
-        // TODO: Check that the sighash is correct.
-        dbg!(sighash);
         Ok(())
     }
 
@@ -731,11 +722,8 @@ mod tests {
         let builder = filled_claim_tx_builder(
             &filled_warning_tx_builder(&filled_deposit_tx_builder()?)?)?;
         let signed_tx = builder.signed_tx()?;
-        let sighash = builder.input_sighash()?;
 
         assert_eq!(&tx(SIGNED_SELLERS_CLAIM_TX), signed_tx);
-        // TODO: Check that the sighash is correct.
-        dbg!(sighash);
         Ok(())
     }
 
