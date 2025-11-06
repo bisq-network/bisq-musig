@@ -3,18 +3,25 @@ use std::vec;
 
 use bdk_wallet::bitcoin::bip32::Xpriv;
 use bdk_wallet::bitcoin::hex::DisplayHex;
-use bdk_wallet::bitcoin::{Amount, Network};
+use bdk_wallet::bitcoin::{
+    psbt, Amount, Network, PrivateKey, Psbt, ScriptBuf, Sequence, Weight, XOnlyPublicKey,
+};
 use bdk_wallet::chain::Merge;
 use bdk_wallet::keys::bip39::Mnemonic;
+use bdk_wallet::miniscript::psbt::PsbtExt;
+use bdk_wallet::miniscript::ToPublicKey;
 use bdk_wallet::rusqlite::{self, named_params, Connection};
+use bdk_wallet::signer::{InputSigner, SignerContext, SignerError, SignerWrapper};
 use bdk_wallet::template::{Bip86, DescriptorTemplate};
 use bdk_wallet::{
-    AddressInfo, Balance, ChangeSet, KeychainKind, PersistedWallet, Wallet, WalletPersister,
+    AddressInfo, Balance, ChangeSet, KeychainKind, PersistedWallet, SignOptions, TxBuilder, Utxo,
+    Wallet, WalletPersister, WeightedUtxo,
 };
 use rand::RngCore;
 use secp::Scalar;
 
 use crate::chain_data_source::ChainDataSource;
+use crate::coin_selection::AlwaysSpendImportedFirst;
 
 pub trait BMPWalletPersister: WalletPersister {
     type DB;
@@ -196,6 +203,14 @@ pub trait WalletApi {
 
     fn persist(&mut self) -> anyhow::Result<bool>;
 
+    fn build_tx(&mut self) -> TxBuilder<'_, AlwaysSpendImportedFirst>;
+
+    fn sign(
+        &mut self,
+        psbt: &mut Psbt,
+        sign_options: SignOptions,
+    ) -> anyhow::Result<(), SignerError>;
+
     fn sync_all(&mut self, data_source: &impl ChainDataSource) -> anyhow::Result<bool>;
 }
 
@@ -220,6 +235,54 @@ impl WalletApi for BMPWallet<Connection> {
             }
             None => Ok(false),
         }
+    }
+
+    fn sign(
+        &mut self,
+        psbt: &mut Psbt,
+        sign_options: SignOptions,
+    ) -> anyhow::Result<(), SignerError> {
+        //// @TODO perfomance: cache the public keys derivation
+        let secp = self.secp_ctx();
+        let is_mine = |input_script: &ScriptBuf| {
+            for key in &self.imported_keys {
+                let xonly_pubkey = key.base_point_mul().serialize_xonly();
+                let xonly_pubkey = XOnlyPublicKey::from_slice(&xonly_pubkey)
+                    .expect("Should be valid xonlypub key");
+                let script = ScriptBuf::new_p2tr(secp, xonly_pubkey, None);
+
+                if script == *input_script {
+                    return Some(*key);
+                }
+            }
+            None
+        };
+
+        for (input_index, input_details) in psbt.inputs.clone().iter().enumerate() {
+            let txout = input_details.witness_utxo.as_ref().unwrap();
+
+            if let Some(signing_key) = is_mine(&txout.script_pubkey) {
+                let signer = PrivateKey::from_slice(&signing_key.serialize(), self.network())
+                    .map_err(|_e| SignerError::External("Invalid signing key".to_string()))?;
+
+                let sw = SignerWrapper::new(
+                    signer,
+                    SignerContext::Tap {
+                        is_internal_key: true,
+                    },
+                );
+                psbt.inputs[input_index].tap_internal_key = Some(signer.public_key(self.secp_ctx()).to_x_only_pubkey());
+
+                sw.sign_input(psbt, input_index, &sign_options, secp)?;
+                psbt.finalize_inp_mut(secp, input_index)
+                    .map_err(|_e| SignerError::External("Unable to finalized input".to_string()))?;
+            }
+        }
+
+        let finalized = self.wallet.sign(psbt, sign_options)?;
+        assert!(finalized, "PSBT should be finalized");
+
+        Ok(())
     }
 
     fn sync_all(&mut self, data_source: &impl ChainDataSource) -> anyhow::Result<bool> {
@@ -336,6 +399,29 @@ impl WalletApi for BMPWallet<Connection> {
         Err(anyhow::anyhow!("Unable to load wallet"))
     }
 
+    fn build_tx(&mut self) -> TxBuilder<'_, AlwaysSpendImportedFirst> {
+        let imported_weighted_utxos = self
+            .tx_graph()
+            .floating_txouts()
+            .map(|utxo| {
+                WeightedUtxo {
+                    utxo: Utxo::Foreign {
+                        outpoint: utxo.0,
+                        sequence: Sequence::ENABLE_RBF_NO_LOCKTIME,
+                        psbt_input: Box::new(psbt::Input {
+                            witness_utxo: Some(utxo.1.clone()),
+                            ..Default::default()
+                        }),
+                    },
+                    satisfaction_weight: Weight::from_wu_usize(65),
+                }
+            })
+            .collect::<Vec<_>>();
+
+        let coin_selection = AlwaysSpendImportedFirst(imported_weighted_utxos);
+        self.wallet.build_tx().coin_selection(coin_selection)
+    }
+
     fn get_new_address(&mut self) -> anyhow::Result<AddressInfo> {
         let addr = self.wallet.next_unused_address(KeychainKind::External);
         // Persist the revealed address, to avoid address reuse
@@ -394,17 +480,17 @@ mod tests {
     use std::sync::Arc;
 
     use bdk_wallet::bitcoin::hashes::Hash;
-    use bdk_wallet::bitcoin::{AddressType, Amount, BlockHash, Network};
+    use bdk_wallet::bitcoin::{psbt, Address, AddressType, Amount, BlockHash, Network, Weight};
     use bdk_wallet::chain::{self, BlockId};
     use bdk_wallet::test_utils::{receive_output_to_address, ReceiveTo};
-    use bdk_wallet::{AddressInfo, KeychainKind};
+    use bdk_wallet::{AddressInfo, KeychainKind, SignOptions};
     use rand::RngCore;
     use secp::Scalar;
     use simple_semaphore::{self, Semaphore};
     use tempfile::{tempdir, TempDir};
 
     use crate::bmp_wallet::{BMPWallet, WalletApi};
-    use crate::test_utils::MockedBDKElectrum;
+    use crate::test_utils::{derive_public_key, load_imported_wallet, MockedBDKElectrum};
 
     static SEMAPHORE: once_cell::sync::Lazy<Arc<Semaphore>> =
         once_cell::sync::Lazy::new(|| Semaphore::new(1));
@@ -571,6 +657,152 @@ mod tests {
         assert_eq!(bmp_wallet.balance(), Amount::from_int_btc(3));
 
         println!("Wallet balance after syncing {}", bmp_wallet.balance());
+        Ok(())
+    }
+
+    #[test]
+
+    fn sign_inputs_main_wallet_only() -> anyhow::Result<()> {
+        let _permit = SEMAPHORE.acquire();
+        let _tmp_dir = tear_up();
+
+        let client = MockedBDKElectrum {};
+        let mut bmp_wallet = BMPWallet::new(Network::Regtest)?;
+
+        println!("Wallet balance before syncing {}", bmp_wallet.balance());
+        assert_eq!(bmp_wallet.balance(), Amount::from_int_btc(0));
+
+        let _ = bmp_wallet.sync_all(&client);
+
+        assert_eq!(bmp_wallet.balance(), Amount::from_int_btc(1));
+
+        let to_address = "tb1pyfv094rr0vk28lf8v9yx3veaacdzg26ztqk4ga84zucqqhafnn5q9my9rz";
+        let to_address = to_address.parse::<Address<_>>()?.assume_checked();
+        let to_spend = Amount::from_sat(100_000);
+
+        let mut tx_builder = bmp_wallet.build_tx();
+        tx_builder.add_recipient(to_address, to_spend);
+
+        let mut res_psbt = tx_builder.finish()?;
+
+        bmp_wallet.sign(&mut res_psbt, SignOptions::default())?;
+
+        assert!(res_psbt
+            .inputs
+            .iter()
+            .all(|i| i.final_script_witness.is_some()));
+
+        Ok(())
+    }
+
+    #[test]
+    fn sign_inputs_main_and_imported_keys() -> anyhow::Result<()> {
+        let _permit = SEMAPHORE.acquire();
+        let _tmp_dir = tear_up();
+
+        let client = MockedBDKElectrum {};
+        let mut bmp_wallet = BMPWallet::new(Network::Regtest)?;
+
+        let keys_to_import = [new_private_key(), new_private_key()];
+        keys_to_import
+            .iter()
+            .for_each(|k| bmp_wallet.import_private_key(*k));
+
+        println!("Wallet balance before syncing {}", bmp_wallet.balance());
+        assert_eq!(bmp_wallet.balance(), Amount::from_int_btc(0));
+
+        let _ = bmp_wallet.sync_all(&client);
+
+        assert_eq!(bmp_wallet.balance(), Amount::from_int_btc(3));
+
+        let to_address = "tb1pyfv094rr0vk28lf8v9yx3veaacdzg26ztqk4ga84zucqqhafnn5q9my9rz";
+        let to_address = to_address.parse::<Address<_>>()?.assume_checked();
+        let to_spend = Amount::from_int_btc(2);
+
+        let mut tx_builder = bmp_wallet.build_tx();
+        tx_builder.add_recipient(to_address, to_spend);
+
+        let first_key_wallet = load_imported_wallet(&keys_to_import[0])?;
+        let second_key_wallet = load_imported_wallet(&keys_to_import[1])?;
+
+        let first_key_unspents = first_key_wallet.list_unspent().collect::<Vec<_>>();
+        let second_key_unspents = second_key_wallet.list_unspent().collect::<Vec<_>>();
+
+        assert_eq!(first_key_unspents.len(), 1);
+        assert_eq!(second_key_unspents.len(), 1);
+
+        first_key_unspents.iter().for_each(|i| {
+            let psbt_input = psbt::Input {
+                witness_utxo: Some(i.txout.clone()),
+                tap_internal_key: Some(derive_public_key(&keys_to_import[0])),
+                ..Default::default()
+            };
+            tx_builder.add_foreign_utxo(i.outpoint, psbt_input, Weight::from_wu(107))
+                .unwrap();
+        });
+
+        second_key_unspents.iter().for_each(|i| {
+            let psbt_input = psbt::Input {
+                witness_utxo: Some(i.txout.clone()),
+                tap_internal_key: Some(derive_public_key(&keys_to_import[1])),
+                ..Default::default()
+            };
+            tx_builder.add_foreign_utxo(i.outpoint, psbt_input, Weight::from_wu(107))
+                .unwrap();
+        });
+
+        let mut res_psbt = tx_builder.finish()?;
+
+        bmp_wallet.sign(&mut res_psbt, SignOptions::default())?;
+
+        assert!(res_psbt
+            .inputs
+            .iter()
+            .all(|i| i.final_script_witness.is_some()));
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_selection_with_main_and_imported() -> anyhow::Result<()> {
+        let _permit = SEMAPHORE.acquire();
+        let _tmp_dir = tear_up();
+
+        let client = MockedBDKElectrum {};
+        let mut bmp_wallet = BMPWallet::new(Network::Regtest)?;
+
+        let pk1: [u8; 32] = [
+            180, 143, 139, 78, 9, 248, 73, 139, 169, 173, 99, 191, 248, 54, 50, 207, 137, 222, 85,
+            70, 228, 53, 252, 227, 191, 26, 160, 101, 121, 195, 74, 212,
+        ];
+
+        let pk2: [u8; 32] = [
+            78, 212, 125, 103, 117, 115, 156, 113, 203, 95, 207, 59, 190, 106, 63, 162, 225, 131,
+            186, 216, 94, 123, 55, 23, 125, 232, 214, 160, 33, 172, 124, 61,
+        ];
+
+        bmp_wallet.import_private_key(Scalar::from_slice(&pk1).unwrap());
+        bmp_wallet.import_private_key(Scalar::from_slice(&pk2).unwrap());
+
+        bmp_wallet.sync_all(&client)?;
+
+        let to_address = "tb1pyfv094rr0vk28lf8v9yx3veaacdzg26ztqk4ga84zucqqhafnn5q9my9rz";
+        let to_address = to_address.parse::<Address<_>>()?.assume_checked();
+        let to_spend = Amount::from_int_btc(2);
+
+        let mut tx_builder = bmp_wallet.build_tx();
+
+        tx_builder.add_recipient(to_address, to_spend);
+
+        let mut res_psbt = tx_builder.finish()?;
+
+        bmp_wallet.sign(&mut res_psbt, SignOptions::default())?;
+
+        assert!(res_psbt
+            .inputs
+            .iter()
+            .all(|i| i.final_script_witness.is_some()));
+
         Ok(())
     }
 }

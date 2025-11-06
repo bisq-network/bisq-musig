@@ -1,5 +1,7 @@
 #![cfg_attr(feature = "unimock", expect(clippy::ignored_unit_patterns, reason = "macro-generated code"))]
 
+use std::sync::{Arc, Mutex, RwLock};
+
 use bdk_bitcoind_rpc::bitcoincore_rpc::{Auth, Client, RpcApi as _};
 use bdk_bitcoind_rpc::Emitter;
 use bdk_wallet::bitcoin::{Network, Transaction, Txid};
@@ -8,7 +10,6 @@ use bdk_wallet::{AddressInfo, Balance, KeychainKind, LocalOutput, Wallet};
 use drop_stream::DropStreamExt as _;
 use futures_util::never::Never;
 use futures_util::stream::{BoxStream, StreamExt as _};
-use std::sync::{Arc, Mutex, RwLock};
 use thiserror::Error;
 use tokio::task::{self, JoinHandle};
 use tokio::time::{self, Duration, MissedTickBehavior};

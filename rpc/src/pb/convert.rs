@@ -6,7 +6,7 @@ use bdk_wallet::{Balance, LocalOutput};
 use musig2::secp::{MaybeScalar, Point, Scalar};
 use musig2::PubNonce;
 use prost::UnknownEnumValue;
-use protocol::transaction::Receiver;
+use protocol::receiver::Receiver;
 use tonic::{Result, Status};
 
 use crate::pb::musigrpc::{

@@ -1,3 +1,5 @@
+use std::collections::{BTreeMap, BTreeSet};
+
 use bdk_wallet::bitcoin::amount::CheckedSum as _;
 use bdk_wallet::bitcoin::hashes::Hash as _;
 use bdk_wallet::bitcoin::opcodes::all::{OP_PUSHBYTES_27, OP_RETURN};
@@ -10,10 +12,10 @@ use bdk_wallet::bitcoin::{
 use bdk_wallet::{KeychainKind, TxOrdering, Wallet};
 use rand::{RngCore, SeedableRng as _};
 use rand_chacha::ChaCha20Rng;
-use std::collections::{BTreeMap, BTreeSet};
 
+use crate::receiver::Receiver;
 use crate::swap::Swap as _;
-use crate::transaction::{Receiver, Result, TransactionErrorKind, TxOutput};
+use crate::transaction::{Result, TransactionErrorKind, TxOutput};
 
 // We disallow half-deposit PSBTs with more than half the single-byte VarInt-representable limit
 // number (252) of inputs or outputs, as otherwise merging the peer's PSBT could cause it to tip

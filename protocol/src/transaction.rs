@@ -1,4 +1,7 @@
-use bdk_wallet::bitcoin::address::{NetworkChecked, NetworkUnchecked, NetworkValidation};
+use std::collections::BTreeSet;
+use std::str::FromStr as _;
+use std::sync::LazyLock;
+
 use bdk_wallet::bitcoin::amount::CheckedSum as _;
 use bdk_wallet::bitcoin::opcodes::all::{OP_CHECKSIG, OP_CSV, OP_DROP};
 use bdk_wallet::bitcoin::psbt::ExtractTxError;
@@ -13,15 +16,13 @@ use bdk_wallet::bitcoin::{
 use paste::paste;
 use rand::RngCore;
 use relative::LockTime;
-use std::collections::BTreeSet;
-use std::str::FromStr as _;
-use std::sync::{Arc, LazyLock};
 use thiserror::Error;
 
 use crate::psbt::{
     TradeWallet, check_placeholder_output, check_receiver_outputs, merge_psbt_halves, prevout_set,
     set_payouts_and_shuffle,
 };
+use crate::receiver::ReceiverList;
 
 pub const REGTEST_WARNING_LOCK_TIME: LockTime = LockTime::from_height(5);
 pub const REGTEST_REDIRECT_LOCK_TIME: LockTime = LockTime::ZERO;
@@ -87,50 +88,6 @@ impl NetworkParams for Network {
             Self::Regtest => REGTEST_CLAIM_LOCK_TIME,
             _ => MAINNET_CLAIM_LOCK_TIME
         }
-    }
-}
-
-pub struct Receiver<V: NetworkValidation = NetworkChecked> {
-    pub address: Address<V>,
-    pub amount: Amount,
-}
-
-impl Receiver<NetworkUnchecked> {
-    pub fn require_network(self, required: Network) -> Result<Receiver> {
-        Ok(Receiver { address: self.address.require_network(required)?, amount: self.amount })
-    }
-}
-
-impl Receiver {
-    fn output_weight(&self) -> Weight { TxOut::from(self).weight() }
-
-    fn output_cost_msat(&self, fee_rate: FeeRate) -> Option<u64> {
-        let amount_msat = self.amount.to_sat().checked_mul(1000)?;
-        let fee_msat = fee_rate.to_sat_per_kwu().checked_mul(self.output_weight().to_wu())?;
-        amount_msat.checked_add(fee_msat)
-    }
-
-    pub fn total_output_cost_msat<'a, I>(receivers: I, fee_rate: FeeRate, extra_output_num: u16) -> Option<u64>
-        where I: IntoIterator<Item=&'a Self>
-    {
-        let mut cost = 0u64;
-        let mut num = extra_output_num;
-        for receiver in receivers {
-            cost = cost.checked_add(receiver.output_cost_msat(fee_rate)?)?;
-            // Fail if more than 65535 outputs, which will never happen for a standard tx:
-            num = num.checked_add(1)?;
-        }
-        if num > 252 {
-            // For more than 252 outputs, we get a 3-byte length encoding instead of 1, adding 8 wu.
-            cost = cost.checked_add(fee_rate.to_sat_per_kwu().checked_mul(8)?)?;
-        }
-        Some(cost)
-    }
-}
-
-impl From<&Receiver> for TxOut {
-    fn from(value: &Receiver) -> Self {
-        Self { value: value.amount, script_pubkey: value.address.script_pubkey() }
     }
 }
 
@@ -205,8 +162,6 @@ impl TxOutput {
     }
 }
 
-pub type ReceiverList = Arc<[Receiver]>;
-
 pub trait WithWitnesses: Sized {
     /// # Panics
     /// Will panic if `input_index` is out of bounds
@@ -264,6 +219,7 @@ trait WithFixedInputs<const N: usize> {
         let prevouts = self.inputs()?.map(|input| &input.prevout);
         let prevouts = Prevouts::All(&prevouts);
         let mut cache = SighashCache::new(tx);
+        // TODO: Report missing validation to rust-bitcoin if index is not correct.
         Ok(cache.taproot_key_spend_signature_hash(input_index, &prevouts, TapSighashType::Default)?)
     }
 }
@@ -492,6 +448,15 @@ impl RedirectTxBuilder {
     make_getter!(unsigned_tx: Transaction);
     make_getter!(signed_tx: Transaction);
 
+    pub fn available_amount_msat(escrow_amount: Amount, fee_rate: FeeRate) -> Option<u64> {
+        let redirection_tx_base_fee = fee_rate.to_sat_per_kwu()
+            .checked_mul(SIGNED_REDIRECT_TX_BASE_WEIGHT.to_wu())?;
+        escrow_amount
+            .checked_sub(ANCHOR_AMOUNT)?
+            .to_sat().checked_mul(1000)?
+            .checked_sub(redirection_tx_base_fee)
+    }
+
     pub fn compute_unsigned_tx(&mut self) -> Result<&mut Self> {
         let mut output = Vec::with_capacity(self.receivers()?.len() + 1);
         output.extend(self.receivers()?.iter().map(TxOut::from));
@@ -629,14 +594,17 @@ impl From<ExtractTxError> for TransactionErrorKind {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
+    use bdk_wallet::bitcoin::consensus;
     use bdk_wallet::bitcoin::hex::test_hex_unwrap as hex;
-    use bdk_wallet::bitcoin::{Network, consensus};
     use const_format::str_index;
     use rand::SeedableRng as _;
     use rand_chacha::ChaCha20Rng;
 
     use super::*;
     use crate::psbt::{mock_buyer_trade_wallet, mock_seller_trade_wallet};
+    use crate::receiver::Receiver;
 
     // Valid signed txs pulled from an integration test run. We should be able to rebuild them exactly...
 
