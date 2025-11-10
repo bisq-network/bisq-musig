@@ -2,7 +2,7 @@
 resolver = "3"
 members = ["protocol", "rpc", "wallet"]
 # Old experimental code, to be removed from project:
-exclude = ["adaptor", "bdktest", "poc"]
+exclude = ["poc"]
 
 [workspace.dependencies]
 anyhow = "1.0.100"
