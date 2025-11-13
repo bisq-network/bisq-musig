@@ -1,0 +1,14 @@
+[package]
+name = "testenv"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+# Workspace dependencies
+anyhow = { workspace = true }
+bdk_wallet = { workspace = true }
+electrsd = { version = "0.36.1", features = [
+"corepc-node_29_0",
+"electrs_0_8_10",
+"download",
+] }
