@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["protocol", "rpc", "wallet"]
+members = ["protocol", "rpc", "wallet", "testenv"]
 # Old experimental code, to be removed from project:
 exclude = ["poc"]
 
