@@ -9,7 +9,6 @@ use bdk_wallet::bitcoin::{
 use bdk_wallet::chain::Merge;
 use bdk_wallet::keys::bip39::Mnemonic;
 use bdk_wallet::miniscript::psbt::PsbtExt;
-use bdk_wallet::miniscript::ToPublicKey;
 use bdk_wallet::rusqlite::{self, named_params, Connection};
 use bdk_wallet::signer::{InputSigner, SignerContext, SignerError, SignerWrapper};
 use bdk_wallet::template::{Bip86, DescriptorTemplate};
@@ -271,7 +270,6 @@ impl WalletApi for BMPWallet<Connection> {
                         is_internal_key: true,
                     },
                 );
-                psbt.inputs[input_index].tap_internal_key = Some(signer.public_key(self.secp_ctx()).to_x_only_pubkey());
 
                 sw.sign_input(psbt, input_index, &sign_options, secp)?;
                 psbt.finalize_inp_mut(secp, input_index)
@@ -400,16 +398,33 @@ impl WalletApi for BMPWallet<Connection> {
     }
 
     fn build_tx(&mut self) -> TxBuilder<'_, AlwaysSpendImportedFirst> {
+        let secp = self.secp_ctx();
         let imported_weighted_utxos = self
             .tx_graph()
             .floating_txouts()
             .map(|utxo| {
+                let output_script_pubkey = &utxo.1.script_pubkey;
+
+                let tap_internal_key = self
+                    .imported_keys
+                    .iter()
+                    .map(|scalar| {
+                        let pbk = scalar.base_point_mul().serialize_xonly();
+                        XOnlyPublicKey::from_slice(&pbk)
+                            .expect("Should be valid xonlypub key")
+                    })
+                    .find(|pubkey| {
+                       let script = ScriptBuf::new_p2tr(secp, *pubkey, None);
+                        script == *output_script_pubkey
+                    });
+
                 WeightedUtxo {
                     utxo: Utxo::Foreign {
                         outpoint: utxo.0,
                         sequence: Sequence::ENABLE_RBF_NO_LOCKTIME,
                         psbt_input: Box::new(psbt::Input {
                             witness_utxo: Some(utxo.1.clone()),
+                            tap_internal_key,
                             ..Default::default()
                         }),
                     },
