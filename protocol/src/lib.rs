@@ -8,6 +8,8 @@ pub mod wallet_service;
 
 #[cfg(test)]
 mod tests {
+    use std::process::{ExitCode, Termination};
+
     use bdk_electrum::bdk_core::bitcoin;
     use bdk_electrum::bdk_core::bitcoin::key::{Keypair, Secp256k1, TweakedKeypair};
     use bdk_electrum::bdk_core::bitcoin::secp256k1::Message;
@@ -15,6 +17,7 @@ mod tests {
     use bdk_wallet::bitcoin::key::TapTweak as _;
     use musig2::KeyAggContext;
     use musig2::secp::{Point, Scalar};
+    use tokio::sync::{Semaphore, SemaphorePermit};
 
     use crate::nigiri;
     use crate::protocol_musig_adaptor::{BMPContext, BMPProtocol, ProtocolRole};
@@ -23,13 +26,13 @@ mod tests {
 
     #[test]
     fn test_initial_tx_creation() -> anyhow::Result<()> {
-        initial_tx_creation()?;
+        let (_, _, _permit) = initial_tx_creation()?;
         Ok(())
     }
 
-    pub fn initial_tx_creation() -> anyhow::Result<(BMPProtocol, BMPProtocol)> {
+    fn initial_tx_creation() -> anyhow::Result<(BMPProtocol, BMPProtocol, Permit)> {
         println!("running...");
-        nigiri::check_start();
+        let permit = nigiri_check_start();
         let mut alice_funds = nigiri::funded_wallet();
         //TestWallet::new()?;
 
@@ -73,13 +76,13 @@ mod tests {
 
         // done -----------------------------
         nigiri::tiktok();
-        Ok((alice, bob))
+        Ok((alice, bob, permit))
     }
 
     #[test]
     fn test_swap() -> anyhow::Result<()> {
         // create all transaction and Broadcast DepositTx already
-        let (mut alice, mut bob) = initial_tx_creation()?;
+        let (mut alice, mut bob, _permit) = initial_tx_creation()?;
         dbg!(alice.swap_tx.unsigned_tx()?);
         dbg!(bob.swap_tx.unsigned_tx()?);
 
@@ -104,7 +107,7 @@ mod tests {
     #[test]
     fn test_warning() -> anyhow::Result<()> {
         // create all transaction and Broadcast DepositTx already
-        let (alice, _bob) = initial_tx_creation()?;
+        let (alice, _bob, _permit) = initial_tx_creation()?;
         dbg!(alice.warning_tx_me.signed_tx()?);
         // alice broadcasts WarningTx
         dbg!(alice.warning_tx_me.broadcast(&alice.ctx)?);
@@ -115,7 +118,7 @@ mod tests {
     #[test]
     fn test_claim() -> anyhow::Result<()> {
         // create all transaction and Broadcast DepositTx already
-        let (alice, _bob) = initial_tx_creation()?;
+        let (alice, _bob, _permit) = initial_tx_creation()?;
         // dbg!(&alice.warning_tx_me.tx);
         // alice broadcasts WarningTx
         alice.warning_tx_me.broadcast(&alice.ctx)?;
@@ -142,7 +145,7 @@ mod tests {
     #[test]
     fn test_claim_too_early() -> anyhow::Result<()> {
         // create all transaction and Broadcast DepositTx already
-        let (alice, _bob) = initial_tx_creation()?;
+        let (alice, _bob, _permit) = initial_tx_creation()?;
         alice.warning_tx_me.broadcast(&alice.ctx)?;
         // nigiri::tiktok();
         nigiri::tiktok(); // we have set time-delay t2 to 2 Blocks
@@ -165,7 +168,7 @@ mod tests {
     #[test]
     fn test_redirect() -> anyhow::Result<()> {
         // create all transaction and Broadcast DepositTx already
-        let (alice, bob) = initial_tx_creation()?;
+        let (alice, bob, _permit) = initial_tx_creation()?;
         // dbg!(&alice.warning_tx_me.tx);
         // alice broadcasts WarningTx
         let bob_warn_id = bob.warning_tx_me.broadcast(&bob.ctx)?;
@@ -182,7 +185,7 @@ mod tests {
     #[test]
     fn test_q_tik() -> anyhow::Result<()> {
         // create all transaction and Broadcast DepositTx already
-        let (alice, bob) = initial_tx_creation()?;
+        let (alice, bob, _permit) = initial_tx_creation()?;
         // test!(alice.swap_tx.)
 
         // message
@@ -252,5 +255,21 @@ mod tests {
         dbg!(txid);
         nigiri::tiktok();
         Ok(())
+    }
+
+    #[tokio::test]
+    async fn nigiri_check_start() -> Permit {
+        static PERMIT: Semaphore = Semaphore::const_new(1);
+        let permit = Permit(PERMIT.acquire().await.unwrap());
+        nigiri::check_start();
+        permit
+    }
+
+    #[must_use]
+    #[expect(dead_code, reason = "field serves as an RAII guard")]
+    struct Permit(SemaphorePermit<'static>);
+
+    impl Termination for Permit {
+        fn report(self) -> ExitCode { ExitCode::SUCCESS }
     }
 }
