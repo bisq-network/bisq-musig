@@ -70,7 +70,7 @@ then to run the tests:
 ```bash
 
 cd protocol
-cargo test --package protocol --lib tests -- --nocapture
+cargo test --package protocol --lib --tests -- --nocapture
 
 ```
 
