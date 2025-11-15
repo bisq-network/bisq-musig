@@ -213,21 +213,21 @@ pub struct BMPContext {
 }
 
 pub struct BMPProtocol {
-    pub(crate) ctx: BMPContext,
+    pub ctx: BMPContext,
     // Point securing Seller deposit and trade amount:
-    pub(crate) p_tik: AggKey,
+    pub p_tik: AggKey,
     // Point securing Buyer deposit:
-    pub(crate) q_tik: AggKey,
-    pub(crate) deposit_tx: DepositTx,
+    pub q_tik: AggKey,
+    deposit_tx: DepositTx,
     // which round are we in:
     round: u8,
-    pub(crate) swap_tx: SwapTx,
-    pub(crate) warning_tx_me: WarningTx,
-    pub(crate) warning_tx_peer: WarningTx,
-    pub(crate) claim_tx_me: ClaimTx,
-    pub claim_tx_peer: ClaimTx,
+    pub swap_tx: SwapTx,
+    pub warning_tx_me: WarningTx,
+    warning_tx_peer: WarningTx,
+    pub claim_tx_me: ClaimTx,
+    claim_tx_peer: ClaimTx,
     pub redirect_tx_me: RedirectTx,
-    pub redirect_tx_peer: RedirectTx,
+    redirect_tx_peer: RedirectTx,
 }
 
 impl BMPContext {
@@ -482,8 +482,7 @@ impl RedirectTx {
         Ok(())
     }
 
-    #[cfg(test)] // not yet used in production
-    pub(crate) fn broadcast(&self, me: &BMPContext) -> anyhow::Result<Txid> {
+    pub fn broadcast(&self, me: &BMPContext) -> anyhow::Result<Txid> {
         Ok(me.funds.client.transaction_broadcast(self.builder.signed_tx()?)?)
     }
 
@@ -547,8 +546,7 @@ impl ClaimTx {
         Ok(())
     }
 
-    #[cfg(test)] // not yet used in production
-    pub(crate) fn broadcast(&self, me: &BMPContext) -> anyhow::Result<Txid> {
+    pub fn broadcast(&self, me: &BMPContext) -> anyhow::Result<Txid> {
         Ok(me.funds.client.transaction_broadcast(self.signed_tx()?)?)
     }
 }
@@ -644,8 +642,7 @@ impl WarningTx {
         Ok(())
     }
 
-    #[cfg(test)] // not yet used in production
-    pub(crate) fn broadcast(&self, me: &BMPContext) -> anyhow::Result<Txid> {
+    pub fn broadcast(&self, me: &BMPContext) -> anyhow::Result<Txid> {
         Ok(me.funds.client.transaction_broadcast(self.signed_tx()?)?)
     }
 }
@@ -756,8 +753,7 @@ impl SwapTx {
         Ok(())
     }
 
-    #[cfg(test)] // not yet used in production
-    pub(crate) fn broadcast(&self, me: &BMPContext) -> anyhow::Result<Txid> {
+    pub fn broadcast(&self, me: &BMPContext) -> anyhow::Result<Txid> {
         Ok(me.funds.client.transaction_broadcast(self.builder.signed_tx()?)?)
     }
 }
@@ -855,8 +851,8 @@ pub struct AggKey {
     pub agg_sec: Option<Scalar>,
     pub pub_point: Point,
     pub other_point: Option<Point>,
-    pub(crate) agg_point: Option<Point>,
-    pub(crate) key_agg_context: Option<KeyAggContext>,
+    pub agg_point: Option<Point>,
+    pub key_agg_context: Option<KeyAggContext>,
 }
 
 impl AggKey {

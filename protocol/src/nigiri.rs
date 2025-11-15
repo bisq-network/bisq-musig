@@ -58,8 +58,7 @@ fn mine(address: &str, num_blocks: u16) -> Output {
         .expect("Failed to mine block")
 }
 
-#[test]
-pub(crate) fn check_start() {
+pub fn check_start() {
     // Step 2: Run 'nigiri start' to start Nigiri
     let nigiri_output = Command::new("nigiri").arg("start").output().unwrap();
 

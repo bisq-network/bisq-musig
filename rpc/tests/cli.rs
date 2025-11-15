@@ -2,7 +2,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use assert_cmd::assert::Assert;
-use assert_cmd::Command;
+use assert_cmd::cargo::cargo_bin_cmd;
 use bdk_wallet::bitcoin::hex::test_hex_unwrap as hex;
 use bdk_wallet::bitcoin::{consensus, OutPoint, Transaction};
 use bdk_wallet::chain::{ChainPosition, ConfirmationBlockTime};
@@ -211,7 +211,7 @@ fn mock_confidence_stream() -> BoxStream<'static, Option<TxConfidence>> {
 }
 
 fn assert_cli<'a>(args: impl IntoIterator<Item=&'a str>) -> Assert {
-    Command::cargo_bin("musig-cli").unwrap()
+    cargo_bin_cmd!("musig-cli")
         .args(args)
         .timeout(CLI_TIMEOUT)
         .assert()

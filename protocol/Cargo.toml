@@ -17,6 +17,7 @@ thiserror = { workspace = true }
 [dev-dependencies]
 bdk_wallet = { workspace = true, features = ["test-utils"] }
 const_format = { workspace = true }
+tokio = { workspace = true, features = ["macros", "test-util"] }
 
 [lints]
 workspace = true
