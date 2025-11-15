@@ -1,6 +1,7 @@
 use std::ops::{Deref, DerefMut};
 use std::vec;
 
+use base64::{Engine, engine::general_purpose};
 use bdk_wallet::bitcoin::bip32::Xpriv;
 use bdk_wallet::bitcoin::hex::DisplayHex;
 use bdk_wallet::bitcoin::{
@@ -21,6 +22,7 @@ use secp::Scalar;
 
 use crate::chain_data_source::ChainDataSource;
 use crate::coin_selection::AlwaysSpendImportedFirst;
+use crate::utils::{derive_key_from_password, get_salt};
 
 pub trait BMPWalletPersister: WalletPersister {
     type DB;
@@ -186,7 +188,7 @@ pub trait WalletApi {
     where
         Self: Sized;
 
-    fn load_wallet(network: Network) -> anyhow::Result<Self>
+    fn load_wallet(network: Network, password: Option<&str>) -> anyhow::Result<Self>
     where
         Self: Sized;
 
@@ -197,8 +199,9 @@ pub trait WalletApi {
     fn import_private_key(&mut self, key: Scalar);
 
     fn balance(&self) -> Amount;
-    fn encrypt(password: &str);
-    fn decrypt(password: &str);
+
+    fn encrypt(self, password: &str) -> anyhow::Result<BMPWallet<Connection>>;
+    fn decrypt(self, password: &str) -> anyhow::Result<BMPWallet<Connection>>;
 
     fn persist(&mut self) -> anyhow::Result<bool>;
 
@@ -336,7 +339,7 @@ impl WalletApi for BMPWallet<Connection> {
         Self: Sized,
     {
         // TODO: Make the word size configurable?
-        let mut seed: [u8; 32] = [0u8; 32];
+        let mut seed = [0u8; 32];
         rand::rng().fill_bytes(&mut seed);
 
         let xprv = Xpriv::new_master(network, &seed)?;
@@ -378,8 +381,18 @@ impl WalletApi for BMPWallet<Connection> {
 
     // For already created wallets this will load stored data
     // This will also load the imported keys
-    fn load_wallet(network: Network) -> anyhow::Result<Self> {
-        let mut db = Connection::open(Self::DB_PATH)?;
+    fn load_wallet(network: Network, password: Option<&str>) -> anyhow::Result<Self> {
+        let mut db = if let Some(password) = password {
+            let salt_path = format!("{}.salt", Self::DB_PATH);
+            let salt = get_salt(&salt_path)?;
+            let decrypt_key = derive_key_from_password(password, &salt)?;
+            let conn = Connection::open(Self::DB_PATH)?;
+            conn.pragma_update(None, "key", format!("x'{decrypt_key}'"))?;
+            conn
+        } else {
+            Connection::open(Self::DB_PATH)?
+        };
+
         let wallet_opt = Wallet::load().check_network(network).load_wallet(&mut db)?;
 
         if let Some(wallet) = wallet_opt {
@@ -468,12 +481,42 @@ impl WalletApi for BMPWallet<Connection> {
         self.imported_keys.push(pk);
     }
 
-    fn decrypt(_password: &str) {
-        todo!()
+    fn decrypt(self, password: &str) -> anyhow::Result<BMPWallet<Connection>> {
+        let salt_path = format!("{}.salt", Self::DB_PATH);
+        let salt = get_salt(&salt_path)?;
+
+        let decrypt_key = derive_key_from_password(password, &salt)?;
+
+        let encrypted_conn = Connection::open(Self::DB_PATH)?;
+        encrypted_conn.pragma_update(None, "key", decrypt_key)?;
+
+        Ok(BMPWallet {
+            wallet: self.wallet,
+            imported_keys: self.imported_keys,
+            imported_balance: self.imported_balance,
+            db: encrypted_conn,
+        })
     }
 
-    fn encrypt(_password: &str) {
-        todo!()
+    fn encrypt(self, password: &str) -> anyhow::Result<BMPWallet<Connection>> {
+        // Derive encryption key from password
+        let salt_path = format!("{}.salt", Self::DB_PATH);
+
+        let mut salt = [0u8; 32];
+        rand::rng().fill_bytes(&mut salt);
+
+        std::fs::write(&salt_path, general_purpose::STANDARD.encode(salt))?;
+        let enc_key = derive_key_from_password(password, &salt)?;
+
+        let encrypted_conn = Connection::open(Self::DB_PATH)?;
+        encrypted_conn.pragma_update(None, "key", format!("x'{enc_key}'"))?;
+
+        Ok(BMPWallet {
+            wallet: self.wallet,
+            imported_keys: self.imported_keys,
+            imported_balance: self.imported_balance,
+            db: encrypted_conn,
+        })
     }
 }
 
@@ -588,7 +631,7 @@ mod tests {
             wallet.persist()?;
         }
 
-        let mut wallet = BMPWallet::load_wallet(Network::Regtest)?;
+        let mut wallet = BMPWallet::load_wallet(Network::Regtest, None)?;
         let loaded_seed = wallet.get_seed_phrase()?;
 
         let new_receiving_addr = wallet.get_new_address()?;
@@ -620,7 +663,7 @@ mod tests {
         // Persist
         bmp_wallet.persist()?;
 
-        let loaded_wallet = BMPWallet::load_wallet(Network::Regtest)?;
+        let loaded_wallet = BMPWallet::load_wallet(Network::Regtest, None)?;
 
         assert_eq!(loaded_wallet.imported_keys, bmp_wallet.imported_keys);
         Ok(())
