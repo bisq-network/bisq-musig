@@ -23,7 +23,7 @@ use protocol::transaction::{
 };
 use thiserror::Error;
 
-use crate::storage::{ByOptVal, ByRef, ByVal, Storage, ValStorage};
+use crate::storage::{ByRef, ByVal, Storage};
 
 pub trait TradeModelStore {
     fn add_trade_model(&self, trade_model: TradeModel);
@@ -123,9 +123,14 @@ pub struct ExchangedSigs<'a, S: Storage> {
     pub swap_tx_input_sighash: Option<S::Store<'a, TapSighash>>,
 }
 
-pub struct KeyPair<PrvKey: ValStorage = ByVal> {
+pub struct KeyPair {
     pub pub_key: Point,
-    pub prv_key: PrvKey::Store<Scalar>,
+    pub prv_key: Scalar,
+}
+
+pub struct OptKeyPair {
+    pub pub_key: Point,
+    pub prv_key: Option<Scalar>,
 }
 
 pub struct NoncePair {
@@ -137,8 +142,8 @@ pub struct NoncePair {
 struct KeyCtx {
     am_buyer: bool,
     my_key_share: Option<KeyPair>,
-    peers_key_share: Option<KeyPair<ByOptVal>>,
-    aggregated_key: Option<KeyPair<ByOptVal>>,
+    peers_key_share: Option<OptKeyPair>,
+    aggregated_key: Option<OptKeyPair>,
     key_agg_ctx: Option<KeyAggContext>,
 }
 
@@ -266,8 +271,8 @@ impl TradeModel {
 
     pub fn set_peer_key_shares(&mut self, buyer_output_pub_key: Point, seller_output_pub_key: Point) -> Result<()> {
         let network = self.trade_wallet()?.network();
-        self.buyer_output_key_ctx.peers_key_share = Some(KeyPair::from_public(buyer_output_pub_key));
-        self.seller_output_key_ctx.peers_key_share = Some(KeyPair::from_public(seller_output_pub_key));
+        self.buyer_output_key_ctx.peers_key_share = Some(OptKeyPair::from_public(buyer_output_pub_key));
+        self.seller_output_key_ctx.peers_key_share = Some(OptKeyPair::from_public(seller_output_pub_key));
         if self.am_buyer() {
             // TODO: Should check that signing hasn't already begun before setting an adaptor point.
             self.swap_tx_input_sig_ctx.adaptor_point = MaybePoint::Valid(buyer_output_pub_key);
@@ -760,7 +765,7 @@ impl KeyPair {
     }
 }
 
-impl KeyPair<ByOptVal> {
+impl OptKeyPair {
     const fn from_public(pub_key: Point) -> Self {
         Self { pub_key, prv_key: None }
     }
@@ -800,7 +805,7 @@ impl KeyCtx {
     fn aggregate_key_shares(&mut self) -> Result<()> {
         let agg_ctx = KeyAggContext::new(self.get_key_shares()
             .ok_or(ProtocolErrorKind::MissingKeyShare)?)?;
-        self.aggregated_key = Some(KeyPair::from_public(agg_ctx.aggregated_pubkey()));
+        self.aggregated_key = Some(OptKeyPair::from_public(agg_ctx.aggregated_pubkey()));
         self.key_agg_ctx = Some(agg_ctx);
         Ok(())
     }
