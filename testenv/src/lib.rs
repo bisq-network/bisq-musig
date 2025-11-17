@@ -1,7 +1,7 @@
 //! Bitcoin regtest environment using electrsd with automatic executable downloads
 use anyhow::{Context, Result};
 use bdk_wallet::bitcoin::{
-    address::{NetworkChecked, NetworkUnchecked},
+    address::NetworkChecked,
     Address, Amount, BlockHash, Network, Txid,
 };
 use electrsd::{corepc_node::Node, electrum_client::ElectrumApi, ElectrsD};
@@ -12,6 +12,8 @@ pub struct TestEnv {
     bitcoind: Node,
     electrsd: ElectrsD,
 }
+
+const NETWORK: Network = Network::Regtest;
 
 impl TestEnv {
     /// Create a new test environment with automatic executable downloads
@@ -73,23 +75,17 @@ impl TestEnv {
 
     /// Mine blocks using bitcoind RPC
     pub fn mine_blocks(&self, count: usize) -> Result<Vec<BlockHash>> {
-        // Generate blocks to the node's mining address
-        let mining_address_str = self.bitcoind.client.get_new_address(None, None)?.0;
-        let mining_address: Address<NetworkUnchecked> = mining_address_str.parse()?;
-        let mining_address_checked = mining_address.require_network(Network::Regtest)?;
         let block_hashes = self
             .bitcoind
             .client
-            .generate_to_address(count, &mining_address_checked)?;
+                .generate_to_address(count, &self.new_address()?)?;
 
         // Convert to BlockHash format
-        let hashes: Result<Vec<BlockHash>> = block_hashes
+        block_hashes
             .0
             .into_iter()
             .map(|hash_str| hash_str.parse::<BlockHash>().map_err(anyhow::Error::msg))
-            .collect();
-
-        Ok(hashes?)
+                .collect()
     }
 
     /// Mine a single block
@@ -101,41 +97,31 @@ impl TestEnv {
     /// Fund an address using bitcoind RPC
     pub fn fund_address(&self, address: &Address<NetworkChecked>, amount: Amount) -> Result<Txid> {
         // First ensure we have some coins by mining blocks if needed
-        let balance = self.bitcoind.client.get_balance()?;
-        let balance_sats = (balance.0 * 100_000_000.0) as u64; // Convert BTC to satoshis
+        let balance = self.bitcoind.client.get_balance()?.balance()?;
 
-        if balance_sats < amount.to_sat() {
-            // Mine some blocks to get coins
-            let mining_address = self
-                .bitcoind
-                .client
-                .get_new_address(None, None)?
-                .0
-                .parse::<Address<NetworkUnchecked>>()?
-                .require_network(Network::Regtest)?;
-
+        if balance < amount {
             // Mine 101 blocks (standard for regtest to make coins spendable)
             self.bitcoind
                 .client
-                .generate_to_address(101, &mining_address)?;
+                    .generate_to_address(101, &self.new_address()?)?;
 
             // Wait a moment for blocks to be processed
             std::thread::sleep(Duration::from_secs(1));
         }
 
         // Send money to the address
-        let txid_str = self.bitcoind.client.send_to_address(address, amount)?;
-        let txid = txid_str.0.parse::<Txid>().map_err(anyhow::Error::msg)?;
+        let txid = self.bitcoind.client.send_to_address(address, amount)?.txid()?;
         Ok(txid)
     }
 
     /// Create a new address for testing using bitcoind RPC
     pub fn new_address(&self) -> Result<Address<NetworkChecked>> {
-        let addr_str = self.bitcoind.client.get_new_address(None, None)?.0;
-        let addr = addr_str
-            .parse::<Address<_>>()?
-            .require_network(Network::Regtest)?;
-        Ok(addr)
+        Ok(self
+                .bitcoind
+                .client
+                .get_new_address(None, None)?
+                .address()?
+                .require_network(NETWORK)?)
     }
 
     /// Wait for electrum to see a new block
@@ -188,15 +174,13 @@ impl TestEnv {
 
     /// Get the best block hash from bitcoind
     pub fn best_block_hash(&self) -> Result<BlockHash> {
-        let hash_str = self.bitcoind.client.get_best_block_hash()?.0;
-        let hash = hash_str.parse::<BlockHash>().map_err(anyhow::Error::msg)?;
+        let hash = self.bitcoind.client.get_best_block_hash()?.block_hash()?;
         Ok(hash)
     }
 
     /// Get the genesis block hash from bitcoind
     pub fn genesis_hash(&self) -> Result<BlockHash> {
-        let hash_str = self.bitcoind.client.get_block_hash(0)?.0;
-        let hash = hash_str.parse::<BlockHash>().map_err(anyhow::Error::msg)?;
+        let hash = self.bitcoind.client.get_block_hash(0)?.block_hash()?;
         Ok(hash)
     }
 
@@ -255,7 +239,7 @@ mod tests {
 
         // Get initial balance
         let initial_balance = env.bitcoind.client.get_balance()?;
-        eprintln!("Initial balance: {} BTC", initial_balance.0);
+        eprintln!("Initial balance: {:?} BTC", initial_balance);
 
         // Fund address with 1000 satoshis
         let amount = Amount::from_sat(1000);
@@ -281,17 +265,17 @@ mod tests {
         // Verify we can get the transaction from bitcoind
         let tx = env.bitcoind.client.get_transaction(txid)?;
 
-        // Extract the receive amount from transaction details
+        // Extract the received amount from transaction details
         use electrsd::corepc_node::vtype::TransactionCategory;
         let receive_amount = tx
             .details
             .iter()
-            .find(|detail| matches!(detail.category, TransactionCategory::Receive))
+                .find(|detail| detail.category == TransactionCategory::Receive)
             .map(|detail| Amount::from_sat((detail.amount * 100_000_000.0) as u64))
             .unwrap_or_default();
 
         assert_eq!(receive_amount, amount);
-        eprintln!("Transaction amount verified: {} BTC", tx.amount);
+        eprintln!("Transaction amount verified: {} ", receive_amount);
 
         Ok(())
     }
