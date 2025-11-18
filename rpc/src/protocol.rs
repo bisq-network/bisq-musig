@@ -610,7 +610,7 @@ impl TradeModel {
             self.buyers_warning_tx_builder.signed_tx()?;
             self.buyers_redirect_tx_builder.signed_tx()?;
             self.buyers_claim_tx_builder.signed_tx()?;
-            self.swap_tx_input_sig_ctx.aggregated_sig.ok_or(ProtocolErrorKind::MissingAggSig)?;
+            self.swap_tx_input_sig_ctx.aggregated_sig()?;
         } else {
             self.sellers_warning_tx_builder.signed_tx()?;
             self.sellers_redirect_tx_builder.signed_tx()?;
@@ -672,9 +672,7 @@ impl TradeModel {
     }
 
     pub fn set_peer_private_key_share_for_my_output(&mut self, prv_key_share: Scalar) -> Result<()> {
-        self.get_my_key_ctx_mut().peers_key_share.as_mut()
-            .ok_or(ProtocolErrorKind::MissingKeyShare)?
-            .set_prv_key(prv_key_share)?;
+        self.get_my_key_ctx_mut().set_peers_prv_key(prv_key_share)?;
         Ok(())
     }
 
@@ -683,11 +681,12 @@ impl TradeModel {
     }
 
     pub fn compute_signed_swap_tx(&mut self) -> Result<()> {
-        let adaptor_secret = self.buyer_output_key_ctx.get_sellers_prv_key()
-            .ok_or(ProtocolErrorKind::MissingKeyShare)?.into();
-        self.swap_tx_builder
-            .set_input_signature(self.swap_tx_input_sig_ctx.compute_taproot_signature(adaptor_secret)?)
-            .compute_signed_tx()?;
+        if !self.am_buyer() {
+            let adaptor_secret = self.buyer_output_key_ctx.my_prv_key()?.into();
+            self.swap_tx_builder
+                .set_input_signature(self.swap_tx_input_sig_ctx.compute_taproot_signature(adaptor_secret)?)
+                .compute_signed_tx()?;
+        }
         Ok(())
     }
 
@@ -696,14 +695,16 @@ impl TradeModel {
     }
 
     pub fn recover_seller_private_key_share_for_buyer_output(&mut self, swap_tx: &Transaction) -> Result<()> {
-        let swap_tx_input = self.deposit_tx_builder.seller_payout()?;
-        let final_sig = LiftedSignature::from_bytes(
-            &swap_tx.find_key_spend_signature(swap_tx_input)?.serialize())?;
-        let adaptor_sig = self.swap_tx_input_sig_ctx.aggregated_sig
-            .ok_or(ProtocolErrorKind::MissingAggSig)?;
-        let adaptor_secret: MaybeScalar = adaptor_sig.reveal_secret(&final_sig)
-            .ok_or(ProtocolErrorKind::MismatchedSigs)?;
-        Ok(self.buyer_output_key_ctx.set_sellers_prv_key_if_buyer(adaptor_secret.try_into()?)?)
+        if self.am_buyer() {
+            let swap_tx_input = self.deposit_tx_builder.seller_payout()?;
+            let final_sig = LiftedSignature::from_bytes(
+                &swap_tx.find_key_spend_signature(swap_tx_input)?.serialize())?;
+            let adaptor_sig = self.swap_tx_input_sig_ctx.aggregated_sig()?;
+            let adaptor_secret: MaybeScalar = adaptor_sig.reveal_secret(&final_sig)
+                .ok_or(ProtocolErrorKind::MismatchedSigs)?;
+            self.buyer_output_key_ctx.set_peers_prv_key(adaptor_secret.try_into()?)?;
+        }
+        Ok(())
     }
 }
 
@@ -713,12 +714,8 @@ type Result<T, E = ProtocolErrorKind> = std::result::Result<T, E>;
 #[error(transparent)]
 #[non_exhaustive]
 pub enum ProtocolErrorKind {
-    #[error("missing key share")] // FIXME: Duplicated in `protocol::multisig::MultisigErrorKind`.
-    MissingKeyShare,
     #[error("missing tx params")]
     MissingTxParams,
-    #[error("missing aggregated signature")] // FIXME: Duplicated in `protocol::multisig::MultisigErrorKind`.
-    MissingAggSig,
     #[error("missing trade wallet")]
     MissingTradeWallet,
     #[error("mismatched adaptor and final signature")]

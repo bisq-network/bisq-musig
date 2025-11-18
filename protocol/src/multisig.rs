@@ -108,19 +108,12 @@ impl KeyCtx {
         agg_key.set_prv_key(agg_ctx.aggregated_seckey(prv_key_shares)?)
     }
 
-    pub fn get_sellers_prv_key(&self) -> Option<Scalar> {
-        if self.am_buyer {
-            self.peers_key_share.as_ref()?.prv_key
-        } else {
-            Some(self.my_key_share.as_ref()?.prv_key)
-        }
+    pub fn my_prv_key(&self) -> Result<Scalar> {
+        Ok(self.my_key_share.as_ref().ok_or(MultisigErrorKind::MissingKeyShare)?.prv_key)
     }
 
-    pub fn set_sellers_prv_key_if_buyer(&mut self, prv_key: Scalar) -> Result<()> {
-        if self.am_buyer {
-            self.peers_key_share.as_mut().ok_or(MultisigErrorKind::MissingKeyShare)?.set_prv_key(prv_key)?;
-        }
-        Ok(())
+    pub fn set_peers_prv_key(&mut self, prv_key: Scalar) -> Result<&Scalar> {
+        self.peers_key_share.as_mut().ok_or(MultisigErrorKind::MissingKeyShare)?.set_prv_key(prv_key)
     }
 
     fn compute_tweaked_key_agg_ctx(&self, merkle_root: Option<&TapNodeHash>) -> Result<KeyAggContext> {
@@ -158,10 +151,14 @@ pub struct SigCtx {
     message: Option<TapSighash>,
     pub my_partial_sig: Option<PartialSignature>,
     pub peers_partial_sig: Option<PartialSignature>,
-    pub aggregated_sig: Option<AdaptorSignature>,
+    aggregated_sig: Option<AdaptorSignature>,
 }
 
 impl SigCtx {
+    pub fn aggregated_sig(&self) -> Result<&AdaptorSignature> {
+        self.aggregated_sig.as_ref().ok_or(MultisigErrorKind::MissingAggSig)
+    }
+
     pub fn set_warning_output_merkle_root(&mut self, claim_pub_key: &Point, network: Network) -> &TapNodeHash {
         // NOTE: We have to round-trip the public key because 'musig2' & 'bitcoin' currently use
         // different versions of the 'secp256k1' crate:
