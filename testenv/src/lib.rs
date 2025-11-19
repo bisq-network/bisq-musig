@@ -26,6 +26,7 @@ impl Default for Config<'_> {
             bitcoind: {
                 let mut conf = corepc_node::Conf::default();
                 conf.args.push("-blockfilterindex=1");
+                conf.args.push("-peerblockfilters=1");
                 conf
             },
             electrsd: {

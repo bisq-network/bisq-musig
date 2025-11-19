@@ -38,6 +38,37 @@ async fn main() -> Result<(), anyhow::Error> {
 }
 ```
 
+### Custom Configuration Usage
+
+```rust
+use regtest_env::{TestEnv, Config};
+use std::time::Duration;
+
+#[tokio::main]
+async fn main() -> Result<(), anyhow::Error> {
+    // Create custom configuration
+    let mut config = Config::default();
+    
+    // Customize bitcoind settings
+    config.bitcoind.args.push("-blockfilterindex=1");
+    config.bitcoind.args.push("-peerblockfilters=1");
+    
+    // Customize electrsd settings
+    config.electrsd.http_enabled = true;
+    // config.electrsd.view_stderr = true;  // Uncomment to see electrsd logs
+    
+    // Create environment with custom configuration
+    let env = TestEnv::new_with_conf(config)?;
+    
+    // Use the environment as normal
+    let address = env.new_address()?;
+    env.mine_blocks(5)?;
+    
+    println!("Custom environment ready at: {}", env.electrum_url());
+    Ok(())
+}
+```
+
 ### Environment Variables
 
 ```bash
@@ -57,6 +88,7 @@ The main environment manager that handles both bitcoind and electrs instances.
 #### Creation Methods
 
 - `TestEnv::new()` - Creates environment with automatic downloads
+- `TestEnv::new_with_conf(config)` - Creates environment with custom configuration
 
 #### Client Access
 
