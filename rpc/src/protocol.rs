@@ -126,15 +126,6 @@ impl TradeModel {
         }).lock().unwrap().network();
         trade_model.buyer_output_key_ctx.am_buyer = am_buyer;
         trade_model.seller_output_key_ctx.am_buyer = am_buyer;
-        trade_model.swap_tx_input_sig_ctx.am_buyer = am_buyer;
-        trade_model.buyers_warning_tx_buyer_input_sig_ctx.am_buyer = am_buyer;
-        trade_model.buyers_warning_tx_seller_input_sig_ctx.am_buyer = am_buyer;
-        trade_model.sellers_warning_tx_buyer_input_sig_ctx.am_buyer = am_buyer;
-        trade_model.sellers_warning_tx_seller_input_sig_ctx.am_buyer = am_buyer;
-        trade_model.buyers_redirect_tx_input_sig_ctx.am_buyer = am_buyer;
-        trade_model.sellers_redirect_tx_input_sig_ctx.am_buyer = am_buyer;
-        trade_model.buyers_claim_tx_input_sig_ctx.am_buyer = am_buyer;
-        trade_model.sellers_claim_tx_input_sig_ctx.am_buyer = am_buyer;
         trade_model.swap_tx_builder.disable_lock_time();
         trade_model.buyers_warning_tx_builder.set_lock_time(network.warning_lock_time());
         trade_model.sellers_warning_tx_builder.set_lock_time(network.warning_lock_time());

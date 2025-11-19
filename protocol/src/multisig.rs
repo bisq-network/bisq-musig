@@ -143,7 +143,6 @@ impl KeyCtx {
 //  aggregation) are built from, so that we don't have to pass it repeatedly as a method parameter.
 #[derive(Default)]
 pub struct SigCtx {
-    pub am_buyer: bool,
     pub merkle_root: Option<TapNodeHash>,
     pub adaptor_point: MaybePoint,
     pub my_nonce_share: Option<NoncePair>,
@@ -178,11 +177,7 @@ impl SigCtx {
     }
 
     fn get_nonce_shares(&self) -> Option<[&PubNonce; 2]> {
-        Some(if self.am_buyer {
-            [&self.my_nonce_share.as_ref()?.pub_nonce, self.peers_nonce_share.as_ref()?]
-        } else {
-            [self.peers_nonce_share.as_ref()?, &self.my_nonce_share.as_ref()?.pub_nonce]
-        })
+        Some([&self.my_nonce_share.as_ref()?.pub_nonce, self.peers_nonce_share.as_ref()?])
     }
 
     pub fn aggregate_nonce_shares(&mut self) -> Result<&AggNonce> {
@@ -217,11 +212,7 @@ impl SigCtx {
     }
 
     fn get_partial_signatures(&self) -> Option<[PartialSignature; 2]> {
-        Some(if self.am_buyer {
-            [self.my_partial_sig?, self.peers_partial_sig?]
-        } else {
-            [self.peers_partial_sig?, self.my_partial_sig?]
-        })
+        Some([self.my_partial_sig?, self.peers_partial_sig?])
     }
 
     pub fn aggregate_partial_signatures(&mut self, key_ctx: &KeyCtx) -> Result<&AdaptorSignature> {
