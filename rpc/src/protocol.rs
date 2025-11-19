@@ -5,7 +5,7 @@ use bdk_wallet::bitcoin::address::{NetworkChecked, NetworkUnchecked, NetworkVali
 use bdk_wallet::bitcoin::{Address, Amount, FeeRate, Network, Psbt, TapSighash, Transaction};
 use guardian::ArcMutexGuardian;
 use musig2::secp::{MaybePoint, MaybeScalar, Point, Scalar};
-use musig2::{LiftedSignature, PartialSignature, PubNonce};
+use musig2::{PartialSignature, PubNonce};
 use protocol::multisig::{KeyCtx, KeyPair, OptKeyPair, SigCtx};
 use protocol::psbt::{mock_buyer_trade_wallet, mock_seller_trade_wallet, TradeWallet};
 use protocol::receiver::{Receiver, ReceiverList};
@@ -697,12 +697,9 @@ impl TradeModel {
     pub fn recover_seller_private_key_share_for_buyer_output(&mut self, swap_tx: &Transaction) -> Result<()> {
         if self.am_buyer() {
             let swap_tx_input = self.deposit_tx_builder.seller_payout()?;
-            let final_sig = LiftedSignature::from_bytes(
-                &swap_tx.find_key_spend_signature(swap_tx_input)?.serialize())?;
-            let adaptor_sig = self.swap_tx_input_sig_ctx.aggregated_sig()?;
-            let adaptor_secret: MaybeScalar = adaptor_sig.reveal_secret(&final_sig)
-                .ok_or(ProtocolErrorKind::MismatchedSigs)?;
-            self.buyer_output_key_ctx.set_peers_prv_key(adaptor_secret.try_into()?)?;
+            let input_signature = swap_tx.find_key_spend_signature(swap_tx_input)?;
+            let adaptor_secret = self.swap_tx_input_sig_ctx.reveal_adaptor_secret(input_signature)?;
+            self.buyer_output_key_ctx.set_peers_prv_key(adaptor_secret)?;
         }
         Ok(())
     }
@@ -718,8 +715,6 @@ pub enum ProtocolErrorKind {
     MissingTxParams,
     #[error("missing trade wallet")]
     MissingTradeWallet,
-    #[error("mismatched adaptor and final signature")]
-    MismatchedSigs,
     #[error("insufficient redirection funds (available {available_msat:?} msat, used {used_msat:?} msat)")]
     InsufficientRedirectionFunds {
         available_msat: u64,
@@ -730,8 +725,6 @@ pub enum ProtocolErrorKind {
         available_msat: u64,
         used_msat: u64,
     },
-    DecodeLiftedSignature(#[from] musig2::errors::DecodeError<LiftedSignature>),
-    ZeroScalar(#[from] musig2::secp::errors::ZeroScalarError),
     AddressParse(#[from] bdk_wallet::bitcoin::address::ParseError),
     Transaction(#[from] protocol::transaction::TransactionErrorKind),
     Multisig(#[from] protocol::multisig::MultisigErrorKind),

@@ -5,7 +5,8 @@ use bdk_wallet::bitcoin::{Address, Network, PublicKey, TapNodeHash, TapSighash};
 use musig2::adaptor::AdaptorSignature;
 use musig2::secp::{MaybePoint, MaybeScalar, Point, Scalar};
 use musig2::{
-    AggNonce, KeyAggContext, NonceSeed, PartialSignature, PubNonce, SecNonce, SecNonceBuilder,
+    AggNonce, KeyAggContext, LiftedSignature, NonceSeed, PartialSignature, PubNonce, SecNonce,
+    SecNonceBuilder,
 };
 use thiserror::Error;
 
@@ -245,6 +246,14 @@ impl SigCtx {
             .ok_or(MultisigErrorKind::ZeroNonce)?;
         Ok(Signature::from_slice(&sig_bytes).expect("len = 64"))
     }
+
+    pub fn reveal_adaptor_secret(&self, signature: Signature) -> Result<Scalar> {
+        let final_sig = LiftedSignature::from_bytes(&signature.serialize())?;
+        let adaptor_sig = self.aggregated_sig()?;
+        let adaptor_secret: MaybeScalar = adaptor_sig.reveal_secret(&final_sig)
+            .ok_or(MultisigErrorKind::MismatchedSigs)?;
+        Ok(adaptor_secret.try_into()?)
+    }
 }
 
 type Result<T, E = MultisigErrorKind> = std::result::Result<T, E>;
@@ -271,9 +280,13 @@ pub enum MultisigErrorKind {
     ZeroNonce,
     #[error("public-private key mismatch")]
     MismatchedKeyPair,
+    #[error("mismatched adaptor and final signature")]
+    MismatchedSigs,
     KeyAgg(#[from] musig2::errors::KeyAggError),
     Signing(#[from] musig2::errors::SigningError),
     Verify(#[from] musig2::errors::VerifyError),
     Tweak(#[from] musig2::errors::TweakError),
     InvalidSecretKeys(#[from] musig2::errors::InvalidSecretKeysError),
+    DecodeLiftedSignature(#[from] musig2::errors::DecodeError<LiftedSignature>),
+    ZeroScalar(#[from] musig2::secp::errors::ZeroScalarError),
 }
