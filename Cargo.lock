@@ -578,7 +578,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "69bd382fc775f760a8b55d658527621b890eaa3d8e8bc9779864659b172e81c6"
 dependencies = [
  "anyhow",
- "bitcoin_hashes 0.14.0",
+ "bitcoin_hashes 0.13.0",
  "corepc-client",
  "flate2",
  "log",

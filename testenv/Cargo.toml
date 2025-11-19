@@ -8,7 +8,6 @@ edition = "2021"
 anyhow = { workspace = true }
 bdk_wallet = { workspace = true }
 electrsd = { version = "0.36.1", features = [
+"esplora_a33e97e1",
 "corepc-node_29_0",
-"electrs_0_8_10",
-"download",
 ] }

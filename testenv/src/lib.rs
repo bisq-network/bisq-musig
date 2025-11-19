@@ -1,9 +1,7 @@
 //! Bitcoin regtest environment using electrsd with automatic executable downloads
 use anyhow::{Context, Result};
-use bdk_wallet::bitcoin::{
-    address::NetworkChecked,
-    Address, Amount, BlockHash, Network, Txid,
-};
+use bdk_wallet::bitcoin::{address::NetworkChecked, Address, Amount, BlockHash, Network, Txid};
+use electrsd::corepc_node;
 use electrsd::{corepc_node::Node, electrum_client::ElectrumApi, ElectrsD};
 use std::time::Duration;
 
@@ -13,28 +11,57 @@ pub struct TestEnv {
     electrsd: ElectrsD,
 }
 
+/// Configuration parameters.
+#[derive(Debug)]
+pub struct Config<'a> {
+    /// [`bitcoind::Conf`]
+    pub bitcoind: corepc_node::Conf<'a>,
+    /// [`electrsd::Conf`]
+    pub electrsd: electrsd::Conf<'a>,
+}
+
+impl Default for Config<'_> {
+    fn default() -> Self {
+        Self {
+            bitcoind: {
+                let mut conf = corepc_node::Conf::default();
+                conf.args.push("-blockfilterindex=1");
+                conf
+            },
+            electrsd: {
+                let mut conf = electrsd::Conf::default();
+                conf.http_enabled = true;
+                // conf.view_stderr = true;
+                conf
+            },
+        }
+    }
+}
+
 const NETWORK: Network = Network::Regtest;
 
 impl TestEnv {
     /// Create a new test environment with automatic executable downloads
     pub fn new() -> Result<Self> {
-        Self::create_with_downloads()
+        Self::new_with_conf(Config::default())
     }
 
     /// create environment with automatic downloads
-    fn create_with_downloads() -> Result<Self> {
+    pub fn new_with_conf(config: Config) -> Result<Self> {
         // Try to start bitcoind (from environment or downloads)
         eprintln!("Starting bitcoind...");
         let bitcoind = match std::env::var("BITCOIND_EXEC") {
             Ok(path) => {
                 eprintln!("Using custom bitcoind executable: {}", path);
-                Node::new(&path)
-                    .with_context(|| format!("Failed to start bitcoind from: {}", path))?
+                Node::with_conf(&path, &config.bitcoind)?
             }
             Err(_) => {
-                // For now, require manual installation or use defaults
-                eprintln!("BITCOIND_EXEC not set! Falling back to downloaded version");
-                Node::from_downloaded().expect("Failed to download bitcoind")
+                eprintln!(
+                    "BITCOIND_EXEC not set! Falling back to downloaded version at {}",
+                    corepc_node::downloaded_exe_path()?
+                );
+
+                Node::from_downloaded_with_conf(&config.bitcoind)?
             }
         };
 
@@ -54,11 +81,16 @@ impl TestEnv {
         };
 
         eprintln!("Starting electrsd...");
-        let electrsd = ElectrsD::new(&electrs_exe, &bitcoind)
-            .with_context(|| format!("Failed to start electrsd from: {}", electrs_exe))?;
 
-        eprintln!("Bitcoin regtest environment ready!");
+        let electrsd = ElectrsD::with_conf(electrs_exe, &bitcoind, &config.electrsd)
+            .with_context(|| "Starting electrsd failed...")?;
+
+        if let Some(url) = &electrsd.esplora_url {
+            eprintln!("Esplora REST address: http://{url}/mempool",);
+        }
+
         eprintln!("Electrum URL: {}", electrsd.electrum_url);
+        eprintln!("Bitcoin regtest environment ready!");
 
         Ok(Self { bitcoind, electrsd })
     }
@@ -78,14 +110,14 @@ impl TestEnv {
         let block_hashes = self
             .bitcoind
             .client
-                .generate_to_address(count, &self.new_address()?)?;
+            .generate_to_address(count, &self.new_address()?)?;
 
         // Convert to BlockHash format
         block_hashes
             .0
             .into_iter()
             .map(|hash_str| hash_str.parse::<BlockHash>().map_err(anyhow::Error::msg))
-                .collect()
+            .collect()
     }
 
     /// Mine a single block
@@ -103,25 +135,29 @@ impl TestEnv {
             // Mine 101 blocks (standard for regtest to make coins spendable)
             self.bitcoind
                 .client
-                    .generate_to_address(101, &self.new_address()?)?;
+                .generate_to_address(101, &self.new_address()?)?;
 
             // Wait a moment for blocks to be processed
             std::thread::sleep(Duration::from_secs(1));
         }
 
         // Send money to the address
-        let txid = self.bitcoind.client.send_to_address(address, amount)?.txid()?;
+        let txid = self
+            .bitcoind
+            .client
+            .send_to_address(address, amount)?
+            .txid()?;
         Ok(txid)
     }
 
     /// Create a new address for testing using bitcoind RPC
     pub fn new_address(&self) -> Result<Address<NetworkChecked>> {
         Ok(self
-                .bitcoind
-                .client
-                .get_new_address(None, None)?
-                .address()?
-                .require_network(NETWORK)?)
+            .bitcoind
+            .client
+            .get_new_address(None, None)?
+            .address()?
+            .require_network(NETWORK)?)
     }
 
     /// Wait for electrum to see a new block
@@ -270,7 +306,7 @@ mod tests {
         let receive_amount = tx
             .details
             .iter()
-                .find(|detail| detail.category == TransactionCategory::Receive)
+            .find(|detail| detail.category == TransactionCategory::Receive)
             .map(|detail| Amount::from_sat((detail.amount * 100_000_000.0) as u64))
             .unwrap_or_default();
 
