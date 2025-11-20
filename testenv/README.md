@@ -14,59 +14,41 @@ A clean Bitcoin regtest environment using electrsd with automatic executable dow
 ### Basic Usage
 
 ```rust
-use regtest_env::TestEnv;
-use std::time::Duration;
+// Create environment (automatically downloads executables)
+let env = TestEnv::new()?;
+env.mine_block()?;
 
-#[tokio::main]
-async fn main() -> Result<(), anyhow::Error> {
-    // Create environment (automatically downloads executables)
-    let env = TestEnv::new()?;
-    
-    // Mine some blocks
-    env.mine_block()?;
-    
-    // Create and fund an address
-    let address = env.new_address()?;
-    let txid = env.fund_address(&address, Amount::from_sat(100000))?;
-    
-    // Wait for confirmation
-    env.wait_for_tx(txid, Duration::from_secs(10))?;
-    env.wait_for_block(Duration::from_secs(5))?;
-    
-    println!("Transaction confirmed: {}", txid);
-    Ok(())
-}
+// Create and fund an address
+let address = env.new_address()?;
+let txid = env.fund_address(&address, Amount::from_sat(100000))?;
+
+// Wait for confirmation
+env.wait_for_tx(txid, Duration::from_secs(10))?;
+env.wait_for_block(Duration::from_secs(5))?;
+
+println!("Transaction confirmed: {}", txid);
 ```
 
 ### Custom Configuration Usage
 
 ```rust
-use regtest_env::{TestEnv, Config};
-use std::time::Duration;
+// Create custom configuration
+let mut config = Config::default();
 
-#[tokio::main]
-async fn main() -> Result<(), anyhow::Error> {
-    // Create custom configuration
-    let mut config = Config::default();
-    
-    // Customize bitcoind settings
-    config.bitcoind.args.push("-blockfilterindex=1");
-    config.bitcoind.args.push("-peerblockfilters=1");
-    
-    // Customize electrsd settings
-    config.electrsd.http_enabled = true;
-    // config.electrsd.view_stderr = true;  // Uncomment to see electrsd logs
-    
-    // Create environment with custom configuration
-    let env = TestEnv::new_with_conf(config)?;
-    
-    // Use the environment as normal
-    let address = env.new_address()?;
-    env.mine_blocks(5)?;
-    
-    println!("Custom environment ready at: {}", env.electrum_url());
-    Ok(())
-}
+// Customize bitcoind settings
+config.bitcoind.args.push("-rpcuser=customuser");
+config.bitcoind.args.push("-rpcpassword=custompass");
+config.bitcoind.args.push("-maxmempool=100");
+
+// Customize electrsd settings
+config.electrsd.http_enabled = true;
+// config.electrsd.view_stderr = true;  // Uncomment to see electrsd logs
+
+// Create environment with custom configuration
+let env = TestEnv::new_with_conf(config)?;
+
+env.mine_blocks(5)?;
+
 ```
 
 ### Environment Variables
@@ -79,11 +61,38 @@ export ELECTRS_EXEC="/custom/path/to/electrs"
 cargo run  # Will use custom executables
 ```
 
+### Process Lifetime Management
+
+```rust
+    // Create environment - processes start running
+    let env = TestEnv::new()?;
+    
+    // ✅ GOOD: Keep env variable in scope while using services
+    println!("Electrum URL: {}", env.electrum_url());
+    println!("Esplora URL: {:?}", env.esplora_url());
+    
+    // Do your work here...
+    env.mine_block()?;
+    let address = env.new_address()?;
+    
+    // Services stay running while env is in scope
+    
+    // ❌ BAD: Don't drop env early
+    // drop(env); // This terminates both bitcoind and electrs!
+    
+    // ✅ GOOD: Keep processes running longer
+    println!("Services will run for 30 seconds...");
+    std::thread::sleep(Duration::from_secs(90));
+
+```
+
 ## API Reference
 
 ### TestEnv
 
 The main environment manager that handles both bitcoind and electrs instances.
+
+> **⚠️ Important**: Keep the `TestEnv` instance alive (don't drop it) while you need the services running. When the instance is dropped, both bitcoind and electrs processes will be terminated.
 
 #### Creation Methods
 
@@ -94,6 +103,7 @@ The main environment manager that handles both bitcoind and electrs instances.
 
 - `electrum_client()` - Access to electrum client for blockchain operations
 - `electrum_url()` - Get electrum server URL
+- `esplora_url()` - Get Esplora REST URL
 
 #### Blockchain Operations
 

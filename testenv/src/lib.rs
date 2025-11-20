@@ -86,14 +86,15 @@ impl TestEnv {
         let electrsd = ElectrsD::with_conf(electrs_exe, &bitcoind, &config.electrsd)
             .with_context(|| "Starting electrsd failed...")?;
 
-        if let Some(url) = &electrsd.esplora_url {
-            eprintln!("Esplora REST address: http://{url}/mempool",);
-        }
-
         eprintln!("Electrum URL: {}", electrsd.electrum_url);
         eprintln!("Bitcoin regtest environment ready!");
 
-        Ok(Self { bitcoind, electrsd })
+        let test_env = Self { bitcoind, electrsd };
+        if let Some(url) = test_env.esplora_url() {
+            eprintln!("Esplora REST address: http://{url}/mempool",);
+        };
+
+        Ok(test_env)
     }
 
     /// Get the electrum client for blockchain operations
@@ -104,6 +105,14 @@ impl TestEnv {
     /// Get the electrum URL
     pub fn electrum_url(&self) -> &str {
         &self.electrsd.electrum_url
+    }
+
+    /// Get the Esplora REST URL
+    pub fn esplora_url(&self) -> Option<String> {
+        self.electrsd
+            .esplora_url
+            .as_ref()
+            .map(|url| url.replace("0.0.0.0", "127.0.0.1"))
     }
 
     /// Mine blocks using bitcoind RPC
