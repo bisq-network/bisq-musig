@@ -61,7 +61,6 @@ impl NoncePair {
 
 #[derive(Default)]
 pub struct KeyCtx {
-    pub am_buyer: bool,
     pub my_key_share: Option<KeyPair>,
     pub peers_key_share: Option<OptKeyPair>,
     aggregated_key: Option<OptKeyPair>,
@@ -75,8 +74,12 @@ impl KeyCtx {
         self.my_key_share.insert(KeyPair::random(&mut rand::rng()))
     }
 
+    fn is_my_key_share_first(&self) -> Option<bool> {
+        Some(self.my_key_share.as_ref()?.pub_key <= self.peers_key_share.as_ref()?.pub_key)
+    }
+
     fn get_key_shares(&self) -> Option<[Point; 2]> {
-        Some(if self.am_buyer {
+        Some(if self.is_my_key_share_first()? {
             [self.my_key_share.as_ref()?.pub_key, self.peers_key_share.as_ref()?.pub_key]
         } else {
             [self.peers_key_share.as_ref()?.pub_key, self.my_key_share.as_ref()?.pub_key]
@@ -92,7 +95,7 @@ impl KeyCtx {
     }
 
     fn get_prv_key_shares(&self) -> Option<[Scalar; 2]> {
-        Some(if self.am_buyer {
+        Some(if self.is_my_key_share_first()? {
             [self.my_key_share.as_ref()?.prv_key, self.peers_key_share.as_ref()?.prv_key?]
         } else {
             [self.peers_key_share.as_ref()?.prv_key?, self.my_key_share.as_ref()?.prv_key]
@@ -222,8 +225,8 @@ impl SigCtx {
             .ok_or(MultisigErrorKind::MissingAggNonce)?;
         let partial_signatures = self.get_partial_signatures()
             .ok_or(MultisigErrorKind::MissingPartialSig)?;
-        let message = &self.message.as_ref()
-            .ok_or(MultisigErrorKind::MissingPartialSig)?[..];
+        let message = self.message.as_ref()
+            .ok_or(MultisigErrorKind::MissingPartialSig)?;
 
         let sig = musig2::adaptor::aggregate_partial_signatures(&key_agg_ctx, aggregated_nonce,
             self.adaptor_point, partial_signatures, message)?;

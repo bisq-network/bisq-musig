@@ -118,14 +118,11 @@ pub struct ExchangedSigs<'a, S: Storage> {
 impl TradeModel {
     pub fn new(trade_id: String, my_role: Role) -> Self {
         let mut trade_model = Self { trade_id, my_role, ..Default::default() };
-        let am_buyer = trade_model.am_buyer();
-        let network = trade_model.trade_wallet.insert(if am_buyer {
+        let network = trade_model.trade_wallet.insert(if trade_model.am_buyer() {
             Arc::new(Mutex::new(mock_buyer_trade_wallet()))
         } else {
             Arc::new(Mutex::new(mock_seller_trade_wallet()))
         }).lock().unwrap().network();
-        trade_model.buyer_output_key_ctx.am_buyer = am_buyer;
-        trade_model.seller_output_key_ctx.am_buyer = am_buyer;
         trade_model.swap_tx_builder.disable_lock_time();
         trade_model.buyers_warning_tx_builder.set_lock_time(network.warning_lock_time());
         trade_model.sellers_warning_tx_builder.set_lock_time(network.warning_lock_time());
