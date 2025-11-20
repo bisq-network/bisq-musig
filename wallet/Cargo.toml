@@ -10,6 +10,12 @@ anyhow = { workspace = true }
 rand = { workspace = true }
 secp = { workspace = true }
 
+rusqlite = { workspace = true }
+argon2 = { workspace = true, features = ["zeroize"] }
+hex = { workspace = true }
+base64 = { workspace = true }
+zeroize = { workspace = true }
+
 [dev-dependencies]
 tempfile = "3.23.0"
 bdk_wallet = { workspace = true , features = ["test-utils"]}
