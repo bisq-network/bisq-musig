@@ -10,8 +10,6 @@ use musig2::{
 };
 use thiserror::Error;
 
-use crate::transaction::NetworkParams as _;
-
 pub struct KeyPair {
     pub pub_key: Point,
     pub prv_key: Scalar,
@@ -69,8 +67,8 @@ pub struct KeyCtx {
 
 impl KeyCtx {
     pub fn init_my_key_share(&mut self) -> &KeyPair {
-        // TODO: Make the RNG configurable, to aid unit testing. (Also, we may not necessarily want
-        //  to use a nondeterministic random key share):
+        // TODO: Consider making the RNG configurable, to aid unit testing. (Also, we may not
+        //  necessarily want to use a nondeterministic random key share):
         self.my_key_share.insert(KeyPair::random(&mut rand::rng()))
     }
 
@@ -120,6 +118,11 @@ impl KeyCtx {
         self.peers_key_share.as_mut().ok_or(MultisigErrorKind::MissingKeyShare)?.set_prv_key(prv_key)
     }
 
+    pub fn with_taproot_tweak(&self, merkle_root: Option<&TapNodeHash>) -> Result<TweakedKeyCtx> {
+        let tweaked_key_agg_ctx = self.compute_tweaked_key_agg_ctx(merkle_root)?;
+        Ok(TweakedKeyCtx { my_prv_key: self.my_prv_key()?, key_agg_ctx: tweaked_key_agg_ctx })
+    }
+
     fn compute_tweaked_key_agg_ctx(&self, merkle_root: Option<&TapNodeHash>) -> Result<KeyAggContext> {
         let key_agg_ctx = self.key_agg_ctx.clone()
             .ok_or(MultisigErrorKind::MissingAggPubKey)?;
@@ -129,24 +132,28 @@ impl KeyCtx {
             key_agg_ctx.with_unspendable_taproot_tweak()?
         })
     }
+}
 
-    pub fn compute_p2tr_address(&self, merkle_root: Option<&TapNodeHash>, network: Network) -> Result<Address> {
-        let pub_key: Point = self.compute_tweaked_key_agg_ctx(merkle_root)?.aggregated_pubkey();
-        // NOTE: We have to round-trip the public key because 'musig2' & 'bitcoin' currently use
-        // different versions of the 'secp256k1' crate:
-        let pub_key = PublicKey::from_slice(&pub_key.serialize_uncompressed())
-            .expect("curve point should have a valid uncompressed DER encoding").into();
+#[derive(Clone)]
+pub struct TweakedKeyCtx {
+    my_prv_key: Scalar,
+    key_agg_ctx: KeyAggContext,
+}
 
-        // This is safe, as we just performed a Taproot tweak above (via the 'musig2::secp' crate):
-        Ok(Address::p2tr_tweaked(TweakedPublicKey::dangerous_assume_tweaked(pub_key), network))
+impl TweakedKeyCtx {
+    pub fn p2tr_address(&self, network: Network) -> Address {
+        let pub_key: Point = self.key_agg_ctx.aggregated_pubkey();
+        let pub_key = pub_key.to_public_key().into();
+
+        // This is safe, as `self` can only be constructed with a Taproot tweak applied to its
+        // inner KeyAggContext (performed via the 'musig2::secp' crate):
+        Address::p2tr_tweaked(TweakedPublicKey::dangerous_assume_tweaked(pub_key), network)
     }
 }
 
-// TODO: For safety, this should hold a reference to the KeyCtx our nonce & signature share (& final
-//  aggregation) are built from, so that we don't have to pass it repeatedly as a method parameter.
 #[derive(Default)]
 pub struct SigCtx {
-    pub merkle_root: Option<TapNodeHash>,
+    pub tweaked_key_ctx: Option<TweakedKeyCtx>,
     pub adaptor_point: MaybePoint,
     pub my_nonce_share: Option<NoncePair>,
     pub peers_nonce_share: Option<PubNonce>,
@@ -158,23 +165,17 @@ pub struct SigCtx {
 }
 
 impl SigCtx {
+    fn tweaked_key_ctx(&self) -> Result<&TweakedKeyCtx> {
+        self.tweaked_key_ctx.as_ref().ok_or(MultisigErrorKind::MissingAggPubKey)
+    }
+
     pub fn aggregated_sig(&self) -> Result<&AdaptorSignature> {
         self.aggregated_sig.as_ref().ok_or(MultisigErrorKind::MissingAggSig)
     }
 
-    pub fn set_warning_output_merkle_root(&mut self, claim_pub_key: &Point, network: Network) -> &TapNodeHash {
-        // NOTE: We have to round-trip the public key because 'musig2' & 'bitcoin' currently use
-        // different versions of the 'secp256k1' crate:
-        let claim_pub_key = PublicKey::from_slice(&claim_pub_key.serialize_uncompressed())
-            .expect("curve point should have a valid uncompressed DER encoding").into();
-        self.merkle_root.insert(network.warning_output_merkle_root(&claim_pub_key))
-    }
-
-    pub fn init_my_nonce_share(&mut self, key_ctx: &KeyCtx) -> Result<()> {
-        let aggregated_pub_key = key_ctx.aggregated_key.as_ref()
-            .ok_or(MultisigErrorKind::MissingAggPubKey)?.pub_key;
-        // TODO: Make the RNG configurable, to aid unit testing:
-        // TODO: Are we supposed to salt with the tweaked key(s), if strictly following the standard?
+    pub fn init_my_nonce_share(&mut self) -> Result<()> {
+        let aggregated_pub_key = self.tweaked_key_ctx()?.key_agg_ctx.aggregated_pubkey();
+        // TODO: Consider making the RNG configurable, to aid unit testing:
         self.my_nonce_share = Some(NoncePair::new(&mut rand::rng(), aggregated_pub_key));
         Ok(())
     }
@@ -197,18 +198,16 @@ impl SigCtx {
         Ok(self.aggregated_nonce.insert(agg_nonce))
     }
 
-    pub fn sign_partial(&mut self, key_ctx: &KeyCtx, message: TapSighash) -> Result<&PartialSignature> {
-        // TODO: It's wasteful not to cache the tweaked KeyAggCtx -- refactor:
-        let key_agg_ctx = key_ctx.compute_tweaked_key_agg_ctx(self.merkle_root.as_ref())?;
-        let seckey = key_ctx.my_key_share.as_ref()
-            .ok_or(MultisigErrorKind::MissingKeyShare)?.prv_key;
+    pub fn sign_partial(&mut self, message: TapSighash) -> Result<&PartialSignature> {
         let secnonce = self.my_nonce_share.as_mut()
             .ok_or(MultisigErrorKind::MissingNonceShare)?.sec_nonce.take()
             .ok_or(MultisigErrorKind::NonceReuse)?;
         let aggregated_nonce = &self.aggregated_nonce.as_ref()
             .ok_or(MultisigErrorKind::MissingAggNonce)?;
+        let key_agg_ctx = &self.tweaked_key_ctx()?.key_agg_ctx;
+        let seckey = self.tweaked_key_ctx()?.my_prv_key;
 
-        let sig = musig2::adaptor::sign_partial(&key_agg_ctx, seckey, secnonce, aggregated_nonce,
+        let sig = musig2::adaptor::sign_partial(key_agg_ctx, seckey, secnonce, aggregated_nonce,
             self.adaptor_point, message.as_byte_array())?;
         self.message = Some(message);
         Ok(self.my_partial_sig.insert(sig))
@@ -218,9 +217,8 @@ impl SigCtx {
         Some([self.my_partial_sig?, self.peers_partial_sig?])
     }
 
-    pub fn aggregate_partial_signatures(&mut self, key_ctx: &KeyCtx) -> Result<&AdaptorSignature> {
-        // TODO: It's wasteful not to cache the tweaked KeyAggCtx -- refactor:
-        let key_agg_ctx = key_ctx.compute_tweaked_key_agg_ctx(self.merkle_root.as_ref())?;
+    pub fn aggregate_partial_signatures(&mut self) -> Result<&AdaptorSignature> {
+        let key_agg_ctx = &self.tweaked_key_ctx()?.key_agg_ctx;
         let aggregated_nonce = &self.aggregated_nonce.as_ref()
             .ok_or(MultisigErrorKind::MissingAggNonce)?;
         let partial_signatures = self.get_partial_signatures()
@@ -228,7 +226,7 @@ impl SigCtx {
         let message = self.message.as_ref()
             .ok_or(MultisigErrorKind::MissingPartialSig)?;
 
-        let sig = musig2::adaptor::aggregate_partial_signatures(&key_agg_ctx, aggregated_nonce,
+        let sig = musig2::adaptor::aggregate_partial_signatures(key_agg_ctx, aggregated_nonce,
             self.adaptor_point, partial_signatures, message)?;
         Ok(self.aggregated_sig.insert(sig))
     }
@@ -247,6 +245,19 @@ impl SigCtx {
         let adaptor_secret: MaybeScalar = adaptor_sig.reveal_secret(&final_sig)
             .ok_or(MultisigErrorKind::MismatchedSigs)?;
         Ok(adaptor_secret.try_into()?)
+    }
+}
+
+pub trait PointExt {
+    fn to_public_key(&self) -> PublicKey;
+}
+
+impl PointExt for Point {
+    fn to_public_key(&self) -> PublicKey {
+        // NOTE: We have to round-trip the public key because 'musig2' & 'bitcoin' currently use
+        // different versions of the 'secp256k1' crate:
+        PublicKey::from_slice(&self.serialize_uncompressed())
+            .expect("curve point should have a valid uncompressed DER encoding")
     }
 }
 
