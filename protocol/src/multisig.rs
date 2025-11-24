@@ -43,9 +43,9 @@ impl OptKeyPair {
     }
 }
 
-pub struct NoncePair {
-    pub pub_nonce: PubNonce,
-    pub sec_nonce: Option<SecNonce>,
+struct NoncePair {
+    pub_nonce: PubNonce,
+    sec_nonce: Option<SecNonce>,
 }
 
 impl NoncePair {
@@ -155,8 +155,8 @@ impl TweakedKeyCtx {
 pub struct SigCtx {
     pub tweaked_key_ctx: Option<TweakedKeyCtx>,
     pub adaptor_point: MaybePoint,
-    pub my_nonce_share: Option<NoncePair>,
-    pub peers_nonce_share: Option<PubNonce>,
+    my_nonce_pair_share: Option<NoncePair>,
+    peers_nonce_share: Option<PubNonce>,
     aggregated_nonce: Option<AggNonce>,
     message: Option<TapSighash>,
     pub my_partial_sig: Option<PartialSignature>,
@@ -169,6 +169,14 @@ impl SigCtx {
         self.tweaked_key_ctx.as_ref().ok_or(MultisigErrorKind::MissingAggPubKey)
     }
 
+    pub fn my_nonce_share(&self) -> Result<&PubNonce> {
+        Ok(&self.my_nonce_pair_share.as_ref().ok_or(MultisigErrorKind::MissingNonceShare)?.pub_nonce)
+    }
+
+    pub fn set_peers_nonce_share(&mut self, nonce_share: PubNonce) {
+        self.peers_nonce_share.get_or_insert(nonce_share);
+    }
+
     pub fn aggregated_sig(&self) -> Result<&AdaptorSignature> {
         self.aggregated_sig.as_ref().ok_or(MultisigErrorKind::MissingAggSig)
     }
@@ -176,17 +184,18 @@ impl SigCtx {
     pub fn init_my_nonce_share(&mut self) -> Result<()> {
         let aggregated_pub_key = self.tweaked_key_ctx()?.key_agg_ctx.aggregated_pubkey();
         // TODO: Consider making the RNG configurable, to aid unit testing:
-        self.my_nonce_share = Some(NoncePair::new(&mut rand::rng(), aggregated_pub_key));
+        self.my_nonce_pair_share.get_or_insert_with(||
+            NoncePair::new(&mut rand::rng(), aggregated_pub_key));
         Ok(())
     }
 
     fn get_nonce_shares(&self) -> Option<[&PubNonce; 2]> {
-        Some([&self.my_nonce_share.as_ref()?.pub_nonce, self.peers_nonce_share.as_ref()?])
+        Some([&self.my_nonce_pair_share.as_ref()?.pub_nonce, self.peers_nonce_share.as_ref()?])
     }
 
     pub fn aggregate_nonce_shares(&mut self) -> Result<&AggNonce> {
         let agg_nonce = AggNonce::sum(self.get_nonce_shares()
-            .ok_or(MultisigErrorKind::MissingKeyShare)?);
+            .ok_or(MultisigErrorKind::MissingNonceShare)?);
         if matches!((&agg_nonce.R1, &agg_nonce.R2), (MaybePoint::Infinity, MaybePoint::Infinity)) {
             // Fail early if the aggregated nonce is zero, since otherwise an attacker could force
             // the final signature nonce to be equal to the base point, G. While that might not be
@@ -199,10 +208,10 @@ impl SigCtx {
     }
 
     pub fn sign_partial(&mut self, message: TapSighash) -> Result<&PartialSignature> {
-        let secnonce = self.my_nonce_share.as_mut()
+        let secnonce = self.my_nonce_pair_share.as_mut()
             .ok_or(MultisigErrorKind::MissingNonceShare)?.sec_nonce.take()
             .ok_or(MultisigErrorKind::NonceReuse)?;
-        let aggregated_nonce = &self.aggregated_nonce.as_ref()
+        let aggregated_nonce = self.aggregated_nonce.as_ref()
             .ok_or(MultisigErrorKind::MissingAggNonce)?;
         let key_agg_ctx = &self.tweaked_key_ctx()?.key_agg_ctx;
         let seckey = self.tweaked_key_ctx()?.my_prv_key;

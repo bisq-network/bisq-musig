@@ -421,45 +421,45 @@ impl TradeModel {
     pub fn get_my_nonce_shares(&self) -> Option<ExchangedNonces<'_, ByRef>> {
         Some(ExchangedNonces {
             swap_tx_input_nonce_share:
-            &(self.swap_tx_input_sig_ctx.my_nonce_share.as_ref()?.pub_nonce),
+            self.swap_tx_input_sig_ctx.my_nonce_share().ok()?,
             buyers_warning_tx_buyer_input_nonce_share:
-            &(self.buyers_warning_tx_buyer_input_sig_ctx.my_nonce_share.as_ref()?.pub_nonce),
+            self.buyers_warning_tx_buyer_input_sig_ctx.my_nonce_share().ok()?,
             buyers_warning_tx_seller_input_nonce_share:
-            &(self.buyers_warning_tx_seller_input_sig_ctx.my_nonce_share.as_ref()?.pub_nonce),
+            self.buyers_warning_tx_seller_input_sig_ctx.my_nonce_share().ok()?,
             sellers_warning_tx_buyer_input_nonce_share:
-            &(self.sellers_warning_tx_buyer_input_sig_ctx.my_nonce_share.as_ref()?.pub_nonce),
+            self.sellers_warning_tx_buyer_input_sig_ctx.my_nonce_share().ok()?,
             sellers_warning_tx_seller_input_nonce_share:
-            &(self.sellers_warning_tx_seller_input_sig_ctx.my_nonce_share.as_ref()?.pub_nonce),
+            self.sellers_warning_tx_seller_input_sig_ctx.my_nonce_share().ok()?,
             buyers_redirect_tx_input_nonce_share:
-            &(self.buyers_redirect_tx_input_sig_ctx.my_nonce_share.as_ref()?.pub_nonce),
+            self.buyers_redirect_tx_input_sig_ctx.my_nonce_share().ok()?,
             sellers_redirect_tx_input_nonce_share:
-            &(self.sellers_redirect_tx_input_sig_ctx.my_nonce_share.as_ref()?.pub_nonce),
+            self.sellers_redirect_tx_input_sig_ctx.my_nonce_share().ok()?,
             buyers_claim_tx_input_nonce_share:
-            &(self.buyers_claim_tx_input_sig_ctx.my_nonce_share.as_ref()?.pub_nonce),
+            self.buyers_claim_tx_input_sig_ctx.my_nonce_share().ok()?,
             sellers_claim_tx_input_nonce_share:
-            &(self.sellers_claim_tx_input_sig_ctx.my_nonce_share.as_ref()?.pub_nonce),
+            self.sellers_claim_tx_input_sig_ctx.my_nonce_share().ok()?,
         })
     }
 
-    pub const fn set_peer_nonce_shares(&mut self, nonce_shares: ExchangedNonces<ByVal>) {
-        self.swap_tx_input_sig_ctx.peers_nonce_share =
-            Some(nonce_shares.swap_tx_input_nonce_share);
-        self.buyers_warning_tx_buyer_input_sig_ctx.peers_nonce_share =
-            Some(nonce_shares.buyers_warning_tx_buyer_input_nonce_share);
-        self.buyers_warning_tx_seller_input_sig_ctx.peers_nonce_share =
-            Some(nonce_shares.buyers_warning_tx_seller_input_nonce_share);
-        self.sellers_warning_tx_buyer_input_sig_ctx.peers_nonce_share =
-            Some(nonce_shares.sellers_warning_tx_buyer_input_nonce_share);
-        self.sellers_warning_tx_seller_input_sig_ctx.peers_nonce_share =
-            Some(nonce_shares.sellers_warning_tx_seller_input_nonce_share);
-        self.buyers_redirect_tx_input_sig_ctx.peers_nonce_share =
-            Some(nonce_shares.buyers_redirect_tx_input_nonce_share);
-        self.sellers_redirect_tx_input_sig_ctx.peers_nonce_share =
-            Some(nonce_shares.sellers_redirect_tx_input_nonce_share);
-        self.buyers_claim_tx_input_sig_ctx.peers_nonce_share =
-            Some(nonce_shares.buyers_claim_tx_input_nonce_share);
-        self.sellers_claim_tx_input_sig_ctx.peers_nonce_share =
-            Some(nonce_shares.sellers_claim_tx_input_nonce_share);
+    pub fn set_peer_nonce_shares(&mut self, nonce_shares: ExchangedNonces<ByVal>) {
+        self.swap_tx_input_sig_ctx.set_peers_nonce_share(
+            nonce_shares.swap_tx_input_nonce_share);
+        self.buyers_warning_tx_buyer_input_sig_ctx.set_peers_nonce_share(
+            nonce_shares.buyers_warning_tx_buyer_input_nonce_share);
+        self.buyers_warning_tx_seller_input_sig_ctx.set_peers_nonce_share(
+            nonce_shares.buyers_warning_tx_seller_input_nonce_share);
+        self.sellers_warning_tx_buyer_input_sig_ctx.set_peers_nonce_share(
+            nonce_shares.sellers_warning_tx_buyer_input_nonce_share);
+        self.sellers_warning_tx_seller_input_sig_ctx.set_peers_nonce_share(
+            nonce_shares.sellers_warning_tx_seller_input_nonce_share);
+        self.buyers_redirect_tx_input_sig_ctx.set_peers_nonce_share(
+            nonce_shares.buyers_redirect_tx_input_nonce_share);
+        self.sellers_redirect_tx_input_sig_ctx.set_peers_nonce_share(
+            nonce_shares.sellers_redirect_tx_input_nonce_share);
+        self.buyers_claim_tx_input_sig_ctx.set_peers_nonce_share(
+            nonce_shares.buyers_claim_tx_input_nonce_share);
+        self.sellers_claim_tx_input_sig_ctx.set_peers_nonce_share(
+            nonce_shares.sellers_claim_tx_input_nonce_share);
     }
 
     pub fn aggregate_nonce_shares(&mut self) -> Result<()> {
