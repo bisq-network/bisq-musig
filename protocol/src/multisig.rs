@@ -11,31 +11,30 @@ use musig2::{
 use thiserror::Error;
 
 pub struct KeyPair {
-    pub pub_key: Point,
-    pub prv_key: Scalar,
+    pub_key: Point,
+    prv_key: Option<Scalar>,
 }
 
 impl KeyPair {
+    pub const fn pub_key(&self) -> &Point { &self.pub_key }
+
+    pub fn prv_key(&self) -> Result<&Scalar> {
+        self.prv_key.as_ref().ok_or(MultisigErrorKind::MissingPrvKey)
+    }
+
+    const fn from_public(pub_key: Point) -> Self {
+        Self { pub_key, prv_key: None }
+    }
+
+    fn from_private(prv_key: Scalar) -> Self {
+        Self { pub_key: prv_key.base_point_mul(), prv_key: Some(prv_key) }
+    }
+
     fn random<R: rand::RngCore + rand::CryptoRng>(rng: &mut R) -> Self {
         Self::from_private(Scalar::random(rng))
     }
 
-    fn from_private(prv_key: Scalar) -> Self {
-        Self { pub_key: prv_key.base_point_mul(), prv_key }
-    }
-}
-
-pub struct OptKeyPair {
-    pub pub_key: Point,
-    pub prv_key: Option<Scalar>,
-}
-
-impl OptKeyPair {
-    pub const fn from_public(pub_key: Point) -> Self {
-        Self { pub_key, prv_key: None }
-    }
-
-    pub fn set_prv_key(&mut self, prv_key: Scalar) -> Result<&Scalar> {
+    fn set_prv_key(&mut self, prv_key: Scalar) -> Result<&Scalar> {
         if self.pub_key != prv_key.base_point_mul() {
             return Err(MultisigErrorKind::MismatchedKeyPair);
         }
@@ -59,9 +58,9 @@ impl NoncePair {
 
 #[derive(Default)]
 pub struct KeyCtx {
-    pub my_key_share: Option<KeyPair>,
-    pub peers_key_share: Option<OptKeyPair>,
-    aggregated_key: Option<OptKeyPair>,
+    my_key_share: Option<KeyPair>,
+    peers_key_share: Option<KeyPair>,
+    aggregated_key: Option<KeyPair>,
     key_agg_ctx: Option<KeyAggContext>,
 }
 
@@ -69,40 +68,41 @@ impl KeyCtx {
     pub fn init_my_key_share(&mut self) -> &KeyPair {
         // TODO: Consider making the RNG configurable, to aid unit testing. (Also, we may not
         //  necessarily want to use a nondeterministic random key share):
-        self.my_key_share.insert(KeyPair::random(&mut rand::rng()))
+        self.my_key_share.get_or_insert_with(|| KeyPair::random(&mut rand::rng()))
     }
 
-    fn is_my_key_share_first(&self) -> Option<bool> {
-        Some(self.my_key_share.as_ref()?.pub_key <= self.peers_key_share.as_ref()?.pub_key)
+    pub fn my_key_share(&self) -> Result<&KeyPair> {
+        self.my_key_share.as_ref().ok_or(MultisigErrorKind::MissingKeyShare)
     }
 
-    fn get_key_shares(&self) -> Option<[Point; 2]> {
-        Some(if self.is_my_key_share_first()? {
-            [self.my_key_share.as_ref()?.pub_key, self.peers_key_share.as_ref()?.pub_key]
-        } else {
-            [self.peers_key_share.as_ref()?.pub_key, self.my_key_share.as_ref()?.pub_key]
-        })
+    pub fn set_peers_pub_key(&mut self, pub_key: Point) -> &KeyPair {
+        self.peers_key_share.get_or_insert(KeyPair::from_public(pub_key))
     }
 
-    pub fn aggregate_key_shares(&mut self) -> Result<()> {
-        let agg_ctx = KeyAggContext::new(self.get_key_shares()
-            .ok_or(MultisigErrorKind::MissingKeyShare)?)?;
-        self.aggregated_key = Some(OptKeyPair::from_public(agg_ctx.aggregated_pubkey()));
+    pub fn peers_key_share(&self) -> Result<&KeyPair> {
+        self.peers_key_share.as_ref().ok_or(MultisigErrorKind::MissingKeyShare)
+    }
+
+    fn key_shares(&self) -> Result<[&KeyPair; 2]> {
+        let mut shares = [self.my_key_share()?, self.peers_key_share()?];
+        shares.sort_by_key(|p| p.pub_key());
+        Ok(shares)
+    }
+
+    pub fn aggregate_pub_key_shares(&mut self) -> Result<()> {
+        let agg_ctx = KeyAggContext::new(self.key_shares()?.map(|p| *p.pub_key()))?;
+        self.aggregated_key = Some(KeyPair::from_public(agg_ctx.aggregated_pubkey()));
         self.key_agg_ctx = Some(agg_ctx);
         Ok(())
     }
 
-    fn get_prv_key_shares(&self) -> Option<[Scalar; 2]> {
-        Some(if self.is_my_key_share_first()? {
-            [self.my_key_share.as_ref()?.prv_key, self.peers_key_share.as_ref()?.prv_key?]
-        } else {
-            [self.peers_key_share.as_ref()?.prv_key?, self.my_key_share.as_ref()?.prv_key]
-        })
+    fn prv_key_shares(&self) -> Result<[Scalar; 2]> {
+        let shares = self.key_shares()?;
+        Ok([*shares[0].prv_key()?, *shares[1].prv_key()?])
     }
 
     pub fn aggregate_prv_key_shares(&mut self) -> Result<&Scalar> {
-        let prv_key_shares = self.get_prv_key_shares()
-            .ok_or(MultisigErrorKind::MissingKeyShare)?;
+        let prv_key_shares = self.prv_key_shares()?;
         let agg_ctx = self.key_agg_ctx.as_ref()
             .ok_or(MultisigErrorKind::MissingAggPubKey)?;
         let agg_key = self.aggregated_key.as_mut()
@@ -110,17 +110,14 @@ impl KeyCtx {
         agg_key.set_prv_key(agg_ctx.aggregated_seckey(prv_key_shares)?)
     }
 
-    pub fn my_prv_key(&self) -> Result<Scalar> {
-        Ok(self.my_key_share.as_ref().ok_or(MultisigErrorKind::MissingKeyShare)?.prv_key)
-    }
-
     pub fn set_peers_prv_key(&mut self, prv_key: Scalar) -> Result<&Scalar> {
         self.peers_key_share.as_mut().ok_or(MultisigErrorKind::MissingKeyShare)?.set_prv_key(prv_key)
     }
 
     pub fn with_taproot_tweak(&self, merkle_root: Option<&TapNodeHash>) -> Result<TweakedKeyCtx> {
-        let tweaked_key_agg_ctx = self.compute_tweaked_key_agg_ctx(merkle_root)?;
-        Ok(TweakedKeyCtx { my_prv_key: self.my_prv_key()?, key_agg_ctx: tweaked_key_agg_ctx })
+        let key_agg_ctx = self.compute_tweaked_key_agg_ctx(merkle_root)?;
+        let my_prv_key = *self.my_key_share()?.prv_key()?;
+        Ok(TweakedKeyCtx { my_prv_key, key_agg_ctx })
     }
 
     fn compute_tweaked_key_agg_ctx(&self, merkle_root: Option<&TapNodeHash>) -> Result<KeyAggContext> {
@@ -276,6 +273,8 @@ type Result<T, E = MultisigErrorKind> = std::result::Result<T, E>;
 #[error(transparent)]
 #[non_exhaustive]
 pub enum MultisigErrorKind {
+    #[error("missing private key")]
+    MissingPrvKey,
     #[error("missing key share")]
     MissingKeyShare,
     #[error("missing nonce share")]

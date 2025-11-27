@@ -6,7 +6,7 @@ use bdk_wallet::bitcoin::{Address, Amount, FeeRate, Network, Psbt, TapSighash, T
 use guardian::ArcMutexGuardian;
 use musig2::secp::{MaybePoint, MaybeScalar, Point, Scalar};
 use musig2::{PartialSignature, PubNonce};
-use protocol::multisig::{KeyCtx, KeyPair, OptKeyPair, PointExt as _, SigCtx};
+use protocol::multisig::{KeyCtx, KeyPair, PointExt as _, SigCtx};
 use protocol::psbt::{mock_buyer_trade_wallet, mock_seller_trade_wallet, TradeWallet};
 use protocol::receiver::{Receiver, ReceiverList};
 use protocol::transaction::{
@@ -188,7 +188,7 @@ impl TradeModel {
     }
 
     pub fn init_my_key_shares(&mut self) {
-        let buyer_output_pub_key = self.buyer_output_key_ctx.init_my_key_share().pub_key;
+        let buyer_output_pub_key = *self.buyer_output_key_ctx.init_my_key_share().pub_key();
         self.seller_output_key_ctx.init_my_key_share();
         if !self.am_buyer() {
             self.swap_tx_input_sig_ctx.adaptor_point = MaybePoint::Valid(buyer_output_pub_key);
@@ -197,14 +197,14 @@ impl TradeModel {
 
     pub fn get_my_key_shares(&self) -> Option<[&KeyPair; 2]> {
         Some([
-            self.buyer_output_key_ctx.my_key_share.as_ref()?,
-            self.seller_output_key_ctx.my_key_share.as_ref()?
+            self.buyer_output_key_ctx.my_key_share().ok()?,
+            self.seller_output_key_ctx.my_key_share().ok()?
         ])
     }
 
-    pub const fn set_peer_key_shares(&mut self, buyer_output_pub_key: Point, seller_output_pub_key: Point) {
-        self.buyer_output_key_ctx.peers_key_share = Some(OptKeyPair::from_public(buyer_output_pub_key));
-        self.seller_output_key_ctx.peers_key_share = Some(OptKeyPair::from_public(seller_output_pub_key));
+    pub fn set_peer_key_shares(&mut self, buyer_output_pub_key: Point, seller_output_pub_key: Point) {
+        self.buyer_output_key_ctx.set_peers_pub_key(buyer_output_pub_key);
+        self.seller_output_key_ctx.set_peers_pub_key(seller_output_pub_key);
         if self.am_buyer() {
             // TODO: Should check that signing hasn't already begun before setting an adaptor point.
             self.swap_tx_input_sig_ctx.adaptor_point = MaybePoint::Valid(buyer_output_pub_key);
@@ -213,15 +213,14 @@ impl TradeModel {
 
     pub fn aggregate_key_shares(&mut self) -> Result<()> {
         let network = self.trade_wallet()?.network();
-        self.buyer_output_key_ctx.aggregate_key_shares()?;
-        self.seller_output_key_ctx.aggregate_key_shares()?;
+        self.buyer_output_key_ctx.aggregate_pub_key_shares()?;
+        self.seller_output_key_ctx.aggregate_pub_key_shares()?;
 
         let buyer_output_tweaked_key_ctx = self.buyer_output_key_ctx.with_taproot_tweak(None)?;
         let seller_output_tweaked_key_ctx = self.seller_output_key_ctx.with_taproot_tweak(None)?;
 
-        let [buyer_claim_merkle_root, seller_claim_merkle_root] = self.get_claim_pub_keys()
-            .expect("all pubkey shares are set since both sets have been aggregated")
-            .map(|p| network.warning_output_merkle_root(&p.to_public_key().into()));
+        let [buyer_claim_merkle_root, seller_claim_merkle_root] = self.claim_key_shares()?
+            .map(|p| network.warning_output_merkle_root(&p.pub_key().to_public_key().into()));
         let buyers_warning_output_tweaked_key_ctx = self.seller_output_key_ctx.with_taproot_tweak(
             Some(&buyer_claim_merkle_root))?;
         let sellers_warning_output_tweaked_key_ctx = self.buyer_output_key_ctx.with_taproot_tweak(
@@ -250,12 +249,12 @@ impl TradeModel {
         Ok(())
     }
 
-    fn get_claim_pub_keys(&self) -> Option<[Point; 2]> {
+    fn claim_key_shares(&self) -> Result<[&KeyPair; 2]> {
         let [buyer_key_ctx, seller_key_ctx] = [&self.buyer_output_key_ctx, &self.seller_output_key_ctx];
-        Some(if self.am_buyer() {
-            [buyer_key_ctx.my_key_share.as_ref()?.pub_key, seller_key_ctx.peers_key_share.as_ref()?.pub_key]
+        Ok(if self.am_buyer() {
+            [buyer_key_ctx.my_key_share()?, seller_key_ctx.peers_key_share()?]
         } else {
-            [buyer_key_ctx.peers_key_share.as_ref()?.pub_key, seller_key_ctx.my_key_share.as_ref()?.pub_key]
+            [buyer_key_ctx.peers_key_share()?, seller_key_ctx.my_key_share()?]
         })
     }
 
@@ -646,7 +645,7 @@ impl TradeModel {
         } else {
             &self.buyer_output_key_ctx
         };
-        Some(&peer_key_ctx.my_key_share.as_ref()?.prv_key)
+        peer_key_ctx.my_key_share().ok()?.prv_key().ok()
     }
 
     const fn get_my_key_ctx_mut(&mut self) -> &mut KeyCtx {
@@ -668,7 +667,7 @@ impl TradeModel {
 
     pub fn compute_signed_swap_tx(&mut self) -> Result<()> {
         if !self.am_buyer() {
-            let adaptor_secret = self.buyer_output_key_ctx.my_prv_key()?.into();
+            let adaptor_secret = (*self.buyer_output_key_ctx.my_key_share()?.prv_key()?).into();
             self.swap_tx_builder
                 .set_input_signature(self.swap_tx_input_sig_ctx.compute_taproot_signature(adaptor_secret)?)
                 .compute_signed_tx()?;

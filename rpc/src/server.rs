@@ -43,8 +43,8 @@ impl musig_server::Musig for MusigImpl {
             let my_key_shares = trade_model.get_my_key_shares()
                 .ok_or_else(|| Status::internal("missing key shares"))?;
             let response = PubKeySharesResponse {
-                buyer_output_pub_key_share: my_key_shares[0].pub_key.serialize().into(),
-                seller_output_pub_key_share: my_key_shares[1].pub_key.serialize().into(),
+                buyer_output_pub_key_share: my_key_shares[0].pub_key().serialize().into(),
+                seller_output_pub_key_share: my_key_shares[1].pub_key().serialize().into(),
                 current_block_height: 900_000,
             };
             TRADE_MODELS.add_trade_model(trade_model);
