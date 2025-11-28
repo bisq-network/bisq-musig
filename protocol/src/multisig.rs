@@ -150,14 +150,14 @@ impl TweakedKeyCtx {
 
 #[derive(Default)]
 pub struct SigCtx {
-    pub tweaked_key_ctx: Option<TweakedKeyCtx>,
-    pub adaptor_point: MaybePoint,
+    tweaked_key_ctx: Option<TweakedKeyCtx>,
+    adaptor_point: MaybePoint,
     my_nonce_pair_share: Option<NoncePair>,
     peers_nonce_share: Option<PubNonce>,
     aggregated_nonce: Option<AggNonce>,
     message: Option<TapSighash>,
-    pub my_partial_sig: Option<PartialSignature>,
-    pub peers_partial_sig: Option<PartialSignature>,
+    my_partial_sig: Option<PartialSignature>,
+    peers_partial_sig: Option<PartialSignature>,
     aggregated_sig: Option<AdaptorSignature>,
 }
 
@@ -166,12 +166,34 @@ impl SigCtx {
         self.tweaked_key_ctx.as_ref().ok_or(MultisigErrorKind::MissingAggPubKey)
     }
 
+    pub fn set_tweaked_key_ctx(&mut self, tweaked_key_ctx: TweakedKeyCtx) -> &TweakedKeyCtx {
+        self.tweaked_key_ctx.get_or_insert(tweaked_key_ctx)
+    }
+
     pub fn my_nonce_share(&self) -> Result<&PubNonce> {
         Ok(&self.my_nonce_pair_share.as_ref().ok_or(MultisigErrorKind::MissingNonceShare)?.pub_nonce)
     }
 
     pub fn set_peers_nonce_share(&mut self, nonce_share: PubNonce) {
         self.peers_nonce_share.get_or_insert(nonce_share);
+    }
+
+    pub fn my_partial_sig(&self) -> Result<&PartialSignature> {
+        self.my_partial_sig.as_ref().ok_or(MultisigErrorKind::MissingPartialSig)
+    }
+
+    pub fn set_peers_partial_sig(&mut self, partial_signature: PartialSignature) -> &PartialSignature {
+        self.peers_partial_sig.get_or_insert(partial_signature)
+    }
+
+    pub fn set_adaptor_point(&mut self, adaptor_point: Point) -> Result<&Point> {
+        if self.my_partial_sig.is_none() {
+            self.adaptor_point = adaptor_point.into();
+        }
+        match self.adaptor_point {
+            MaybePoint::Valid(ref x) if *x == adaptor_point => Ok(x),
+            _ => Err(MultisigErrorKind::MismatchedSigs)
+        }
     }
 
     pub fn aggregated_sig(&self) -> Result<&AdaptorSignature> {
@@ -205,13 +227,18 @@ impl SigCtx {
     }
 
     pub fn sign_partial(&mut self, message: TapSighash) -> Result<&PartialSignature> {
+        if self.message == Some(message) {
+            return self.my_partial_sig();
+        }
+        let tweaked_key_ctx = self.tweaked_key_ctx.as_ref()
+            .ok_or(MultisigErrorKind::MissingAggPubKey)?;
+        let key_agg_ctx = &tweaked_key_ctx.key_agg_ctx;
+        let seckey = tweaked_key_ctx.my_prv_key;
+        let aggregated_nonce = self.aggregated_nonce.as_ref()
+            .ok_or(MultisigErrorKind::MissingAggNonce)?;
         let secnonce = self.my_nonce_pair_share.as_mut()
             .ok_or(MultisigErrorKind::MissingNonceShare)?.sec_nonce.take()
             .ok_or(MultisigErrorKind::NonceReuse)?;
-        let aggregated_nonce = self.aggregated_nonce.as_ref()
-            .ok_or(MultisigErrorKind::MissingAggNonce)?;
-        let key_agg_ctx = &self.tweaked_key_ctx()?.key_agg_ctx;
-        let seckey = self.tweaked_key_ctx()?.my_prv_key;
 
         let sig = musig2::adaptor::sign_partial(key_agg_ctx, seckey, secnonce, aggregated_nonce,
             self.adaptor_point, message.as_byte_array())?;
@@ -293,7 +320,7 @@ pub enum MultisigErrorKind {
     ZeroNonce,
     #[error("public-private key mismatch")]
     MismatchedKeyPair,
-    #[error("mismatched adaptor and final signature")]
+    #[error("mismatched adaptor and signature")]
     MismatchedSigs,
     KeyAgg(#[from] musig2::errors::KeyAggError),
     Signing(#[from] musig2::errors::SigningError),
