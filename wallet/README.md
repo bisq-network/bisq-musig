@@ -13,3 +13,13 @@ It currently provides the following features:
 `cd wallet`
 
 `cargo test`
+
+# Running integration tests
+
+In order to run the integrations tests:
+
+`cargo test --test wallet_integration_test`
+
+If you want to display the tests stdout, add the option `--show-output` as follow:
+
+`cargo test --test wallet_integration_test -- --show-output`
