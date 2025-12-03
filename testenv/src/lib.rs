@@ -1,9 +1,18 @@
-//! Bitcoin regtest environment using electrsd with automatic executable downloads
+/// Bitcoin regtest environment using electrsd with automatic executable downloads
 use anyhow::{Context, Result};
+use axum::Router;
+use axum_embed::{FallbackBehavior, ServeEmbed};
+use axum_reverse_proxy::ReverseProxy;
 use bdk_wallet::bitcoin::{address::NetworkChecked, Address, Amount, BlockHash, Network, Txid};
 use electrsd::corepc_node;
 use electrsd::{corepc_node::Node, electrum_client::ElectrumApi, ElectrsD};
+use rust_embed::Embed;
 use std::time::Duration;
+use tower_http::cors::CorsLayer;
+
+#[derive(Embed, Debug, Clone)]
+#[folder = "src/esplora_ui"]
+struct EsploraAssets;
 
 /// Bitcoin regtest environment manager
 pub struct TestEnv {
@@ -32,6 +41,8 @@ impl Default for Config<'_> {
             electrsd: {
                 let mut conf = electrsd::Conf::default();
                 conf.http_enabled = true;
+                conf.args.push("--cors");
+                conf.args.push("*");
                 // conf.view_stderr = true;
                 conf
             },
@@ -86,15 +97,44 @@ impl TestEnv {
         let electrsd = ElectrsD::with_conf(electrs_exe, &bitcoind, &config.electrsd)
             .with_context(|| "Starting electrsd failed...")?;
 
-        eprintln!("Electrum URL: {}", electrsd.electrum_url);
-        eprintln!("Bitcoin regtest environment ready!");
-
         let test_env = Self { bitcoind, electrsd };
+        eprintln!("Electrum URL: {}", test_env.electrum_url());
         if let Some(url) = test_env.esplora_url() {
             eprintln!("Esplora REST address: http://{url}/mempool",);
         };
+        eprintln!("Bitcoin regtest environment ready!");
 
         Ok(test_env)
+    }
+
+    pub async fn start_esplora_ui(&self) {
+        if let Some(api_url) = self.esplora_url() {
+            eprintln!("Starting Esplora UI...");
+            let serve_assets = ServeEmbed::<EsploraAssets>::with_parameters(
+                Some("index.html".to_string()),
+                FallbackBehavior::Ok,
+                Some("index.html".to_string()),
+            );
+
+            // Create a reverse proxy that forwards requests from /api/*
+            let proxy = ReverseProxy::new("/api", &format!("http://{api_url}"));
+            let app: Router = proxy.into();
+            let app: Router = app
+                .fallback_service(serve_assets)
+                .layer(CorsLayer::permissive());
+
+            //Change the port is not allowed cause it's been also hard coded in esplora_ui
+            let listener = tokio::net::TcpListener::bind("0.0.0.0:8989").await.unwrap();
+
+            eprintln!(
+                "Esplora UI served at: http://{:?}",
+                listener.local_addr().unwrap()
+            );
+            axum::serve(listener, app).await.unwrap();
+            eprintln!("!!! Esplora UI terminated!!")
+        } else {
+            eprintln!("Faill to start Esplora UI! Please set electrsd.http_enabled = true")
+        }
     }
 
     /// Get the electrum client for blockchain operations
@@ -103,8 +143,8 @@ impl TestEnv {
     }
 
     /// Get the electrum URL
-    pub fn electrum_url(&self) -> &str {
-        &self.electrsd.electrum_url
+    pub fn electrum_url(&self) -> String {
+        self.electrsd.electrum_url.replace("0.0.0.0", "127.0.0.1")
     }
 
     /// Get the Esplora REST URL
@@ -273,8 +313,8 @@ mod tests {
         Ok(())
     }
 
-    #[test]
-    fn test_address_operations() -> Result<()> {
+    #[tokio::test]
+    async fn test_address_operations() -> Result<()> {
         let env = TestEnv::new()?;
 
         // Create new address
@@ -323,6 +363,7 @@ mod tests {
         assert_eq!(receive_amount, amount);
         eprintln!("Transaction amount verified: {} ", receive_amount);
 
+        env.start_esplora_ui().await;
         Ok(())
     }
 }
