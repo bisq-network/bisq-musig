@@ -2701,6 +2701,7 @@ dependencies = [
  "secp",
  "simple-semaphore",
  "tempfile",
+ "testenv",
  "zeroize",
 ]
 
