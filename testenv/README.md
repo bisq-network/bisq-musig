@@ -8,6 +8,7 @@ A clean Bitcoin regtest environment using electrsd with automatic executable dow
 - **Zero Dependencies**: No Docker or external setup required
 - **Modern Rust API**: Clean, ergonomic interface inspired by BDK
 - **Cross-Platform**: Works on Linux, macOS, and Windows
+- **Web UI**: Built-in Esplora blockchain explorer for visual debugging
 
 ## Quick Start
 
@@ -29,6 +30,41 @@ env.wait_for_block(Duration::from_secs(5))?;
 println!("Transaction confirmed: {}", txid);
 ```
 
+### Web UI (Esplora)
+
+Start the built-in blockchain explorer for visual debugging:
+
+```rust
+use tokio::time::Duration;
+
+// Create environment
+let env = TestEnv::new()?;
+
+// Start Esplora UI (blocks until terminated)
+let env_clone = env.clone();
+tokio::spawn(async move {
+    env_clone.start_esplora_ui().await
+});
+
+// UI is now available at http://localhost:8989
+println!("View blockchain at: http://localhost:8989");
+
+// Do your work while UI runs...
+env.mine_block()?;
+
+// UI continues running until server is terminated
+tokio::time::sleep(Duration::from_secs(30)).await;
+```
+
+**Esplora UI Features**:
+- Real-time blockchain visualization
+- Transaction search and inspection
+- Address and block explorers
+- Network monitoring during testing
+- Useful for debugging complex scenarios
+
+> **Note**: Esplora UI runs on port 8989. The port is currently hardcoded and cannot be customized.
+
 ### Custom Configuration Usage
 
 ```rust
@@ -49,6 +85,7 @@ let env = TestEnv::new_with_conf(config)?;
 
 env.mine_blocks(5)?;
 
+// UI will be available at http://localhost:8989
 ```
 
 ### Environment Variables
@@ -74,6 +111,9 @@ cargo run  # Will use custom executables
     // Do your work here...
     env.mine_block()?;
     let address = env.new_address()?;
+    
+    // UI service can be started separately:
+    // tokio::spawn(async move { env.start_esplora_ui().await });
     
     // Services stay running while env is in scope
     
@@ -104,6 +144,10 @@ The main environment manager that handles both bitcoind and electrs instances.
 - `electrum_client()` - Access to electrum client for blockchain operations
 - `electrum_url()` - Get electrum server URL
 - `esplora_url()` - Get Esplora REST URL
+
+#### Web UI
+
+- `start_esplora_ui()` - Start Esplora blockchain explorer UI (blocks until terminated)
 
 #### Blockchain Operations
 
