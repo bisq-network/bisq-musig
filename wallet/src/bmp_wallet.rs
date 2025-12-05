@@ -180,6 +180,16 @@ pub struct BMPWallet<P: BMPWalletPersister> {
     db: P,
 }
 
+impl BMPWallet<Connection> {
+    pub fn next_address(&mut self, key_chain: KeychainKind) -> anyhow::Result<AddressInfo> {
+        let addr = self.wallet.next_unused_address(key_chain);
+        // Persist the revealed address, to avoid address reuse
+        self.persist()?;
+
+        Ok(addr)
+    }
+}
+
 pub trait WalletApi {
     const DB_PATH: &str;
     const SEEDS_TABLE_NAME: &'static str;
@@ -451,19 +461,11 @@ impl WalletApi for BMPWallet<Connection> {
     }
 
     fn get_new_address(&mut self) -> anyhow::Result<AddressInfo> {
-        let addr = self.wallet.next_unused_address(KeychainKind::External);
-        // Persist the revealed address, to avoid address reuse
-        self.persist()?;
-
-        Ok(addr)
+        self.next_address(KeychainKind::External)
     }
 
     fn get_change_address(&mut self) -> anyhow::Result<AddressInfo> {
-        let addr = self.wallet.next_unused_address(KeychainKind::Internal);
-        // Persist the revealed address, to avoid address reuse
-        self.persist()?;
-
-        Ok(addr)
+        self.next_address(KeychainKind::Internal)
     }
 
     fn balance(&self) -> Amount {

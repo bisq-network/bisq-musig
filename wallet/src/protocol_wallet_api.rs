@@ -1,5 +1,7 @@
+use crate::bmp_wallet::BMPWallet;
 use bdk_wallet::bitcoin::secp256k1::Scalar;
 use bdk_wallet::bitcoin::{absolute, Address, Amount, FeeRate, Network, OutPoint, Psbt, ScriptBuf};
+use bdk_wallet::rusqlite::Connection;
 use bdk_wallet::{KeychainKind, TxOrdering, Wallet};
 
 /// The Protocol Wallet API is used by the protocol to create and sign transactions.
@@ -21,18 +23,52 @@ pub trait ProtocolWalletApi {
         fee_rate: FeeRate,
     ) -> anyhow::Result<Psbt>;
 
-    fn sign_selected_inputs(&self, psbt: &mut Psbt, is_selected: &dyn Fn(&OutPoint) -> bool) -> anyhow::Result<()>;
+    fn sign_selected_inputs(
+        &self,
+        psbt: &mut Psbt,
+        is_selected: &dyn Fn(&OutPoint) -> bool,
+    ) -> anyhow::Result<()>;
 
     // Import an external private from the HD wallet
     // After importing a rescan should be triggered
     fn import_private_key(&mut self, pk: Scalar);
 }
+impl ProtocolWalletApi for BMPWallet<Connection> {
+    fn network(&self) -> Network {
+        todo!()
+    }
 
+    fn new_address(&mut self) -> anyhow::Result<Address> {
+        Ok(self.next_address(KeychainKind::External)?.address)
+    }
+
+    fn create_psbt(
+        &mut self,
+        recipients: Vec<(ScriptBuf, Amount)>,
+        fee_rate: FeeRate,
+    ) -> anyhow::Result<Psbt> {
+        todo!()
+    }
+
+    fn sign_selected_inputs(
+        &self,
+        psbt: &mut Psbt,
+        is_selected: &dyn Fn(&OutPoint) -> bool,
+    ) -> anyhow::Result<()> {
+        todo!()
+    }
+
+    fn import_private_key(&mut self, pk: Scalar) {
+        todo!()
+    }
+}
 
 /// This is a sample implementation, only for demonstration purpose.
 /// It doesn't make sense to implement the protocol_wallet_api trait for Wallet, it should be implemented for BMPWallet.
 impl ProtocolWalletApi for Wallet {
-    fn network(&self) -> Network { self.network() }
+    fn network(&self) -> Network {
+        self.network()
+    }
 
     fn new_address(&mut self) -> anyhow::Result<Address> {
         Ok(self.next_unused_address(KeychainKind::External).address)
@@ -65,7 +101,7 @@ impl ProtocolWalletApi for Wallet {
         Ok(())
     }
 
-    fn import_private_key(&mut self, _pk: Scalar) {
+    fn import_private_key(&mut self, pk: Scalar) {
         todo!()
     }
 }
