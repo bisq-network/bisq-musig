@@ -6,7 +6,6 @@ use bdk_wallet::bitcoin::{address::NetworkChecked, Address, Amount, BlockHash, N
 use electrsd::corepc_node;
 use electrsd::{corepc_node::Node, electrum_client::ElectrumApi, ElectrsD};
 use std::time::Duration;
-use tower_http::cors::CorsLayer;
 
 /// Bitcoin regtest environment manager
 pub struct TestEnv {
@@ -115,9 +114,8 @@ impl TestEnv {
         //The actual frontend running in a container on the port 8888(look at the README for more details)
         let frontend = ReverseProxy::new("/", "http://localhost:8888");
         let app: Router = api.into();
-        let app: Router = app
-            .fallback_service(frontend) // Forward all other requests to actual frontend
-            .layer(CorsLayer::permissive());
+        let app: Router = app.fallback_service(frontend); // Forward all other requests to actual frontend
+                                                          // .layer(CorsLayer::permissive());
 
         let listener = tokio::net::TcpListener::bind(&format!("127.0.0.1:{port}"))
             .await

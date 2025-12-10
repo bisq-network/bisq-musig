@@ -52,7 +52,7 @@ In a separate terminal, run the Esplora frontend container:
 # Using Podman
 podman run -d --rm \
   --name esplora \
-  -p 5000:5000 -p 8888:80 \
+  -p 8888:80 \
   -e API_URL=http://localhost:8989 \
   -e NATIVE_ASSET_LABEL=BTC \
   docker.io/blockstream/esplora:latest \
@@ -61,7 +61,7 @@ podman run -d --rm \
 # Using Docker (if preferred)
 docker run -d --rm \
   --name esplora \
-  -p 5000:5000 -p 8888:80 \
+  -p 8888:80 \
   -e API_URL=http://localhost:8989 \
   -e NATIVE_ASSET_LABEL=BTC \
   docker.io/blockstream/esplora:latest \
