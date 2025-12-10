@@ -114,8 +114,8 @@ impl TestEnv {
         //The actual frontend running in a container on the port 8888(look at the README for more details)
         let frontend = ReverseProxy::new("/", "http://localhost:8888");
         let app: Router = api.into();
-        let app: Router = app.fallback_service(frontend); // Forward all other requests to actual frontend
-                                                          // .layer(CorsLayer::permissive());
+        // Forward all other requests to actual frontend
+        let app: Router = app.fallback_service(frontend);
 
         let listener = tokio::net::TcpListener::bind(&format!("127.0.0.1:{port}"))
             .await
