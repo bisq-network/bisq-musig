@@ -91,7 +91,7 @@ impl KeyCtx {
 
     pub fn aggregate_pub_key_shares(&mut self) -> Result<()> {
         let agg_ctx = KeyAggContext::new(self.key_shares()?.map(|p| *p.pub_key()))?;
-        self.aggregated_key = Some(KeyPair::from_public(agg_ctx.aggregated_pubkey()));
+        self.aggregated_key.get_or_insert(KeyPair::from_public(agg_ctx.aggregated_pubkey()));
         self.key_agg_ctx = Some(agg_ctx);
         Ok(())
     }
@@ -174,6 +174,10 @@ impl SigCtx {
         Ok(&self.my_nonce_pair_share.as_ref().ok_or(MultisigErrorKind::MissingNonceShare)?.pub_nonce)
     }
 
+    fn peers_nonce_share(&self) -> Result<&PubNonce> {
+        self.peers_nonce_share.as_ref().ok_or(MultisigErrorKind::MissingNonceShare)
+    }
+
     pub fn set_peers_nonce_share(&mut self, nonce_share: PubNonce) {
         self.peers_nonce_share.get_or_insert(nonce_share);
     }
@@ -182,12 +186,19 @@ impl SigCtx {
         self.my_partial_sig.as_ref().ok_or(MultisigErrorKind::MissingPartialSig)
     }
 
+    fn peers_partial_sig(&self) -> Result<&PartialSignature> {
+        self.peers_partial_sig.as_ref().ok_or(MultisigErrorKind::MissingPartialSig)
+    }
+
     pub fn set_peers_partial_sig(&mut self, partial_signature: PartialSignature) -> &PartialSignature {
         self.peers_partial_sig.get_or_insert(partial_signature)
     }
 
     pub fn set_adaptor_point(&mut self, adaptor_point: Point) -> Result<&Point> {
-        if self.my_partial_sig.is_none() {
+        // In order to have a better chance of provable security, don't allow the adaptor point to
+        // be set after our local nonce share has already been initialized, as otherwise an attacker
+        // may gain too much control over the challenge hash or final adapted signature nonce:
+        if self.my_nonce_pair_share.is_none() {
             self.adaptor_point = adaptor_point.into();
         }
         match self.adaptor_point {
@@ -208,21 +219,8 @@ impl SigCtx {
         Ok(())
     }
 
-    fn get_nonce_shares(&self) -> Option<[&PubNonce; 2]> {
-        Some([&self.my_nonce_pair_share.as_ref()?.pub_nonce, self.peers_nonce_share.as_ref()?])
-    }
-
     pub fn aggregate_nonce_shares(&mut self) -> Result<&AggNonce> {
-        let agg_nonce = AggNonce::sum(self.get_nonce_shares()
-            .ok_or(MultisigErrorKind::MissingNonceShare)?);
-        if matches!((&agg_nonce.R1, &agg_nonce.R2), (MaybePoint::Infinity, MaybePoint::Infinity)) {
-            // Fail early if the aggregated nonce is zero, since otherwise an attacker could force
-            // the final signature nonce to be equal to the base point, G. While that might not be
-            // a problem (for us), there would be an attack vector if such signatures were ever
-            // deemed to be nonstandard. (Note that being able to assign blame later by allowing
-            // this through is unimportant for a two-party protocol.)
-            return Err(MultisigErrorKind::ZeroNonce);
-        }
+        let agg_nonce = AggNonce::sum([self.my_nonce_share()?, self.peers_nonce_share()?]);
         Ok(self.aggregated_nonce.insert(agg_nonce))
     }
 
@@ -246,16 +244,11 @@ impl SigCtx {
         Ok(self.my_partial_sig.insert(sig))
     }
 
-    fn get_partial_signatures(&self) -> Option<[PartialSignature; 2]> {
-        Some([self.my_partial_sig?, self.peers_partial_sig?])
-    }
-
     pub fn aggregate_partial_signatures(&mut self) -> Result<&AdaptorSignature> {
         let key_agg_ctx = &self.tweaked_key_ctx()?.key_agg_ctx;
         let aggregated_nonce = &self.aggregated_nonce.as_ref()
             .ok_or(MultisigErrorKind::MissingAggNonce)?;
-        let partial_signatures = self.get_partial_signatures()
-            .ok_or(MultisigErrorKind::MissingPartialSig)?;
+        let partial_signatures = [*self.my_partial_sig()?, *self.peers_partial_sig()?];
         let message = self.message.as_ref()
             .ok_or(MultisigErrorKind::MissingPartialSig)?;
 
@@ -267,6 +260,9 @@ impl SigCtx {
     pub fn compute_taproot_signature(&self, adaptor_secret: MaybeScalar) -> Result<Signature> {
         let adaptor_sig = self.aggregated_sig
             .ok_or(MultisigErrorKind::MissingAggSig)?;
+        if self.adaptor_point != adaptor_secret.base_point_mul() {
+            return Err(MultisigErrorKind::MismatchedKeyPair);
+        }
         let sig_bytes: [u8; 64] = adaptor_sig.adapt(adaptor_secret)
             .ok_or(MultisigErrorKind::ZeroNonce)?;
         Ok(Signature::from_slice(&sig_bytes).expect("len = 64"))
