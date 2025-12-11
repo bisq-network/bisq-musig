@@ -111,9 +111,10 @@ impl TestEnv {
         // Create a reverse proxy that forwards requests from /api/*
         let api = ReverseProxy::new("/api", &format!("http://{api_url}"));
 
-        //The actual frontend running in a container on the port 8888(look at the README for more details)
+        //The actual frontend should be running in a container on the port 8888(look at the README for more details)
         let frontend = ReverseProxy::new("/", "http://localhost:8888");
         let app: Router = api.into();
+
         // Forward all other requests to actual frontend
         let app: Router = app.fallback_service(frontend);
 
@@ -378,10 +379,6 @@ mod tests {
             env.esplora_url().is_none(),
             "Esplora URL should be None when HTTP is disabled"
         );
-
-        // This would return an error in async context
-        // We can't easily test the async error case here without async runtime,
-        // but the error handling logic is tested by the successful cases above
 
         Ok(())
     }

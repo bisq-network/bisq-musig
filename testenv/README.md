@@ -53,8 +53,6 @@ In a separate terminal, run the Esplora frontend container:
 podman run -d --rm \
   --name esplora \
   -p 8888:80 \
-  -e API_URL=http://localhost:8989 \
-  -e NATIVE_ASSET_LABEL=BTC \
   docker.io/blockstream/esplora:latest \
   bash -c "/srv/explorer/run.sh bitcoin-mainnet explorer"
 
@@ -62,8 +60,6 @@ podman run -d --rm \
 docker run -d --rm \
   --name esplora \
   -p 8888:80 \
-  -e API_URL=http://localhost:8989 \
-  -e NATIVE_ASSET_LABEL=BTC \
   docker.io/blockstream/esplora:latest \
   bash -c "/srv/explorer/run.sh bitcoin-mainnet explorer"
 ```
