@@ -8,6 +8,7 @@ A clean Bitcoin regtest environment using electrsd with automatic executable dow
 - **Zero Dependencies**: No Docker or external setup required
 - **Modern Rust API**: Clean, ergonomic interface inspired by BDK
 - **Cross-Platform**: Works on Linux, macOS, and Windows
+- **Web UI**: Built-in Esplora blockchain explorer for visual debugging
 
 ## Quick Start
 
@@ -29,6 +30,46 @@ env.wait_for_block(Duration::from_secs(5))?;
 println!("Transaction confirmed: {}", txid);
 ```
 
+### Web UI (Esplora)
+
+The test environment provides a web-based blockchain explorer for visual debugging. This requires running both a backend API proxy and a frontend container.
+
+#### Step 1: Start the Backend API Proxy
+
+```rust
+// Create environment
+let env = TestEnv::new()?;
+
+// Start Esplora UI API proxy (blocks until terminated)
+env.start_esplora_ui(8989).await;
+```
+
+#### Step 2: Start the Frontend Container
+
+In a separate terminal, run the Esplora frontend container:
+
+```bash
+# Using Podman
+podman run -d --rm \
+  --name esplora \
+  -p 8888:80 \
+  docker.io/blockstream/esplora:latest \
+  bash -c "/srv/explorer/run.sh bitcoin-mainnet explorer"
+
+# Using Docker (if preferred)
+docker run -d --rm \
+  --name esplora \
+  -p 8888:80 \
+  docker.io/blockstream/esplora:latest \
+  bash -c "/srv/explorer/run.sh bitcoin-mainnet explorer"
+```
+
+#### Step 3: Access the Web Interface
+
+- http://localhost:8989
+
+> **Note**: Keep the Rust environment running while using the web interface. The frontend container connects to the API proxy provided by the `start_esplora_ui()` function.
+
 ### Custom Configuration Usage
 
 ```rust
@@ -49,6 +90,7 @@ let env = TestEnv::new_with_conf(config)?;
 
 env.mine_blocks(5)?;
 
+// UI will be available at http://localhost:8989
 ```
 
 ### Environment Variables
@@ -59,31 +101,6 @@ export BITCOIND_EXEC="/custom/path/to/bitcoind"
 export ELECTRS_EXEC="/custom/path/to/electrs"
 
 cargo run  # Will use custom executables
-```
-
-### Process Lifetime Management
-
-```rust
-    // Create environment - processes start running
-    let env = TestEnv::new()?;
-    
-    // ✅ GOOD: Keep env variable in scope while using services
-    println!("Electrum URL: {}", env.electrum_url());
-    println!("Esplora URL: {:?}", env.esplora_url());
-    
-    // Do your work here...
-    env.mine_block()?;
-    let address = env.new_address()?;
-    
-    // Services stay running while env is in scope
-    
-    // ❌ BAD: Don't drop env early
-    // drop(env); // This terminates both bitcoind and electrs!
-    
-    // ✅ GOOD: Keep processes running longer
-    println!("Services will run for 30 seconds...");
-    std::thread::sleep(Duration::from_secs(90));
-
 ```
 
 ## API Reference
@@ -104,6 +121,10 @@ The main environment manager that handles both bitcoind and electrs instances.
 - `electrum_client()` - Access to electrum client for blockchain operations
 - `electrum_url()` - Get electrum server URL
 - `esplora_url()` - Get Esplora REST URL
+
+#### Web UI
+
+- `start_esplora_ui(port)` - Start Esplora blockchain explorer API proxy (blocks until terminated)
 
 #### Blockchain Operations
 
