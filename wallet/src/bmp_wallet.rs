@@ -3,6 +3,7 @@ use std::{fs, vec};
 
 use base64::engine::general_purpose;
 use base64::Engine;
+use bdk_electrum::bdk_core::bitcoin::{absolute, Address, FeeRate, OutPoint};
 use bdk_wallet::bitcoin::bip32::Xpriv;
 use bdk_wallet::bitcoin::hex::DisplayHex;
 use bdk_wallet::bitcoin::{
@@ -14,15 +15,13 @@ use bdk_wallet::miniscript::psbt::PsbtExt;
 use bdk_wallet::rusqlite::{self, named_params, Connection};
 use bdk_wallet::signer::{InputSigner, SignerContext, SignerError, SignerWrapper};
 use bdk_wallet::template::{Bip86, DescriptorTemplate};
-use bdk_wallet::{
-    AddressInfo, Balance, ChangeSet, KeychainKind, PersistedWallet, SignOptions, TxBuilder, Utxo,
-    Wallet, WalletPersister, WeightedUtxo,
-};
+use bdk_wallet::{AddressInfo, Balance, ChangeSet, KeychainKind, PersistedWallet, SignOptions, TxBuilder, TxOrdering, Utxo, Wallet, WalletPersister, WeightedUtxo};
 use rand::RngCore;
 use secp::Scalar;
 
 use crate::chain_data_source::ChainDataSource;
 use crate::coin_selection::AlwaysSpendImportedFirst;
+use crate::protocol_wallet_api::ProtocolWalletApi;
 use crate::utils::{derive_key_from_password, get_salt};
 
 pub trait BMPWalletPersister: WalletPersister {
@@ -183,13 +182,105 @@ pub struct BMPWallet<P: BMPWalletPersister> {
 impl BMPWallet<Connection> {
     pub fn next_address(&mut self, key_chain: KeychainKind) -> anyhow::Result<AddressInfo> {
         let addr = self.wallet.next_unused_address(key_chain);
-        // Persist the revealed address, to avoid address reuse
+        // Persist the revealed address to avoid address reuse
         self.persist()?;
 
         Ok(addr)
     }
+
+    // Import an external private from the HD wallet
+    // After importing a rescan should be triggered
+    pub fn import_private_key(&mut self, pk: Scalar) {
+        self.imported_keys.push(pk);
+    }
+
+
+    fn build_tx(&mut self) -> TxBuilder<'_, AlwaysSpendImportedFirst> {
+        let secp = self.secp_ctx();
+        let imported_weighted_utxos = self
+                .tx_graph()
+                .floating_txouts()
+                .map(|utxo| {
+                    let output_script_pubkey = &utxo.1.script_pubkey;
+
+                    let tap_internal_key = self
+                            .imported_keys
+                            .iter()
+                            .map(|scalar| {
+                                let pbk = scalar.base_point_mul().serialize_xonly();
+                                XOnlyPublicKey::from_slice(&pbk)
+                                        .expect("Should be valid xonlypub key")
+                            })
+                            .find(|pubkey| {
+                                let script = ScriptBuf::new_p2tr(secp, *pubkey, None);
+                                script == *output_script_pubkey
+                            });
+
+                    WeightedUtxo {
+                        utxo: Utxo::Foreign {
+                            outpoint: utxo.0,
+                            sequence: Sequence::ENABLE_RBF_NO_LOCKTIME,
+                            psbt_input: Box::new(psbt::Input {
+                                witness_utxo: Some(utxo.1.clone()),
+                                tap_internal_key,
+                                ..Default::default()
+                            }),
+                        },
+                        satisfaction_weight: Weight::from_wu_usize(65),
+                    }
+                })
+                .collect::<Vec<_>>();
+
+        let coin_selection = AlwaysSpendImportedFirst(imported_weighted_utxos);
+        self.wallet.build_tx().coin_selection(coin_selection)
+    }
 }
 
+impl ProtocolWalletApi for BMPWallet<Connection> {
+    fn network(&self) -> Network {
+        self.wallet.network()
+    }
+
+    fn new_address(&mut self) -> anyhow::Result<Address> {
+        Ok(self.next_address(KeychainKind::External)?.address)
+    }
+
+    fn create_psbt(
+        &mut self,
+        recipients: Vec<(ScriptBuf, Amount)>,
+        fee_rate: FeeRate,
+    ) -> anyhow::Result<Psbt> {
+        let mut builder = self.build_tx();
+        builder
+                .ordering(TxOrdering::Untouched)
+                .nlocktime(absolute::LockTime::ZERO)
+                .fee_rate(fee_rate)
+                .set_recipients(recipients);
+        Ok(builder.finish()?)
+    }
+
+    fn sign_selected_inputs(
+        &mut self,
+        psbt: &mut Psbt,
+        is_selected: &dyn Fn(&OutPoint) -> bool,
+    ) -> anyhow::Result<()> {
+        let mut psbt_copy = psbt.clone();
+        self.sign(&mut psbt_copy, bdk_wallet::SignOptions::default())?;
+        for i in 0..psbt.inputs.len() {
+            if is_selected(&psbt.unsigned_tx.input[i].previous_output) {
+                psbt.inputs[i].final_script_sig = psbt_copy.inputs[i].final_script_sig.take();
+                psbt.inputs[i].final_script_witness = psbt_copy.inputs[i].final_script_witness.take();
+            }
+        }
+        Ok(())
+    }
+
+    // Import an external private from the HD wallet
+    // After importing a rescan should be triggered
+    fn import_private_key(&mut self, pk: Scalar) {
+        self.import_private_key(pk);
+    }
+}
 pub trait WalletApi {
     const DB_PATH: &str;
     const SEEDS_TABLE_NAME: &'static str;
@@ -207,7 +298,6 @@ pub trait WalletApi {
     fn get_change_address(&mut self) -> anyhow::Result<AddressInfo>;
 
     fn get_seed_phrase(&self) -> anyhow::Result<String>;
-    fn import_private_key(&mut self, key: Scalar);
 
     fn balance(&self) -> Amount;
 
@@ -421,43 +511,7 @@ impl WalletApi for BMPWallet<Connection> {
     }
 
     fn build_tx(&mut self) -> TxBuilder<'_, AlwaysSpendImportedFirst> {
-        let secp = self.secp_ctx();
-        let imported_weighted_utxos = self
-            .tx_graph()
-            .floating_txouts()
-            .map(|utxo| {
-                let output_script_pubkey = &utxo.1.script_pubkey;
-
-                let tap_internal_key = self
-                    .imported_keys
-                    .iter()
-                    .map(|scalar| {
-                        let pbk = scalar.base_point_mul().serialize_xonly();
-                        XOnlyPublicKey::from_slice(&pbk)
-                            .expect("Should be valid xonlypub key")
-                    })
-                    .find(|pubkey| {
-                       let script = ScriptBuf::new_p2tr(secp, *pubkey, None);
-                        script == *output_script_pubkey
-                    });
-
-                WeightedUtxo {
-                    utxo: Utxo::Foreign {
-                        outpoint: utxo.0,
-                        sequence: Sequence::ENABLE_RBF_NO_LOCKTIME,
-                        psbt_input: Box::new(psbt::Input {
-                            witness_utxo: Some(utxo.1.clone()),
-                            tap_internal_key,
-                            ..Default::default()
-                        }),
-                    },
-                    satisfaction_weight: Weight::from_wu_usize(65),
-                }
-            })
-            .collect::<Vec<_>>();
-
-        let coin_selection = AlwaysSpendImportedFirst(imported_weighted_utxos);
-        self.wallet.build_tx().coin_selection(coin_selection)
+        self.build_tx()
     }
 
     fn get_new_address(&mut self) -> anyhow::Result<AddressInfo> {
@@ -474,13 +528,6 @@ impl WalletApi for BMPWallet<Connection> {
 
     fn get_seed_phrase(&self) -> anyhow::Result<String> {
         Connection::get_seed_phrase(&self.db, Self::SEEDS_TABLE_NAME)
-    }
-
-    // Import an external private from the HD wallet
-    // After importing a rescan should be triggered
-    // TODO move this implementation to trait ProtocolWalletApi
-    fn import_private_key(&mut self, pk: Scalar) {
-        self.imported_keys.push(pk);
     }
 
     fn decrypt(self, password: &str) -> anyhow::Result<BMPWallet<Connection>> {
@@ -732,7 +779,6 @@ mod tests {
     }
 
     #[test]
-
     fn sign_inputs_main_wallet_only() -> anyhow::Result<()> {
         let _permit = SEMAPHORE.acquire();
         let _tmp_dir = tear_up();
