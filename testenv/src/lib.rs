@@ -5,7 +5,10 @@ use axum_reverse_proxy::ReverseProxy;
 use bdk_wallet::bitcoin::{address::NetworkChecked, Address, Amount, BlockHash, Network, Txid};
 use electrsd::corepc_node;
 use electrsd::{corepc_node::Node, electrum_client::ElectrumApi, ElectrsD};
+use simple_semaphore::{Permit, Semaphore};
+use std::sync::Arc;
 use std::time::Duration;
+use tempfile::{tempdir, TempDir};
 
 /// Bitcoin regtest environment manager
 pub struct TestEnv {
@@ -13,6 +16,8 @@ pub struct TestEnv {
     electrsd: ElectrsD,
     timeout: Duration,
     delay: Duration,
+    _permit: Permit,
+    _tmp_dir: TempDir,
 }
 
 /// Configuration parameters.
@@ -51,6 +56,8 @@ impl Default for Config<'_> {
 }
 
 const NETWORK: Network = Network::Regtest;
+static SEMAPHORE: once_cell::sync::Lazy<Arc<Semaphore>> =
+    once_cell::sync::Lazy::new(|| Semaphore::new(1));
 
 impl TestEnv {
     /// Create a new test environment with automatic executable downloads
@@ -60,6 +67,10 @@ impl TestEnv {
 
     /// create environment with automatic downloads
     pub fn new_with_conf(config: Config) -> Result<Self> {
+        let permit = SEMAPHORE.acquire(); // have testenvs single threaded because of bitcoind and electrs references.
+        let tmp_dir = tempdir().expect("failed to create temporary directory");
+        std::env::set_current_dir(tmp_dir.path()).expect("failed to set current directory");
+
         // Try to start bitcoind (from environment or downloads)
         eprintln!("Starting bitcoind...");
         let bitcoind = match std::env::var("BITCOIND_EXEC") {
@@ -98,7 +109,15 @@ impl TestEnv {
             .with_context(|| "Starting electrsd failed...")?;
 
         eprintln!("Electrum URL: {}", electrsd.electrum_url);
-           let test_env = Self { bitcoind, electrsd, timeout: Duration::from_secs(5), delay: Duration::from_millis(200) };
+        // permit will be dropped when TestEnv is dropped
+        let test_env = Self {
+            bitcoind,
+            electrsd,
+            timeout: config.timeout,
+            delay: config.delay,
+            _permit: permit,
+            _tmp_dir: tmp_dir,
+        };
         if let Some(url) = test_env.esplora_url() {
             eprintln!("Esplora REST address: http://{url}/mempool",);
         };
@@ -179,6 +198,7 @@ impl TestEnv {
     /// Mine a single block
     pub fn mine_block(&self) -> Result<BlockHash> {
         let hashes = self.mine_blocks(1)?;
+        self.wait_for_block()?;
         Ok(hashes[0])
     }
 
