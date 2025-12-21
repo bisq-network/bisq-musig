@@ -11,6 +11,8 @@ use std::time::Duration;
 pub struct TestEnv {
     bitcoind: Node,
     electrsd: ElectrsD,
+    timeout: Duration,
+    delay: Duration,
 }
 
 /// Configuration parameters.
@@ -20,6 +22,8 @@ pub struct Config<'a> {
     pub bitcoind: corepc_node::Conf<'a>,
     /// [`electrsd::Conf`]
     pub electrsd: electrsd::Conf<'a>,
+    pub timeout: Duration,
+    pub delay: Duration,
 }
 
 impl Default for Config<'_> {
@@ -40,6 +44,8 @@ impl Default for Config<'_> {
                 // conf.view_stderr = true;
                 conf
             },
+            timeout: Duration::from_secs(5),
+            delay: Duration::from_millis(200),
         }
     }
 }
@@ -91,8 +97,8 @@ impl TestEnv {
         let electrsd = ElectrsD::with_conf(electrs_exe, &bitcoind, &config.electrsd)
             .with_context(|| "Starting electrsd failed...")?;
 
-        let test_env = Self { bitcoind, electrsd };
-        eprintln!("Electrum URL: {}", test_env.electrum_url());
+        eprintln!("Electrum URL: {}", electrsd.electrum_url);
+           let test_env = Self { bitcoind, electrsd, timeout: Duration::from_secs(5), delay: Duration::from_millis(200) };
         if let Some(url) = test_env.esplora_url() {
             eprintln!("Esplora REST address: http://{url}/mempool",);
         };
@@ -211,12 +217,11 @@ impl TestEnv {
     }
 
     /// Wait for electrum to see a new block
-    pub fn wait_for_block(&self, timeout: Duration) -> Result<()> {
+    pub fn wait_for_block(&self) -> Result<()> {
         self.electrsd.client.block_headers_subscribe()?;
-        let delay = Duration::from_millis(200);
         let start = std::time::Instant::now();
 
-        while start.elapsed() < timeout {
+        while start.elapsed() < self.timeout {
             self.electrsd.trigger()?;
             self.electrsd.client.ping()?;
 
@@ -224,31 +229,30 @@ impl TestEnv {
                 return Ok(());
             }
 
-            std::thread::sleep(delay);
+            std::thread::sleep(self.delay);
         }
 
         Err(anyhow::anyhow!(
             "Timeout waiting for electrum to see block after {:?}",
-            timeout
+            self.timeout
         ))
     }
 
     /// Wait for electrum to see a specific transaction
-    pub fn wait_for_tx(&self, txid: Txid, timeout: Duration) -> Result<()> {
-        let delay = Duration::from_millis(200);
+    pub fn wait_for_tx(&self, txid: Txid) -> Result<()> {
         let start = std::time::Instant::now();
 
-        while start.elapsed() < timeout {
+        while start.elapsed() < self.timeout {
             if self.electrsd.client.transaction_get(&txid).is_ok() {
                 return Ok(());
             }
-            std::thread::sleep(delay);
+            std::thread::sleep(self.delay);
         }
 
         Err(anyhow::anyhow!(
             "Timeout waiting for electrum to see transaction {} after {:?}",
             txid,
-            timeout
+            self.timeout
         ))
     }
 
@@ -345,7 +349,7 @@ mod tests {
         env.trigger_sync()?;
 
         // Wait for the transaction to appear in electrum
-        env.wait_for_tx(txid, Duration::from_secs(10))?;
+        env.wait_for_tx(txid)?;
         eprintln!("Transaction confirmed in electrum");
 
         // Verify we can get the transaction from bitcoind

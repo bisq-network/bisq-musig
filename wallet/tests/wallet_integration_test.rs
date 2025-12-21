@@ -1,6 +1,5 @@
 use std::str::FromStr;
 use std::sync::Arc;
-use std::time::Duration;
 
 use anyhow::Ok;
 use bdk_electrum::electrum_client::{Client, Config, ElectrumApi};
@@ -59,7 +58,7 @@ fn init_test() -> anyhow::Result<()> {
     env.fund_address(&receiving_addr, receive_amount)?;
     env.mine_block()?;
 
-    env.wait_for_block(Duration::from_secs(5))?;
+    env.wait_for_block()?;
 
     wallet.sync_all(&data_source)?;
 
@@ -92,7 +91,7 @@ fn test_sync_with_imported_keys() -> anyhow::Result<()> {
     env.fund_address(&imported_addr, receive_amount)?;
 
     env.mine_block()?;
-    env.wait_for_block(Duration::from_secs(5))?;
+    env.wait_for_block()?;
 
     wallet.sync_all(&data_source)?;
     assert_eq!(wallet.balance(), receive_amount + receive_amount);
@@ -126,7 +125,7 @@ fn test_broadcast_transaction() -> anyhow::Result<()> {
     env.fund_address(&receiving_addr, receive_amount)?;
 
     env.mine_block()?;
-    env.wait_for_block(Duration::from_secs(5))?;
+    env.wait_for_block()?;
 
     wallet.sync_all(&data_source)?;
 
@@ -143,10 +142,10 @@ fn test_broadcast_transaction() -> anyhow::Result<()> {
     let txid = env
         .electrum_client()
         .transaction_broadcast(&psbt.extract_tx()?)?;
-    let _ = env.wait_for_tx(txid, Duration::from_secs(5));
+    let _ = env.wait_for_tx(txid);
 
     env.mine_block()?;
-    env.wait_for_block(Duration::from_secs(5))?;
+    env.wait_for_block()?;
 
     // Rescan the wallet to apply balance changes
     wallet.sync_all(&data_source)?;
@@ -184,7 +183,7 @@ fn test_broadcast_transaction_two() -> anyhow::Result<()> {
     env.fund_address(&get_address(wallet.secp_ctx(), &prv_key), receive_amount)?;
 
     env.mine_block()?;
-    env.wait_for_block(Duration::from_secs(5))?;
+    env.wait_for_block()?;
 
     wallet.sync_all(&data_source)?;
 
@@ -201,10 +200,10 @@ fn test_broadcast_transaction_two() -> anyhow::Result<()> {
     let txid = env
         .electrum_client()
         .transaction_broadcast(&psbt.extract_tx()?)?;
-    let _ = env.wait_for_tx(txid, Duration::from_secs(5));
+    let _ = env.wait_for_tx(txid);
 
     env.mine_block()?;
-    env.wait_for_block(Duration::from_secs(5))?;
+    env.wait_for_block()?;
 
     // Rescan the wallet to apply balance changes
     wallet.sync_all(&data_source)?;
@@ -246,7 +245,7 @@ fn test_broadcast_transaction_three() -> anyhow::Result<()> {
     env.fund_address(&main_wallet_addr, receive_amount)?;
 
     env.mine_block()?;
-    env.wait_for_block(Duration::from_secs(5))?;
+    env.wait_for_block()?;
 
     wallet.sync_all(&data_source)?;
 
@@ -264,10 +263,10 @@ fn test_broadcast_transaction_three() -> anyhow::Result<()> {
     let txid = env
         .electrum_client()
         .transaction_broadcast(&psbt.extract_tx()?)?;
-    let _ = env.wait_for_tx(txid, Duration::from_secs(5));
+    let _ = env.wait_for_tx(txid);
 
     env.mine_block()?;
-    env.wait_for_block(Duration::from_secs(5))?;
+    env.wait_for_block()?;
 
     // Rescan the wallet to apply balance changes
     wallet.sync_all(&data_source)?;
