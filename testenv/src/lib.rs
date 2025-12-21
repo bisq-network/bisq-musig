@@ -2,8 +2,10 @@
 use anyhow::{Context, Result};
 use axum::Router;
 use axum_reverse_proxy::ReverseProxy;
+use bdk_electrum::BdkElectrumClient;
 use bdk_wallet::bitcoin::{address::NetworkChecked, Address, Amount, BlockHash, Network, Txid};
 use electrsd::corepc_node;
+use electrsd::electrum_client::Client;
 use electrsd::{corepc_node::Node, electrum_client::ElectrumApi, ElectrsD};
 use simple_semaphore::{Permit, Semaphore};
 use std::sync::Arc;
@@ -16,6 +18,7 @@ pub struct TestEnv {
     electrsd: ElectrsD,
     timeout: Duration,
     delay: Duration,
+    bdk_electrum_client: bdk_electrum::BdkElectrumClient<Client>,
     _permit: Permit,
     _tmp_dir: TempDir,
 }
@@ -109,12 +112,16 @@ impl TestEnv {
             .with_context(|| "Starting electrsd failed...")?;
 
         eprintln!("Electrum URL: {}", electrsd.electrum_url);
+        let client = Client::from_config(&*electrsd.electrum_url, bdk_electrum::electrum_client::Config::default())?;
+        let bdk_electrum_client = BdkElectrumClient::new(client);
+
         // permit will be dropped when TestEnv is dropped
         let test_env = Self {
             bitcoind,
             electrsd,
             timeout: config.timeout,
             delay: config.delay,
+            bdk_electrum_client,
             _permit: permit,
             _tmp_dir: tmp_dir,
         };
@@ -164,12 +171,17 @@ impl TestEnv {
 
     /// Get the electrum client for blockchain operations
     pub fn electrum_client(&self) -> &impl ElectrumApi {
-        &self.electrsd.client
+        // &self.electrsd.client
+        &self.bdk_electrum_client.inner
     }
 
     /// Get the electrum URL
     pub fn electrum_url(&self) -> String {
         self.electrsd.electrum_url.replace("0.0.0.0", "127.0.0.1")
+    }
+
+    pub fn bdk_electrs_client(&self) -> &BdkElectrumClient<Client> {
+        &self.bdk_electrum_client
     }
 
     /// Get the Esplora REST URL

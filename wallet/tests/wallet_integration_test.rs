@@ -80,9 +80,7 @@ fn test_sync_with_imported_keys() -> anyhow::Result<()> {
 fn test_broadcast_transaction() -> anyhow::Result<()> {
     // This test broadcast a transaction created from main wallet balance only
     let env = TestEnv::new()?;
-
-    let client = Client::from_config(env.electrum_url(), Config::default())?;
-    let data_source = BdkElectrumClient::new(client);
+    let data_source = env.bdk_electrs_client();
 
     let prv_key = new_private_key();
 
@@ -99,7 +97,7 @@ fn test_broadcast_transaction() -> anyhow::Result<()> {
 
     env.mine_block()?;
 
-    wallet.sync_all(&data_source)?;
+    wallet.sync_all(data_source)?;
 
     let mut tx_builder = wallet.build_tx();
     let send_amount = Amount::from_sat(1000);
@@ -119,7 +117,7 @@ fn test_broadcast_transaction() -> anyhow::Result<()> {
     env.mine_block()?;
 
     // Rescan the wallet to apply balance changes
-    wallet.sync_all(&data_source)?;
+    wallet.sync_all(data_source)?;
 
     let new_balance = receive_amount - send_amount - fee;
     assert_eq!(wallet.balance(), new_balance);

@@ -7,6 +7,7 @@ edition = "2021"
 # Workspace dependencies
 anyhow = { workspace = true }
 bdk_wallet = { workspace = true, features = ["test-utils"] }
+bdk_electrum = { workspace = true }
 axum = { version = "0.8.7" }
 axum-reverse-proxy = { version = "1.0.3" }
 electrsd = { version = "0.36.1", features = [
