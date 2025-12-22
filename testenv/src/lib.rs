@@ -1,12 +1,16 @@
 /// Bitcoin regtest environment using electrsd with automatic executable downloads
 use anyhow::{Context, Result};
+use bdk_electrum::bdk_core::bitcoin::{KnownHrp, XOnlyPublicKey};
 use axum::Router;
 use axum_reverse_proxy::ReverseProxy;
 use bdk_electrum::BdkElectrumClient;
+use bdk_wallet::bitcoin::key::Secp256k1;
+use bdk_wallet::bitcoin::secp256k1::All;
 use bdk_wallet::bitcoin::{address::NetworkChecked, Address, Amount, BlockHash, Network, Transaction, Txid};
 use electrsd::corepc_node;
 use electrsd::electrum_client::Client;
 use electrsd::{corepc_node::Node, electrum_client::ElectrumApi, ElectrsD};
+use secp::Scalar;
 use simple_semaphore::{Permit, Semaphore};
 use std::sync::Arc;
 use std::time::Duration;
@@ -19,6 +23,7 @@ pub struct TestEnv {
     timeout: Duration,
     delay: Duration,
     bdk_electrum_client: bdk_electrum::BdkElectrumClient<Client>,
+    ctx: Secp256k1<All>,
     _permit: Permit,
     _tmp_dir: TempDir,
 }
@@ -122,6 +127,7 @@ impl TestEnv {
             timeout: config.timeout,
             delay: config.delay,
             bdk_electrum_client,
+            ctx: Secp256k1::new(),
             _permit: permit,
             _tmp_dir: tmp_dir,
         };
@@ -186,7 +192,7 @@ impl TestEnv {
         self.electrsd.electrum_url.replace("0.0.0.0", "127.0.0.1")
     }
 
-    pub fn bdk_electrs_client(&self) -> &BdkElectrumClient<Client> {
+    pub fn bdk_electrum_client(&self) -> &BdkElectrumClient<Client> {
         &self.bdk_electrum_client
     }
 
@@ -218,6 +224,13 @@ impl TestEnv {
         let hashes = self.mine_blocks(1)?;
         self.wait_for_block()?;
         Ok(hashes[0])
+    }
+
+    pub fn fund_from_prv_key(&self, key: &Scalar, amount: Amount) -> Result<Txid> {
+        let xonly_pubkey = key.base_point_mul().serialize_xonly();
+        let pbk = XOnlyPublicKey::from_slice(&xonly_pubkey)?;
+        let addrress = Address::p2tr(&self.ctx, pbk, None, KnownHrp::Regtest);
+        self.fund_address(&addrress, amount)
     }
 
     /// Fund an address using bitcoind RPC
@@ -281,7 +294,7 @@ impl TestEnv {
         let start = std::time::Instant::now();
 
         while start.elapsed() < self.timeout {
-            if self.electrsd.client.transaction_get(&txid).is_ok() {
+            if self.bdk_electrum_client.fetch_tx(txid).is_ok() {
                 return Ok(());
             }
             std::thread::sleep(self.delay);
