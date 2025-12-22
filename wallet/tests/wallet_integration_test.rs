@@ -1,5 +1,5 @@
 use anyhow::Ok;
-use bdk_electrum::electrum_client::{Client, Config, ElectrumApi};
+use bdk_electrum::electrum_client::{Client, Config};
 use bdk_electrum::BdkElectrumClient;
 use bdk_wallet::bitcoin::key::Secp256k1;
 use bdk_wallet::bitcoin::secp256k1::All;
@@ -94,7 +94,6 @@ fn test_broadcast_transaction() -> anyhow::Result<()> {
     let receiving_addr = wallet.next_unused_address(KeychainKind::External);
 
     env.fund_address(&receiving_addr, receive_amount)?;
-
     env.mine_block()?;
 
     wallet.sync_all(data_source)?;
@@ -109,11 +108,7 @@ fn test_broadcast_transaction() -> anyhow::Result<()> {
 
     let fee = psbt.fee_amount().unwrap();
     // Broadcast the transaction
-    let txid = env
-        .electrum_client()
-        .transaction_broadcast(&psbt.extract_tx()?)?;
-    let _ = env.wait_for_tx(txid);
-
+    env.broadcast(&psbt.extract_tx()?)?;
     env.mine_block()?;
 
     // Rescan the wallet to apply balance changes
@@ -147,7 +142,6 @@ fn test_broadcast_transaction_two() -> anyhow::Result<()> {
         Address::from_str("tb1pyfv094rr0vk28lf8v9yx3veaacdzg26ztqk4ga84zucqqhafnn5q9my9rz")?;
 
     env.fund_address(&get_address(wallet.secp_ctx(), &prv_key), receive_amount)?;
-
     env.mine_block()?;
 
     wallet.sync_all(&data_source)?;
@@ -162,11 +156,7 @@ fn test_broadcast_transaction_two() -> anyhow::Result<()> {
 
     let fee = psbt.fee_amount().unwrap();
     // Broadcast the transaction
-    let txid = env
-        .electrum_client()
-        .transaction_broadcast(&psbt.extract_tx()?)?;
-    let _ = env.wait_for_tx(txid);
-
+    env.broadcast(&psbt.extract_tx()?)?;
     env.mine_block()?;
 
     // Rescan the wallet to apply balance changes
@@ -220,11 +210,7 @@ fn test_broadcast_transaction_three() -> anyhow::Result<()> {
     let fee = psbt.fee_amount().unwrap();
 
     // Broadcast the transaction
-    let txid = env
-        .electrum_client()
-        .transaction_broadcast(&psbt.extract_tx()?)?;
-    let _ = env.wait_for_tx(txid);
-
+    env.broadcast(&psbt.extract_tx()?)?;
     env.mine_block()?;
 
     // Rescan the wallet to apply balance changes

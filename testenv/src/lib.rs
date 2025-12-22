@@ -3,7 +3,7 @@ use anyhow::{Context, Result};
 use axum::Router;
 use axum_reverse_proxy::ReverseProxy;
 use bdk_electrum::BdkElectrumClient;
-use bdk_wallet::bitcoin::{address::NetworkChecked, Address, Amount, BlockHash, Network, Txid};
+use bdk_wallet::bitcoin::{address::NetworkChecked, Address, Amount, BlockHash, Network, Transaction, Txid};
 use electrsd::corepc_node;
 use electrsd::electrum_client::Client;
 use electrsd::{corepc_node::Node, electrum_client::ElectrumApi, ElectrsD};
@@ -112,7 +112,7 @@ impl TestEnv {
             .with_context(|| "Starting electrsd failed...")?;
 
         eprintln!("Electrum URL: {}", electrsd.electrum_url);
-        let client = Client::from_config(&*electrsd.electrum_url, bdk_electrum::electrum_client::Config::default())?;
+        let client = Client::from_config(&electrsd.electrum_url, bdk_electrum::electrum_client::Config::default())?;
         let bdk_electrum_client = BdkElectrumClient::new(client);
 
         // permit will be dropped when TestEnv is dropped
@@ -131,6 +131,12 @@ impl TestEnv {
         eprintln!("Bitcoin regtest environment ready!");
 
         Ok(test_env)
+    }
+
+    pub fn broadcast(&self, tx: &Transaction) -> Result<Txid> {
+        let txid = self.bdk_electrum_client.transaction_broadcast(tx)?;
+        let _ = self.wait_for_tx(txid);
+        Ok(txid)
     }
 
     pub async fn start_esplora_ui(&self, port: u16) -> Result<()> {
