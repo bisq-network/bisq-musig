@@ -1,14 +1,14 @@
 use std::io::Write as _;
 use std::str::FromStr as _;
 
-use bdk_electrum::{BdkElectrumClient, electrum_client};
+use bdk_electrum::{electrum_client, BdkElectrumClient};
 use bdk_wallet::bitcoin::bip32::Xpriv;
 use bdk_wallet::bitcoin::hashes::sha256t::Hash;
 use bdk_wallet::bitcoin::key::Secp256k1;
 use bdk_wallet::bitcoin::taproot::Signature;
 use bdk_wallet::bitcoin::{
-    Address, Amount, FeeRate, Network, OutPoint, Psbt, ScriptBuf, TapSighashTag, Transaction,
-    TxOut, Txid, XOnlyPublicKey, relative,
+    relative, Address, Amount, FeeRate, Network, OutPoint, Psbt, ScriptBuf, TapSighashTag,
+    Transaction, TxOut, Txid, XOnlyPublicKey,
 };
 use bdk_wallet::template::{Bip86, DescriptorTemplate as _};
 use bdk_wallet::{AddressInfo, KeychainKind, SignOptions, Wallet};
@@ -27,12 +27,12 @@ use crate::transaction::{
 use crate::wallet_service::WalletService;
 
 pub struct MemWallet {
-    pub wallet: Wallet,
-    pub client: BdkElectrumClient<electrum_client::Client>,
+    wallet: Wallet,
+    client: BdkElectrumClient<electrum_client::Client>,
 }
 
 impl MemWallet {
-    pub(crate) fn transaction_broadcast(&self, tx: &Transaction) -> anyhow::Result<Txid> {
+    pub fn transaction_broadcast(&self, tx: &Transaction) -> anyhow::Result<Txid> {
         let result = self.client.transaction_broadcast(tx);
 
         if let Err(e) = result {
@@ -98,7 +98,7 @@ impl MemWallet {
         Ok(Self { wallet, client })
     }
 
-    pub(crate) fn sync(&mut self) -> anyhow::Result<()> {
+    pub fn sync(&mut self) -> anyhow::Result<()> {
         // Populate the electrum client's transaction cache so it doesn't re-download transaction we
         // already have.
         self.client
@@ -123,11 +123,11 @@ impl MemWallet {
         Ok(())
     }
 
-    pub(crate) fn balance(&self) -> Amount {
+    pub fn balance(&self) -> Amount {
         self.wallet.balance().trusted_spendable()
     }
 
-    pub(crate) fn next_unused_address(&mut self) -> AddressInfo {
+    pub fn next_unused_address(&mut self) -> AddressInfo {
         self.wallet.next_unused_address(KeychainKind::External)
     }
 

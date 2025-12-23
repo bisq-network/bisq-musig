@@ -20,7 +20,7 @@ pub fn fund_wallet(wallet: &mut MemWallet) {
     fund_address(&adr);
     loop {
         thread::sleep(time::Duration::from_secs(1));
-        wallet.sync().unwrap();
+        wallet.sync().expect("sync failed");
         let balance = wallet.balance();
         println!("\nCurrent wallet amount: {balance}");
 

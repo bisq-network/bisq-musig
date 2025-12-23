@@ -1,16 +1,31 @@
 /// Bitcoin regtest environment using electrsd with automatic executable downloads
 use anyhow::{Context, Result};
+use bdk_electrum::bdk_core::bitcoin::{KnownHrp, XOnlyPublicKey};
 use axum::Router;
 use axum_reverse_proxy::ReverseProxy;
-use bdk_wallet::bitcoin::{address::NetworkChecked, Address, Amount, BlockHash, Network, Txid};
+use bdk_electrum::BdkElectrumClient;
+use bdk_wallet::bitcoin::key::Secp256k1;
+use bdk_wallet::bitcoin::secp256k1::All;
+use bdk_wallet::bitcoin::{address::NetworkChecked, Address, Amount, BlockHash, Network, Transaction, Txid};
 use electrsd::corepc_node;
+use electrsd::electrum_client::Client;
 use electrsd::{corepc_node::Node, electrum_client::ElectrumApi, ElectrsD};
+use secp::Scalar;
+use simple_semaphore::{Permit, Semaphore};
+use std::sync::Arc;
 use std::time::Duration;
+use tempfile::{tempdir, TempDir};
 
 /// Bitcoin regtest environment manager
 pub struct TestEnv {
     bitcoind: Node,
     electrsd: ElectrsD,
+    timeout: Duration,
+    delay: Duration,
+    bdk_electrum_client: bdk_electrum::BdkElectrumClient<Client>,
+    ctx: Secp256k1<All>,
+    _permit: Permit,
+    _tmp_dir: TempDir,
 }
 
 /// Configuration parameters.
@@ -20,6 +35,8 @@ pub struct Config<'a> {
     pub bitcoind: corepc_node::Conf<'a>,
     /// [`electrsd::Conf`]
     pub electrsd: electrsd::Conf<'a>,
+    pub timeout: Duration,
+    pub delay: Duration,
 }
 
 impl Default for Config<'_> {
@@ -29,6 +46,7 @@ impl Default for Config<'_> {
                 let mut conf = corepc_node::Conf::default();
                 conf.args.push("-blockfilterindex=1");
                 conf.args.push("-peerblockfilters=1");
+                conf.args.push("-txindex=1");
                 conf
             },
             electrsd: {
@@ -39,11 +57,15 @@ impl Default for Config<'_> {
                 // conf.view_stderr = true;
                 conf
             },
+            timeout: Duration::from_secs(5),
+            delay: Duration::from_millis(200),
         }
     }
 }
 
 const NETWORK: Network = Network::Regtest;
+static SEMAPHORE: once_cell::sync::Lazy<Arc<Semaphore>> =
+    once_cell::sync::Lazy::new(|| Semaphore::new(1));
 
 impl TestEnv {
     /// Create a new test environment with automatic executable downloads
@@ -53,6 +75,10 @@ impl TestEnv {
 
     /// create environment with automatic downloads
     pub fn new_with_conf(config: Config) -> Result<Self> {
+        let permit = SEMAPHORE.acquire(); // have testenvs single threaded because of bitcoind and electrs references.
+        let tmp_dir = tempdir().expect("failed to create temporary directory");
+        std::env::set_current_dir(tmp_dir.path()).expect("failed to set current directory");
+
         // Try to start bitcoind (from environment or downloads)
         eprintln!("Starting bitcoind...");
         let bitcoind = match std::env::var("BITCOIND_EXEC") {
@@ -90,14 +116,33 @@ impl TestEnv {
         let electrsd = ElectrsD::with_conf(electrs_exe, &bitcoind, &config.electrsd)
             .with_context(|| "Starting electrsd failed...")?;
 
-        let test_env = Self { bitcoind, electrsd };
-        eprintln!("Electrum URL: {}", test_env.electrum_url());
+        eprintln!("Electrum URL: {}", electrsd.electrum_url);
+        let client = Client::from_config(&electrsd.electrum_url, bdk_electrum::electrum_client::Config::default())?;
+        let bdk_electrum_client = BdkElectrumClient::new(client);
+
+        // permit will be dropped when TestEnv is dropped
+        let test_env = Self {
+            bitcoind,
+            electrsd,
+            timeout: config.timeout,
+            delay: config.delay,
+            bdk_electrum_client,
+            ctx: Secp256k1::new(),
+            _permit: permit,
+            _tmp_dir: tmp_dir,
+        };
         if let Some(url) = test_env.esplora_url() {
             eprintln!("Esplora REST address: http://{url}/mempool",);
         };
         eprintln!("Bitcoin regtest environment ready!");
 
         Ok(test_env)
+    }
+
+    pub fn broadcast(&self, tx: &Transaction) -> Result<Txid> {
+        let txid = self.bdk_electrum_client.transaction_broadcast(tx)?;
+        let _ = self.wait_for_tx(txid);
+        Ok(txid)
     }
 
     pub async fn start_esplora_ui(&self, port: u16) -> Result<()> {
@@ -138,12 +183,17 @@ impl TestEnv {
 
     /// Get the electrum client for blockchain operations
     pub fn electrum_client(&self) -> &impl ElectrumApi {
-        &self.electrsd.client
+        // &self.electrsd.client
+        &self.bdk_electrum_client.inner
     }
 
     /// Get the electrum URL
     pub fn electrum_url(&self) -> String {
         self.electrsd.electrum_url.replace("0.0.0.0", "127.0.0.1")
+    }
+
+    pub fn bdk_electrum_client(&self) -> &BdkElectrumClient<Client> {
+        &self.bdk_electrum_client
     }
 
     /// Get the Esplora REST URL
@@ -172,7 +222,15 @@ impl TestEnv {
     /// Mine a single block
     pub fn mine_block(&self) -> Result<BlockHash> {
         let hashes = self.mine_blocks(1)?;
+        self.wait_for_block()?;
         Ok(hashes[0])
+    }
+
+    pub fn fund_from_prv_key(&self, key: &Scalar, amount: Amount) -> Result<Txid> {
+        let xonly_pubkey = key.base_point_mul().serialize_xonly();
+        let pbk = XOnlyPublicKey::from_slice(&xonly_pubkey)?;
+        let addrress = Address::p2tr(&self.ctx, pbk, None, KnownHrp::Regtest);
+        self.fund_address(&addrress, amount)
     }
 
     /// Fund an address using bitcoind RPC
@@ -210,12 +268,11 @@ impl TestEnv {
     }
 
     /// Wait for electrum to see a new block
-    pub fn wait_for_block(&self, timeout: Duration) -> Result<()> {
+    pub fn wait_for_block(&self) -> Result<()> {
         self.electrsd.client.block_headers_subscribe()?;
-        let delay = Duration::from_millis(200);
         let start = std::time::Instant::now();
 
-        while start.elapsed() < timeout {
+        while start.elapsed() < self.timeout {
             self.electrsd.trigger()?;
             self.electrsd.client.ping()?;
 
@@ -223,31 +280,30 @@ impl TestEnv {
                 return Ok(());
             }
 
-            std::thread::sleep(delay);
+            std::thread::sleep(self.delay);
         }
 
         Err(anyhow::anyhow!(
             "Timeout waiting for electrum to see block after {:?}",
-            timeout
+            self.timeout
         ))
     }
 
     /// Wait for electrum to see a specific transaction
-    pub fn wait_for_tx(&self, txid: Txid, timeout: Duration) -> Result<()> {
-        let delay = Duration::from_millis(200);
+    pub fn wait_for_tx(&self, txid: Txid) -> Result<()> {
         let start = std::time::Instant::now();
 
-        while start.elapsed() < timeout {
-            if self.electrsd.client.transaction_get(&txid).is_ok() {
+        while start.elapsed() < self.timeout {
+            if self.bdk_electrum_client.fetch_tx(txid).is_ok() {
                 return Ok(());
             }
-            std::thread::sleep(delay);
+            std::thread::sleep(self.delay);
         }
 
         Err(anyhow::anyhow!(
             "Timeout waiting for electrum to see transaction {} after {:?}",
             txid,
-            timeout
+            self.timeout
         ))
     }
 
@@ -344,7 +400,7 @@ mod tests {
         env.trigger_sync()?;
 
         // Wait for the transaction to appear in electrum
-        env.wait_for_tx(txid, Duration::from_secs(10))?;
+        env.wait_for_tx(txid)?;
         eprintln!("Transaction confirmed in electrum");
 
         // Verify we can get the transaction from bitcoind

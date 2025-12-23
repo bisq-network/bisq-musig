@@ -5,8 +5,8 @@ use bdk_electrum::bdk_core::bitcoin::key::{Keypair, Secp256k1, TweakedKeypair};
 use bdk_electrum::bdk_core::bitcoin::secp256k1::Message;
 use bdk_electrum::bdk_core::bitcoin::{Amount, TapSighashType};
 use bdk_wallet::bitcoin::key::TapTweak as _;
-use musig2::KeyAggContext;
 use musig2::secp::{Point, Scalar};
+use musig2::KeyAggContext;
 use protocol::nigiri;
 use protocol::protocol_musig_adaptor::{BMPContext, BMPProtocol, ProtocolRole};
 use protocol::transaction::WithWitnesses as _;
@@ -239,7 +239,7 @@ fn test_q_tik() -> anyhow::Result<()> {
     let tx = bob.swap_tx.unsigned_tx()?.clone()
         .with_key_spend_witness(0, &signature_secp);
 
-    let txid = alice.ctx.funds.client.transaction_broadcast(&tx)?;
+    let txid = alice.ctx.funds.transaction_broadcast(&tx)?;
     dbg!(txid);
     nigiri::tiktok();
     Ok(())
