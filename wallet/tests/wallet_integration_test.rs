@@ -23,7 +23,7 @@ fn init_test() -> anyhow::Result<()> {
     let mut wallet = BMPWallet::new(Network::Regtest)?;
     let receive_amount = Amount::from_sat(100000);
 
-    let client = Client::from_config(env.electrum_url(), Config::default())?;
+    let client = Client::from_config(&env.electrum_url(), Config::default())?;
     let data_source = BdkElectrumClient::new(client);
 
     let receiving_addr = wallet.next_unused_address(KeychainKind::External);
@@ -114,7 +114,7 @@ fn test_broadcast_transaction_two() -> anyhow::Result<()> {
     // This test broadcast a transaction created from imported wallets only
     let env = TestEnv::new()?;
 
-    let client = Client::from_config(env.electrum_url(), Config::default())?;
+    let client = Client::from_config(&env.electrum_url(), Config::default())?;
     let data_source = BdkElectrumClient::new(client);
 
     let prv_key = new_private_key();
@@ -163,7 +163,7 @@ fn test_broadcast_transaction_three() -> anyhow::Result<()> {
     // balance
     let env = TestEnv::new()?;
 
-    let client = Client::from_config(env.electrum_url(), Config::default())?;
+    let client = Client::from_config(&env.electrum_url(), Config::default())?;
     let data_source = BdkElectrumClient::new(client);
 
     let prv_key = new_private_key();
