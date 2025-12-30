@@ -243,7 +243,7 @@ impl TestEnv {
         let bitcoind_rpc_port = self.bitcoind.params.rpc_socket.port();
         let browserport = get_available_port()?;
 
-        let electrum_port = self.electrsd.electrum_url.split(':').last()
+        let electrum_port = self.electrsd.electrum_url.split(':').next_back()
                 .context("Failed to parse electrum port")?;
 
         let container_name = format!("btc-explorer-{}", browserport);

@@ -6,6 +6,7 @@ It currently provides the following features:
 
 - Importing of secrets
 - Syncing with BDK Electrum
+- Syncing using Compact Block Filters (CBF)
 - Uses Sqlite to store additional information outside of the BDK structure
 
 # Running tests

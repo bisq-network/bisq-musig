@@ -4,6 +4,8 @@ use std::{fs, vec};
 use base64::engine::general_purpose;
 use base64::Engine;
 use bdk_electrum::bdk_core::bitcoin::{absolute, Address, FeeRate, OutPoint};
+use bdk_kyoto::bip157::{tokio, Builder};
+use bdk_kyoto::{BuilderExt, LightClient, Requester, UpdateSubscriber};
 use bdk_wallet::bitcoin::bip32::Xpriv;
 use bdk_wallet::bitcoin::hex::DisplayHex;
 use bdk_wallet::bitcoin::{
@@ -15,14 +17,17 @@ use bdk_wallet::miniscript::psbt::PsbtExt;
 use bdk_wallet::rusqlite::{self, named_params, Connection};
 use bdk_wallet::signer::{InputSigner, SignerContext, SignerError, SignerWrapper};
 use bdk_wallet::template::{Bip86, DescriptorTemplate};
-use bdk_wallet::{AddressInfo, Balance, ChangeSet, KeychainKind, PersistedWallet, SignOptions, TxBuilder, TxOrdering, Utxo, Wallet, WalletPersister, WeightedUtxo};
+use bdk_wallet::{
+    AddressInfo, Balance, ChangeSet, KeychainKind, PersistedWallet, SignOptions, TxBuilder,
+    TxOrdering, Utxo, Wallet, WalletPersister, WeightedUtxo,
+};
 use rand::RngCore;
 use secp::Scalar;
 
 use crate::chain_data_source::ChainDataSource;
 use crate::coin_selection::AlwaysSpendImportedFirst;
 use crate::protocol_wallet_api::ProtocolWalletApi;
-use crate::utils::{derive_key_from_password, get_salt};
+use crate::utils::{derive_key_from_password, get_salt, trace_logs};
 
 pub trait BMPWalletPersister: WalletPersister {
     type DB;
@@ -194,6 +199,33 @@ impl BMPWallet<Connection> {
         self.imported_keys.push(pk);
     }
 
+    /// Helper function to run a CBF node
+    /// This will:
+    /// - Create a new Light client
+    /// - spawn two threads one for trace logs and another for the server node
+    /// - Return the requester and the subscriber from which the updates can be pulled
+    ///
+    /// Note: The caller is responsible for shuting down the requester at will.
+    pub fn run_node(
+        &self,
+        scan_type: bdk_kyoto::ScanType,
+    ) -> anyhow::Result<(Requester, UpdateSubscriber)> {
+        let LightClient {
+            requester,
+            info_subscriber,
+            warning_subscriber,
+            update_subscriber,
+            node,
+        } = Builder::new(self.network())
+            .required_peers(2)
+            .build_with_wallet(self, scan_type)?;
+
+        tokio::task::spawn(async move { node.run().await });
+        // Trace the logs with a custom function.
+        tokio::task::spawn(async move { trace_logs(info_subscriber, warning_subscriber).await });
+
+        Ok((requester, update_subscriber))
+    }
 
     fn build_tx(&mut self) -> TxBuilder<'_, AlwaysSpendImportedFirst> {
         let secp = self.secp_ctx();
@@ -315,6 +347,7 @@ pub trait WalletApi {
     ) -> anyhow::Result<(), SignerError>;
 
     fn sync_all(&mut self, data_source: &impl ChainDataSource) -> anyhow::Result<bool>;
+    fn sync_cbf(&mut self, scan_type: bdk_kyoto::ScanType) -> anyhow::Result<()>;
 }
 
 impl WalletApi for BMPWallet<Connection> {
@@ -384,6 +417,20 @@ impl WalletApi for BMPWallet<Connection> {
         let finalized = self.wallet.sign(psbt, sign_options)?;
         assert!(finalized, "PSBT should be finalized");
 
+        Ok(())
+    }
+
+    fn sync_cbf(&mut self, scan_type: bdk_kyoto::ScanType) -> anyhow::Result<()> {
+        let (requester, mut updates_sub) = self.run_node(scan_type)?;
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()?;
+
+        let updates = rt.block_on(async { updates_sub.update().await })?;
+
+        self.apply_update(updates)?;
+
+        requester.shutdown()?;
         Ok(())
     }
 
