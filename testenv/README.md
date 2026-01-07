@@ -38,10 +38,10 @@ The test environment provides a web-based blockchain explorer for visual debuggi
 
 ```rust
 // Create environment
-let env = TestEnv::new()?;
+let mut env = TestEnv::new() ?;
 
-// Start Esplora UI API proxy (blocks until terminated)
-env.start_esplora_ui(8989).await;
+// Start Esplora UI API proxy (non-blocking, runs in separate process)
+env.start_esplora_ui(8989) ?;
 ```
 
 #### Step 2: Start the Frontend Container
@@ -124,7 +124,7 @@ The main environment manager that handles both bitcoind and electrs instances.
 
 #### Web UI
 
-- `start_esplora_ui(port)` - Start Esplora blockchain explorer API proxy (blocks until terminated)
+- `start_esplora_ui(port)` - Start Esplora blockchain explorer API proxy in a separate child process.
 
 #### Blockchain Operations
 

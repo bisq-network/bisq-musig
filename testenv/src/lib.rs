@@ -1,8 +1,6 @@
 /// Bitcoin regtest environment using electrsd with automatic executable downloads
 use anyhow::{Context, Result};
 use bdk_electrum::bdk_core::bitcoin::{KnownHrp, XOnlyPublicKey};
-use axum::Router;
-use axum_reverse_proxy::ReverseProxy;
 use bdk_electrum::BdkElectrumClient;
 use bdk_wallet::bitcoin::key::Secp256k1;
 use bdk_wallet::bitcoin::secp256k1::All;
@@ -16,6 +14,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use tempfile::{tempdir, TempDir};
 
+
 /// Bitcoin regtest environment manager
 pub struct TestEnv {
     bitcoind: Node,
@@ -26,6 +25,7 @@ pub struct TestEnv {
     ctx: Secp256k1<All>,
     _permit: Permit,
     _tmp_dir: TempDir,
+    esplora_proxy_process: Option<std::process::Child>,
 }
 
 /// Configuration parameters.
@@ -130,6 +130,7 @@ impl TestEnv {
             ctx: Secp256k1::new(),
             _permit: permit,
             _tmp_dir: tmp_dir,
+            esplora_proxy_process: None,
         };
         if let Some(url) = test_env.esplora_url() {
             eprintln!("Esplora REST address: http://{url}/mempool",);
@@ -145,39 +146,45 @@ impl TestEnv {
         Ok(txid)
     }
 
-    pub async fn start_esplora_ui(&self, port: u16) -> Result<()> {
+    pub fn start_esplora_ui(&mut self, port: u16) -> Result<()> {
         let Some(api_url) = self.esplora_url() else {
             eprintln!("Failed to start Esplora UI! Please set electrsd.http_enabled = true");
             return Err(anyhow::anyhow!("Esplora URL not available"));
         };
 
-        eprintln!("Starting Esplora UI...");
+        eprintln!("Starting Esplora UI child process...");
 
-        // Create a reverse proxy that forwards requests from /api/*
-        let api = ReverseProxy::new("/api", &format!("http://{api_url}"));
+        // We use 'cargo run' to start the esplora_proxy binary.
+        // This ensures it is built and run in a separate process.
+        // We don't want to wait for it to finish, so we just spawn it.
+        let mut command = std::process::Command::new("cargo");
 
-        //The actual frontend should be running in a container on the port 8888(look at the README for more details)
-        let frontend = ReverseProxy::new("/", "http://localhost:8888");
-        let app: Router = api.into();
+        // Set current directory to the manifest dir if available, so cargo can find Cargo.toml
+        if let Ok(manifest_dir) = std::env::var("CARGO_MANIFEST_DIR") {
+            command.current_dir(manifest_dir);
+        }
 
-        // Forward all other requests to actual frontend
-        let app: Router = app.fallback_service(frontend);
+        let child = command
+                .args([
+                    "run",
+                    "--bin",
+                    "esplora_proxy",
+                    "--",
+                    &api_url,
+                    &port.to_string(),
+                ])
+                .stdout(std::process::Stdio::inherit())
+                .stderr(std::process::Stdio::inherit())
+                .spawn()
+                .context("Failed to spawn esplora_proxy via cargo")?;
 
-        let listener = tokio::net::TcpListener::bind(&format!("127.0.0.1:{port}"))
-            .await
-            .context("Failed to bind to port 8989 for Esplora UI")?;
+        self.esplora_proxy_process = Some(child);
 
-        let local_addr = listener
-            .local_addr()
-            .context("Failed to get local address for Esplora UI")?;
+        // Give it a moment to start
+        std::thread::sleep(std::time::Duration::from_secs(2));
 
-        eprintln!("Esplora UI served at: http://{:?}", local_addr);
+        eprintln!("Esplora UI should be available at: http://127.0.0.1:{port}");
 
-        axum::serve(listener, app)
-            .await
-            .context("Esplora UI server failed")?;
-
-        eprintln!("!!! Esplora UI terminated!!");
         Ok(())
     }
 
@@ -339,6 +346,14 @@ impl TestEnv {
     }
 }
 
+impl Drop for TestEnv {
+    fn drop(&mut self) {
+        if let Some(mut child) = self.esplora_proxy_process.take() {
+            let _ = child.kill();
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -428,7 +443,7 @@ mod tests {
         // Disable HTTP to make Esplora URL unavailable
         config.electrsd.http_enabled = false;
 
-        let env = TestEnv::new_with_conf(config)?;
+        let mut env = TestEnv::new_with_conf(config)?;
 
         // Esplora URL should be None when HTTP is disabled
         assert!(
@@ -436,6 +451,19 @@ mod tests {
             "Esplora URL should be None when HTTP is disabled"
         );
 
+        assert!(env.start_esplora_ui(8989).is_err());
+
+        Ok(())
+    }
+
+    #[test]
+    #[ignore]
+    fn test_esplora_ui_manual() -> Result<()> {
+        let mut env = TestEnv::new()?;
+        env.start_esplora_ui(8989)?;
+        println!("Esplora UI started. You can now set a breakpoint and inspect the blockchain.");
+        println!("Press Ctrl+C to stop or wait for 10 minutes...");
+        std::thread::sleep(Duration::from_secs(600));
         Ok(())
     }
 }
