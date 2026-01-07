@@ -34,6 +34,7 @@ enum Commands {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let _ = rustls::crypto::ring::default_provider().install_default();
     let cli: Cli = Cli::parse();
 
     let mut client = WalletClient::connect(format!("http://127.0.0.1:{}", cli.port)).await?;

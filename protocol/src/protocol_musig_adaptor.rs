@@ -71,6 +71,7 @@ const ELECTRUM_URL: &str =
 
 impl MemWallet {
     pub fn new() -> anyhow::Result<Self> {
+        let _ = rustls::crypto::ring::default_provider().install_default();
         let mut seed: [u8; 32] = [0u8; 32];
         rand::rng().fill_bytes(&mut seed);
 

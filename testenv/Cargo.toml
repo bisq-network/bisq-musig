@@ -8,8 +8,10 @@ edition = "2021"
 anyhow = { workspace = true }
 bdk_wallet = { workspace = true, features = ["test-utils"] }
 bdk_electrum = { workspace = true }
+rustls = { workspace = true }
 axum = { version = "0.8.7" }
-axum-reverse-proxy = { version = "1.0.3" }
+axum-reverse-proxy = { version = "1.0.3", default-features = false, features = ["rustls"] }
+hyper-rustls = { version = "0.27.7", default-features = false, features = ["ring", "http1", "logging", "tls12", "native-tokio"] }
 secp = { workspace = true }
 electrsd = { version = "0.36.1", features = [
 "esplora_a33e97e1",

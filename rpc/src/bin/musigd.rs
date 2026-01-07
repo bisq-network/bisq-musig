@@ -27,6 +27,7 @@ struct Cli {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
+    let _ = rustls::crypto::ring::default_provider().install_default();
     let cli: Cli = Cli::parse();
 
     let filter = EnvFilter::try_from_default_env()

@@ -6,6 +6,7 @@ use tokio::net::TcpListener;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let _ = rustls::crypto::ring::default_provider().install_default();
     let args: Vec<String> = env::args().collect();
     if args.len() < 3 {
         eprintln!("Usage: esplora_proxy <api_url> <port>");

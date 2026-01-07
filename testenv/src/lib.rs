@@ -70,11 +70,13 @@ static SEMAPHORE: once_cell::sync::Lazy<Arc<Semaphore>> =
 impl TestEnv {
     /// Create a new test environment with automatic executable downloads
     pub fn new() -> Result<Self> {
+        let _ = rustls::crypto::ring::default_provider().install_default();
         Self::new_with_conf(Config::default())
     }
 
     /// create environment with automatic downloads
     pub fn new_with_conf(config: Config) -> Result<Self> {
+        let _ = rustls::crypto::ring::default_provider().install_default();
         let permit = SEMAPHORE.acquire(); // have testenvs single threaded because of bitcoind and electrs references.
         let tmp_dir = tempdir().expect("failed to create temporary directory");
         std::env::set_current_dir(tmp_dir.path()).expect("failed to set current directory");
