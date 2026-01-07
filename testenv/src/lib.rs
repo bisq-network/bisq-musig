@@ -155,36 +155,55 @@ impl TestEnv {
 
         eprintln!("Starting Esplora UI child process...");
 
-        // We use 'cargo run' to start the esplora_proxy binary.
-        // This ensures it is built and run in a separate process.
-        // We don't want to wait for it to finish, so we just spawn it.
-        let mut command = std::process::Command::new("cargo");
-
         // Use compile-time manifest dir if the environment variable is missing at runtime
         let manifest_dir = std::env::var("CARGO_MANIFEST_DIR")
-                .unwrap_or_else(|_| env!("CARGO_MANIFEST_DIR").to_string());
+            .unwrap_or_else(|_| env!("CARGO_MANIFEST_DIR").to_string());
+        let manifest_path = std::path::Path::new(&manifest_dir);
 
-        dbg!(&manifest_dir);
-        command.current_dir(manifest_dir);
+        // Try to find the compiled binary first
+        // If we are in the workspace, the binary should be in ../target/debug/esplora_proxy
+        // or ../target/release/esplora_proxy (assuming this crate is in a subdirectory)
+        let workspace_root = if manifest_path.ends_with("testenv") {
+            manifest_path.parent().unwrap_or(manifest_path)
+        } else {
+            manifest_path
+        };
+
+        let release_bin = workspace_root.join("target/release/esplora_proxy");
+        let debug_bin = workspace_root.join("target/debug/esplora_proxy");
+
+        let mut command = if release_bin.exists() {
+            eprintln!("Using compiled release binary: {:?}", release_bin);
+            let mut cmd = std::process::Command::new(release_bin);
+            cmd.args([&api_url, &port.to_string()]);
+            cmd
+        } else if debug_bin.exists() {
+            eprintln!("Using compiled debug binary: {:?}", debug_bin);
+            let mut cmd = std::process::Command::new(debug_bin);
+            cmd.args([&api_url, &port.to_string()]);
+            cmd
+        } else {
+            eprintln!("Compiled binary not found, falling back to 'cargo run'");
+            let mut cmd = std::process::Command::new("cargo");
+            cmd.current_dir(manifest_dir);
+            cmd.args([
+                "run",
+                "--bin",
+                "esplora_proxy",
+                "--",
+                &api_url,
+                &port.to_string(),
+            ]);
+            cmd
+        };
 
         let child = command
-                .args([
-                    "run",
-                    "--bin",
-                    "esplora_proxy",
-                    "--",
-                    &api_url,
-                    &port.to_string(),
-                ])
-                .stdout(std::process::Stdio::inherit())
-                .stderr(std::process::Stdio::inherit())
-                .spawn()
-                .context("Failed to spawn esplora_proxy via cargo")?;
+            .stdout(std::process::Stdio::inherit())
+            .stderr(std::process::Stdio::inherit())
+            .spawn()
+            .context("Failed to spawn esplora_proxy")?;
 
         self.esplora_proxy_process = Some(child);
-
-        // Give it a moment to start
-        // std::thread::sleep(std::time::Duration::from_secs(2));
 
         eprintln!("Esplora UI should be available at: http://127.0.0.1:{port}");
 
