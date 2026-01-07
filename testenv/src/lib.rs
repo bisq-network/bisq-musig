@@ -70,7 +70,6 @@ static SEMAPHORE: once_cell::sync::Lazy<Arc<Semaphore>> =
 impl TestEnv {
     /// Create a new test environment with automatic executable downloads
     pub fn new() -> Result<Self> {
-        let _ = rustls::crypto::ring::default_provider().install_default();
         Self::new_with_conf(Config::default())
     }
 
@@ -161,10 +160,12 @@ impl TestEnv {
         // We don't want to wait for it to finish, so we just spawn it.
         let mut command = std::process::Command::new("cargo");
 
-        // Set current directory to the manifest dir if available, so cargo can find Cargo.toml
-        if let Ok(manifest_dir) = std::env::var("CARGO_MANIFEST_DIR") {
-            command.current_dir(manifest_dir);
-        }
+        // Use compile-time manifest dir if the environment variable is missing at runtime
+        let manifest_dir = std::env::var("CARGO_MANIFEST_DIR")
+                .unwrap_or_else(|_| env!("CARGO_MANIFEST_DIR").to_string());
+
+        dbg!(&manifest_dir);
+        command.current_dir(manifest_dir);
 
         let child = command
                 .args([
@@ -183,7 +184,7 @@ impl TestEnv {
         self.esplora_proxy_process = Some(child);
 
         // Give it a moment to start
-        std::thread::sleep(std::time::Duration::from_secs(2));
+        // std::thread::sleep(std::time::Duration::from_secs(2));
 
         eprintln!("Esplora UI should be available at: http://127.0.0.1:{port}");
 
@@ -463,9 +464,10 @@ mod tests {
     fn test_esplora_ui_manual() -> Result<()> {
         let mut env = TestEnv::new()?;
         env.start_esplora_ui(8989)?;
+        env.mine_block()?;
         println!("Esplora UI started. You can now set a breakpoint and inspect the blockchain.");
         println!("Press Ctrl+C to stop or wait for 10 minutes...");
-        std::thread::sleep(Duration::from_secs(600));
+        // std::thread::sleep(Duration::from_secs(600));
         Ok(())
     }
 }
