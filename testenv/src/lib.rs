@@ -198,14 +198,42 @@ impl TestEnv {
         };
 
         let child = command
-            .stdout(std::process::Stdio::inherit())
-            .stderr(std::process::Stdio::inherit())
-            .spawn()
-            .context("Failed to spawn esplora_proxy")?;
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .spawn()
+                .context("Failed to spawn esplora_proxy")?;
 
         self.esplora_proxy_process = Some(child);
 
         eprintln!("Esplora UI should be available at: http://127.0.0.1:{port}");
+
+        // Check if Esplora UI is available at http://localhost:8888/
+        let check_url = "http://localhost:8888/";
+        let keyword = "Bitcoin Explorer";
+        let mut success = false;
+
+        eprintln!("Waiting for Esplora UI to be available at {}...", check_url);
+        match ureq::get(check_url).call() {
+            Ok(response) => {
+                match response.into_string() {
+                    Ok(body) => {
+                        if body.contains(keyword) {
+                            success = true;
+                        }
+                    }
+                    Err(_) => {}
+                }
+            }
+            Err(_) => {}
+        }
+
+        if !success {
+            return Err(anyhow::anyhow!(
+                "Esplora UI at {} did not contain the keyword '{}'. Did you start the Esplora container? See testenv/readme.md!",
+                check_url,
+                keyword,
+            ));
+        }
 
         Ok(())
     }
@@ -485,7 +513,7 @@ mod tests {
         env.start_esplora_ui(8989)?;
         env.mine_block()?;
         println!("Esplora UI started. You can now set a breakpoint and inspect the blockchain.");
-        println!("Press Ctrl+C to stop or wait for 10 minutes...");
+        // println!("Press Ctrl+C to stop or wait for 10 minutes...");
         // std::thread::sleep(Duration::from_secs(600));
         Ok(())
     }

@@ -18,6 +18,7 @@ electrsd = { version = "0.36.1", features = [
 "corepc-node_29_0",
 ] }
 tokio = { workspace = true, features = [ "rt-multi-thread"]}
+ureq = "2.12.1"
 
 tempfile = "3.23.0"
 simple-semaphore = "0.2.0"

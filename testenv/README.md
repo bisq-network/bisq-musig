@@ -5,16 +5,19 @@ A clean Bitcoin regtest environment using electrsd with automatic executable dow
 ## Features
 
 - **Automatic Downloads**: Downloads required executables (bitcoind, electrs) automatically
-- **Zero Dependencies**: No Docker or external setup required
+- **Dependencies**: No Docker for running the tests
 - **Modern Rust API**: Clean, ergonomic interface inspired by BDK
 - **Cross-Platform**: Works on Linux, macOS, and Windows
 - **Web UI**: Built-in Esplora blockchain explorer for visual debugging
+  (needs docker or podman)
 
 ## Quick Start
 
 ### Basic Usage
 
-```rust
+Inside your test use TestEnv.
+
+```rust,ignore
 // Create environment (automatically downloads executables)
 let env = TestEnv::new()?;
 env.mine_block()?;
@@ -36,27 +39,31 @@ The test environment provides a web-based blockchain explorer for visual debuggi
 
 #### Step 1: Start the Backend API Proxy
 
-```rust
+```rust,ignore
 // Create environment
-let mut env = TestEnv::new() ?;
+let mut env = TestEnv::new()?;
 
 // Start Esplora UI API proxy (non-blocking, runs in separate process)
-env.start_esplora_ui(8989) ?;
+env.start_esplora_ui(8989)?;
 ```
 
 #### Step 2: Start the Frontend Container
 
 In a separate terminal, run the Esplora frontend container:
 
-```bash
-# Using Podman
+Using Podman
+
+```sh
 podman run -d --rm \
   --name esplora \
   -p 8888:80 \
   docker.io/blockstream/esplora:latest \
   bash -c "/srv/explorer/run.sh bitcoin-mainnet explorer"
+```
 
-# Using Docker (if preferred)
+Using Docker (if preferred)
+
+```bash
 docker run -d --rm \
   --name esplora \
   -p 8888:80 \
@@ -72,7 +79,7 @@ docker run -d --rm \
 
 ### Custom Configuration Usage
 
-```rust
+```rust,ignore
 // Create custom configuration
 let mut config = Config::default();
 
@@ -124,7 +131,7 @@ The main environment manager that handles both bitcoind and electrs instances.
 
 #### Web UI
 
-- `start_esplora_ui(port)` - Start Esplora blockchain explorer API proxy in a separate child process.
+- `start_esplora_ui(port)` - Starts the Esplora blockchain explorer API proxy in a separate child process.
 
 #### Blockchain Operations
 
