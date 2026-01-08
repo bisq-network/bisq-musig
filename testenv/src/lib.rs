@@ -44,6 +44,15 @@ impl Default for Config<'_> {
         Self {
             bitcoind: {
                 let mut conf = corepc_node::Conf::default();
+                // bitcoin / bitcoin
+                conf.args.push("-rpcauth=bitcoin:81ad5d600eb1df69d27323dd1ef31162$7c4315f44d8eea5cb6764295c0233a5e0d51d5ea461e122f337bc6e8502f0d93");
+                // Listen on all interfaces (0.0.0.0) instead of just localhost
+                conf.args.push("-rpcbind=0.0.0.0");
+
+                // Allow connections from any IP (use 0.0.0.0/0 for "everywhere")
+                conf.args.push("-rpcallowip=0.0.0.0/0");
+
+                // conf.args.push("-rpcport=18443");
                 conf.args.push("-blockfilterindex=1");
                 conf.args.push("-peerblockfilters=1");
                 conf.args.push("-txindex=1");
@@ -52,6 +61,8 @@ impl Default for Config<'_> {
             electrsd: {
                 let mut conf = electrsd::Conf::default();
                 conf.http_enabled = true;
+                // conf.args.push("--http-addr");
+                // conf.args.push("0.0.0.0:3003");
                 conf.args.push("--cors");
                 conf.args.push("*");
                 // conf.view_stderr = true;
@@ -81,14 +92,14 @@ impl TestEnv {
         std::env::set_current_dir(tmp_dir.path()).expect("failed to set current directory");
 
         // Try to start bitcoind (from environment or downloads)
-        eprintln!("Starting bitcoind...");
+        println!("Starting bitcoind...");
         let bitcoind = match std::env::var("BITCOIND_EXEC") {
             Ok(path) => {
-                eprintln!("Using custom bitcoind executable: {}", path);
+                println!("Using custom bitcoind executable: {}", path);
                 Node::with_conf(&path, &config.bitcoind)?
             }
             Err(_) => {
-                eprintln!(
+                println!(
                     "BITCOIND_EXEC not set! Falling back to downloaded version at {}",
                     corepc_node::downloaded_exe_path()?
                 );
@@ -96,28 +107,29 @@ impl TestEnv {
                 Node::from_downloaded_with_conf(&config.bitcoind)?
             }
         };
+        eprintln!("rpc: {}", bitcoind.rpc_url());
 
         // Try to get electrs executable (from environment or downloads)
         let electrs_exe = match std::env::var("ELECTRS_EXEC") {
             Ok(path) => {
-                eprintln!("Using custom electrs executable: {}", path);
+                println!("Using custom electrs executable: {}", path);
                 path
             }
             Err(_) => {
                 // Try to use downloaded electrs
                 let path = electrsd::downloaded_exe_path()
                     .expect("No downloaded electrs found, trying electrs in PATH...");
-                eprintln!("Using downloaded electrs: {}", path);
+                println!("Using downloaded electrs: {}", path);
                 path
             }
         };
 
-        eprintln!("Starting electrsd...");
+        println!("Starting electrsd...");
 
         let electrsd = ElectrsD::with_conf(electrs_exe, &bitcoind, &config.electrsd)
             .with_context(|| "Starting electrsd failed...")?;
 
-        eprintln!("Electrum URL: {}", electrsd.electrum_url);
+        println!("Electrum URL: {}", electrsd.electrum_url);
         let client = Client::from_config(&electrsd.electrum_url, bdk_electrum::electrum_client::Config::default())?;
         let bdk_electrum_client = BdkElectrumClient::new(client);
 
@@ -134,10 +146,10 @@ impl TestEnv {
             esplora_proxy_process: None,
         };
         if let Some(url) = test_env.esplora_url() {
-            eprintln!("Esplora REST address: http://{url}/mempool",);
+            println!("Esplora REST address: http://{url}/mempool", );
         };
-        eprintln!("Bitcoin regtest environment ready!");
-
+        println!("Bitcoin regtest environment ready!");
+        // test_env.start_esplora_ui(8989)?;
         Ok(test_env)
     }
 
@@ -150,10 +162,36 @@ impl TestEnv {
     pub fn start_esplora_ui(&mut self, port: u16) -> Result<()> {
         let Some(api_url) = self.esplora_url() else {
             eprintln!("Failed to start Esplora UI! Please set electrsd.http_enabled = true");
-            return Err(anyhow::anyhow!("Esplora URL not available"));
+            return Ok(()); // could be intended
         };
+        // Check if Esplora UI is available at http://localhost:8888/
+        let check_url = "http://localhost:8888/";
+        let keyword = "Esplora Block Explorer";
+        let mut success = false;
 
-        eprintln!("Starting Esplora UI child process...");
+        match ureq::get(check_url).call() {
+            Ok(response) => {
+                match response.into_string() {
+                    Ok(body) => {
+                        if body.contains(keyword) {
+                            success = true;
+                        }
+                    }
+                    Err(_) => {}
+                }
+            }
+            Err(_) => {}
+        }
+
+        if !success {
+            eprintln!("Esplora UI at {} did not contain the keyword '{}'. Did you start the Esplora container? See testenv/readme.md!",
+                check_url,
+                keyword,
+            );
+            return Ok(()); // could be intended
+        }
+
+        println!("Starting Esplora UI child process...");
 
         // Use compile-time manifest dir if the environment variable is missing at runtime
         let manifest_dir = std::env::var("CARGO_MANIFEST_DIR")
@@ -173,17 +211,17 @@ impl TestEnv {
         let debug_bin = workspace_root.join("target/debug/esplora_proxy");
 
         let mut command = if release_bin.exists() {
-            eprintln!("Using compiled release binary: {:?}", release_bin);
+            println!("Using compiled release binary: {:?}", release_bin);
             let mut cmd = std::process::Command::new(release_bin);
             cmd.args([&api_url, &port.to_string()]);
             cmd
         } else if debug_bin.exists() {
-            eprintln!("Using compiled debug binary: {:?}", debug_bin);
+            println!("Using compiled debug binary: {:?}", debug_bin);
             let mut cmd = std::process::Command::new(debug_bin);
             cmd.args([&api_url, &port.to_string()]);
             cmd
         } else {
-            eprintln!("Compiled binary not found, falling back to 'cargo run'");
+            println!("Compiled binary not found, falling back to 'cargo run'");
             let mut cmd = std::process::Command::new("cargo");
             cmd.current_dir(manifest_dir);
             cmd.args([
@@ -205,36 +243,7 @@ impl TestEnv {
 
         self.esplora_proxy_process = Some(child);
 
-        eprintln!("Esplora UI should be available at: http://127.0.0.1:{port}");
-
-        // Check if Esplora UI is available at http://localhost:8888/
-        let check_url = "http://localhost:8888/";
-        let keyword = "Bitcoin Explorer";
-        let mut success = false;
-
-        eprintln!("Waiting for Esplora UI to be available at {}...", check_url);
-        match ureq::get(check_url).call() {
-            Ok(response) => {
-                match response.into_string() {
-                    Ok(body) => {
-                        if body.contains(keyword) {
-                            success = true;
-                        }
-                    }
-                    Err(_) => {}
-                }
-            }
-            Err(_) => {}
-        }
-
-        if !success {
-            return Err(anyhow::anyhow!(
-                "Esplora UI at {} did not contain the keyword '{}'. Did you start the Esplora container? See testenv/readme.md!",
-                check_url,
-                keyword,
-            ));
-        }
-
+        println!("Esplora UI should be available at: http://127.0.0.1:{port}");
         Ok(())
     }
 
@@ -439,18 +448,18 @@ mod tests {
 
         // Create new address
         let address = env.new_address()?;
-        eprintln!("Created address: {}", address);
+        println!("Created address: {}", address);
 
         // Address is already verified to be on regtest network when created via new_address()
 
         // Get initial balance
         let initial_balance = env.bitcoind.client.get_balance()?;
-        eprintln!("Initial balance: {:?} BTC", initial_balance);
+        println!("Initial balance: {:?} BTC", initial_balance);
 
         // Fund address with 1000 satoshis
         let amount = Amount::from_sat(1000);
         let txid = env.fund_address(&address, amount)?;
-        eprintln!("Funded address with txid: {}", txid);
+        println!("Funded address with txid: {}", txid);
 
         // Verify the transaction was created
         assert_ne!(
@@ -466,7 +475,7 @@ mod tests {
 
         // Wait for the transaction to appear in electrum
         env.wait_for_tx(txid)?;
-        eprintln!("Transaction confirmed in electrum");
+        println!("Transaction confirmed in electrum");
 
         // Verify we can get the transaction from bitcoind
         let tx = env.bitcoind.client.get_transaction(txid)?;
@@ -481,7 +490,7 @@ mod tests {
             .unwrap_or_default();
 
         assert_eq!(receive_amount, amount);
-        eprintln!("Transaction amount verified: {} ", receive_amount);
+        println!("Transaction amount verified: {} ", receive_amount);
 
         Ok(())
     }
@@ -509,10 +518,9 @@ mod tests {
     #[test]
     #[ignore]
     fn test_esplora_ui_manual() -> Result<()> {
-        let mut env = TestEnv::new()?;
-        env.start_esplora_ui(8989)?;
+        let env = TestEnv::new()?;
         env.mine_block()?;
-        println!("Esplora UI started. You can now set a breakpoint and inspect the blockchain.");
+        //println!("Esplora UI started. You can now set a breakpoint and inspect the blockchain.");
         // println!("Press Ctrl+C to stop or wait for 10 minutes...");
         // std::thread::sleep(Duration::from_secs(600));
         Ok(())

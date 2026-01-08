@@ -54,21 +54,21 @@ In a separate terminal, run the Esplora frontend container:
 Using Podman
 
 ```sh
-podman run -d --rm \
+podman run -d \
   --name esplora \
   -p 8888:80 \
   docker.io/blockstream/esplora:latest \
-  bash -c "/srv/explorer/run.sh bitcoin-mainnet explorer"
+  bash -c "export SKIP_INDEXER=1 && /srv/explorer/run.sh bitcoin-regtest explorer"
 ```
 
 Using Docker (if preferred)
 
 ```bash
-docker run -d --rm \
+docker run -d  \
   --name esplora \
   -p 8888:80 \
   docker.io/blockstream/esplora:latest \
-  bash -c "/srv/explorer/run.sh bitcoin-mainnet explorer"
+  bash -c "/srv/explorer/run.sh bitcoin-regtest explorer"
 ```
 
 #### Step 3: Access the Web Interface
