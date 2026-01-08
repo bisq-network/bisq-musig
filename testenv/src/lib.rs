@@ -26,6 +26,7 @@ pub struct TestEnv {
     _permit: Permit,
     _tmp_dir: TempDir,
     esplora_proxy_process: Option<std::process::Child>,
+    rpc_proxy_process: Option<std::process::Child>,
 }
 
 /// Configuration parameters.
@@ -52,7 +53,7 @@ impl Default for Config<'_> {
                 // Allow connections from any IP (use 0.0.0.0/0 for "everywhere")
                 conf.args.push("-rpcallowip=0.0.0.0/0");
 
-                // conf.args.push("-rpcport=18443");
+                // conf.args.push("-rpcport=18443"); // seems at startup a random port is already used.
                 conf.args.push("-blockfilterindex=1");
                 conf.args.push("-peerblockfilters=1");
                 conf.args.push("-txindex=1");
@@ -144,6 +145,7 @@ impl TestEnv {
             _permit: permit,
             _tmp_dir: tmp_dir,
             esplora_proxy_process: None,
+            rpc_proxy_process: None,
         };
         if let Some(url) = test_env.esplora_url() {
             println!("Esplora REST address: http://{url}/mempool", );
@@ -244,6 +246,68 @@ impl TestEnv {
         self.esplora_proxy_process = Some(child);
 
         println!("Esplora UI should be available at: http://127.0.0.1:{port}");
+        Ok(())
+    }
+
+    pub fn start_rpc_proxy(&mut self) -> Result<()> {
+        let bitcoind_rpc_port = self.bitcoind.params.rpc_socket.port();
+
+        // check at port 3002 if something is listening, if not dont start the proxy.
+        if std::net::TcpStream::connect("127.0.0.1:3002").is_err() {
+            println!("Nothing listening on port 3002, skipping RPC proxy start.");
+            return Ok(());
+        }
+
+        println!("Starting RPC proxy child process...");
+
+        // Use compile-time manifest dir if the environment variable is missing at runtime
+        let manifest_dir = std::env::var("CARGO_MANIFEST_DIR")
+                .unwrap_or_else(|_| env!("CARGO_MANIFEST_DIR").to_string());
+        let manifest_path = std::path::Path::new(&manifest_dir);
+
+        let workspace_root = if manifest_path.ends_with("testenv") {
+            manifest_path.parent().unwrap_or(manifest_path)
+        } else {
+            manifest_path
+        };
+
+        let release_bin = workspace_root.join("target/release/rpc_proxy");
+        let debug_bin = workspace_root.join("target/debug/rpc_proxy");
+
+        let mut command = if release_bin.exists() {
+            println!("Using compiled release binary: {:?}", release_bin);
+            let mut cmd = std::process::Command::new(release_bin);
+            cmd.args([&bitcoind_rpc_port.to_string(), "18443"]);
+            cmd
+        } else if debug_bin.exists() {
+            println!("Using compiled debug binary: {:?}", debug_bin);
+            let mut cmd = std::process::Command::new(debug_bin);
+            cmd.args([&bitcoind_rpc_port.to_string(), "18443"]);
+            cmd
+        } else {
+            println!("Compiled binary not found, falling back to 'cargo run'");
+            let mut cmd = std::process::Command::new("cargo");
+            cmd.current_dir(manifest_dir);
+            cmd.args([
+                "run",
+                "--bin",
+                "rpc_proxy",
+                "--",
+                &bitcoind_rpc_port.to_string(),
+                "18443",
+            ]);
+            cmd
+        };
+
+        let child = command
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .spawn()
+                .context("Failed to spawn rpc_proxy")?;
+
+        self.rpc_proxy_process = Some(child);
+
+        println!("RPC proxy mapping bitcoind port {bitcoind_rpc_port} to 18443");
         Ok(())
     }
 
@@ -408,6 +472,9 @@ impl TestEnv {
 impl Drop for TestEnv {
     fn drop(&mut self) {
         if let Some(mut child) = self.esplora_proxy_process.take() {
+            let _ = child.kill();
+        }
+        if let Some(mut child) = self.rpc_proxy_process.take() {
             let _ = child.kill();
         }
     }
