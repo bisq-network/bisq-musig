@@ -185,8 +185,8 @@ impl TestEnv {
             format!("BTCEXP_BITCOIND_PORT={}", bitcoind_rpc_port).as_str(),
             "-e", "BTCEXP_BITCOIND_USER=bitcoin",
             "-e", "BTCEXP_BITCOIND_PASS=bitcoin",
-            "-e", "BTCEXP_ELECTRUM_SERVER=host.containers.internal",
-            "-e", format!("BTCEXP_ELECTRUM_PORT={}", electrum_port).as_str(),
+            "-e", "BTCEXP_ADDRESS_API=electrum",
+            "-e", format!("BTCEXP_ELECTRUM_SERVERS=tcp://host.containers.internal:{}", electrum_port).as_str(),
             "docker.io/getumbrel/btc-rpc-explorer:v3.5.1",
         ]);
 
