@@ -439,7 +439,6 @@ impl WalletApi for BMPWallet<Connection> {
     where
         Self: Sized,
     {
-        let _ = rustls::crypto::ring::default_provider().install_default();
         // TODO: Make the word size configurable?
         let mut seed = [0u8; 32];
         rand::rng().fill_bytes(&mut seed);
@@ -484,7 +483,6 @@ impl WalletApi for BMPWallet<Connection> {
     // For already created wallets this will load stored data
     // This will also load the imported keys
     fn load_wallet(network: Network, password: Option<&str>) -> anyhow::Result<Self> {
-        let _ = rustls::crypto::ring::default_provider().install_default();
         let mut db = if let Some(password) = password {
             let salt = get_salt(Self::DB_PATH)?;
             let decrypt_key = derive_key_from_password(password, &salt)?;

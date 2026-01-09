@@ -87,7 +87,7 @@ impl TestEnv {
 
     /// create environment with automatic downloads
     pub fn new_with_conf(config: Config) -> Result<Self> {
-        let _ = rustls::crypto::ring::default_provider().install_default();
+        // let _ = rustls::crypto::ring::default_provider().install_default();
         let permit = SEMAPHORE.acquire(); // have testenvs single threaded because of bitcoind and electrs references.
         let tmp_dir = tempdir().expect("failed to create temporary directory");
         std::env::set_current_dir(tmp_dir.path()).expect("failed to set current directory");
@@ -415,7 +415,7 @@ mod tests {
 
     #[test]
     fn test_address_operations() -> Result<()> {
-        let mut env = TestEnv::new()?;
+        let env = TestEnv::new()?;
 
         // Create new address
         let address = env.new_address()?;
