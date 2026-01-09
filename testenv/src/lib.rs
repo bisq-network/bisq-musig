@@ -26,8 +26,8 @@ pub struct TestEnv {
     ctx: Secp256k1<All>,
     _permit: Permit,
     _tmp_dir: TempDir,
-    esplora_proxy_process: Option<std::process::Child>,
-    rpc_proxy_process: Option<std::process::Child>,
+    explorer_process: Option<std::process::Child>,
+    container_name: Option<String>,
 }
 
 /// Configuration parameters.
@@ -136,7 +136,7 @@ impl TestEnv {
 
 
         // permit will be dropped when TestEnv is dropped
-        let mut test_env = Self {
+        let test_env = Self {
             bitcoind,
             electrsd,
             timeout: config.timeout,
@@ -145,16 +145,13 @@ impl TestEnv {
             ctx: Secp256k1::new(),
             _permit: permit,
             _tmp_dir: tmp_dir,
-            esplora_proxy_process: None,
-            rpc_proxy_process: None,
+            explorer_process: None,
+            container_name: None,
         };
         if let Some(url) = test_env.esplora_url() {
             println!("Esplora REST address: http://{url}/mempool", );
         };
         println!("Bitcoin regtest environment ready!");
-        // test_env.start_esplora_ui(8989)?;
-        // create rpc proxy for the btc-rpc-explorer so it has a fixed port to access bitcoind
-        test_env.start_rpc_proxy()?;
         Ok(test_env)
     }
 
@@ -162,156 +159,6 @@ impl TestEnv {
         let txid = self.bdk_electrum_client.transaction_broadcast(tx)?;
         let _ = self.wait_for_tx(txid);
         Ok(txid)
-    }
-
-    pub fn start_esplora_ui(&mut self, port: u16) -> Result<()> {
-        let Some(api_url) = self.esplora_url() else {
-            eprintln!("Failed to start Esplora UI! Please set electrsd.http_enabled = true");
-            return Ok(()); // could be intended
-        };
-        // Check if Esplora UI is available at http://localhost:8888/
-        let check_url = "http://localhost:8888/";
-        let keyword = "Esplora Block Explorer";
-        let mut success = false;
-
-        match ureq::get(check_url).call() {
-            Ok(response) => {
-                match response.into_string() {
-                    Ok(body) => {
-                        if body.contains(keyword) {
-                            success = true;
-                        }
-                    }
-                    Err(_) => {}
-                }
-            }
-            Err(_) => {}
-        }
-
-        if !success {
-            eprintln!("Esplora UI at {} did not contain the keyword '{}'. Did you start the Esplora container? See testenv/readme.md!",
-                check_url,
-                keyword,
-            );
-            return Ok(()); // could be intended
-        }
-
-        println!("Starting Esplora UI child process...");
-
-        // Use compile-time manifest dir if the environment variable is missing at runtime
-        let manifest_dir = std::env::var("CARGO_MANIFEST_DIR")
-            .unwrap_or_else(|_| env!("CARGO_MANIFEST_DIR").to_string());
-        let manifest_path = std::path::Path::new(&manifest_dir);
-
-        // Try to find the compiled binary first
-        // If we are in the workspace, the binary should be in ../target/debug/esplora_proxy
-        // or ../target/release/esplora_proxy (assuming this crate is in a subdirectory)
-        let workspace_root = if manifest_path.ends_with("testenv") {
-            manifest_path.parent().unwrap_or(manifest_path)
-        } else {
-            manifest_path
-        };
-
-        let release_bin = workspace_root.join("target/release/esplora_proxy");
-        let debug_bin = workspace_root.join("target/debug/esplora_proxy");
-
-        let mut command = if release_bin.exists() {
-            println!("Using compiled release binary: {:?}", release_bin);
-            let mut cmd = std::process::Command::new(release_bin);
-            cmd.args([&api_url, &port.to_string()]);
-            cmd
-        } else if debug_bin.exists() {
-            println!("Using compiled debug binary: {:?}", debug_bin);
-            let mut cmd = std::process::Command::new(debug_bin);
-            cmd.args([&api_url, &port.to_string()]);
-            cmd
-        } else {
-            println!("Compiled binary not found, falling back to 'cargo run'");
-            let mut cmd = std::process::Command::new("cargo");
-            cmd.current_dir(manifest_dir);
-            cmd.args([
-                "run",
-                "--bin",
-                "esplora_proxy",
-                "--",
-                &api_url,
-                &port.to_string(),
-            ]);
-            cmd
-        };
-
-        let child = command
-                .stdout(std::process::Stdio::null())
-                .stderr(std::process::Stdio::null())
-                .spawn()
-                .context("Failed to spawn esplora_proxy")?;
-
-        self.esplora_proxy_process = Some(child);
-
-        println!("Esplora UI should be available at: http://127.0.0.1:{port}");
-        Ok(())
-    }
-
-    pub fn start_rpc_proxy(&mut self) -> Result<()> {
-        let bitcoind_rpc_port = self.bitcoind.params.rpc_socket.port();
-
-        // check at port 3002 if something is listening, if not dont start the proxy.
-        if std::net::TcpStream::connect("127.0.0.1:3002").is_err() {
-            println!("Nothing listening on port 3002, skipping RPC proxy start.");
-            return Ok(());
-        }
-
-        println!("Starting RPC proxy child process...");
-
-        // Use compile-time manifest dir if the environment variable is missing at runtime
-        let manifest_dir = std::env::var("CARGO_MANIFEST_DIR")
-                .unwrap_or_else(|_| env!("CARGO_MANIFEST_DIR").to_string());
-        let manifest_path = std::path::Path::new(&manifest_dir);
-
-        let workspace_root = if manifest_path.ends_with("testenv") {
-            manifest_path.parent().unwrap_or(manifest_path)
-        } else {
-            manifest_path
-        };
-
-        let release_bin = workspace_root.join("target/release/rpc_proxy");
-        let debug_bin = workspace_root.join("target/debug/rpc_proxy");
-
-        let mut command = if release_bin.exists() {
-            println!("Using compiled release binary: {:?}", release_bin);
-            let mut cmd = std::process::Command::new(release_bin);
-            cmd.args([&bitcoind_rpc_port.to_string(), "18443"]);
-            cmd
-        } else if debug_bin.exists() {
-            println!("Using compiled debug binary: {:?}", debug_bin);
-            let mut cmd = std::process::Command::new(debug_bin);
-            cmd.args([&bitcoind_rpc_port.to_string(), "18443"]);
-            cmd
-        } else {
-            println!("Compiled binary not found, falling back to 'cargo run'");
-            let mut cmd = std::process::Command::new("cargo");
-            cmd.current_dir(manifest_dir);
-            cmd.args([
-                "run",
-                "--bin",
-                "rpc_proxy",
-                "--",
-                &bitcoind_rpc_port.to_string(),
-                "18443",
-            ]);
-            cmd
-        };
-
-        let child = command
-                .stdout(std::process::Stdio::null())
-                .stderr(std::process::Stdio::null())
-                .spawn()
-                .context("Failed to spawn rpc_proxy")?;
-
-        self.rpc_proxy_process = Some(child);
-
-        println!("RPC proxy mapping bitcoind port {bitcoind_rpc_port} to 18443");
-        Ok(())
     }
 
     pub fn start_explorer_in_container(&mut self) -> Result<()> {
@@ -322,8 +169,12 @@ impl TestEnv {
         let electrum_port = self.electrsd.electrum_url.split(':').last()
                 .context("Failed to parse electrum port")?;
 
+        let container_name = format!("btc-explorer-{}", browserport);
+
         let mut container = std::process::Command::new("podman");
-        container.args(["run", "-it", "--rm", "-p",
+        container.args(["run", "-it", "--rm",
+            "--name", &container_name,
+            "-p",
             format!("{}:3002", browserport).as_str(),
             "--add-host=host.containers.internal:host-gateway",
             "-e",
@@ -341,8 +192,8 @@ impl TestEnv {
 
         // println!("Spawning container: {:?}", container);
         let child = container
-                .stdout(std::process::Stdio::inherit())//TODO change to null in production
-                .stderr(std::process::Stdio::inherit())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
                 .spawn()
                 .context("Failed to spawn rpc_proxy")?;
 
@@ -350,9 +201,12 @@ impl TestEnv {
         // let output = child.wait_with_output()?;
         // eprintln!("id: {} out:{}", id, std::str::from_utf8(&output.stdout)?);
 
-        self.rpc_proxy_process = Some(child);
+        self.explorer_process = Some(child);
+        self.container_name = Some(container_name);
 
         eprintln!("Starting explorer in container, access it at http://127.0.0.1:{}/blocks", browserport);
+        eprintln!("you can check the container logs with: ");
+        eprintln!("podman logs -f --timestamps {}", self.container_name.as_ref().unwrap());
         Ok(())
     }
 
@@ -516,11 +370,21 @@ impl TestEnv {
 
 impl Drop for TestEnv {
     fn drop(&mut self) {
-        if let Some(mut child) = self.esplora_proxy_process.take() {
-            let _ = child.kill();
+        if let Some(name) = self.container_name.take() {
+            eprintln!("Stopping explorer container {}...", name);
+            let output = std::process::Command::new("podman")
+                    .args(["stop", &name])
+                    .output();
+            eprintln!("explorer container returned {:?}...", output);
         }
-        if let Some(mut child) = self.rpc_proxy_process.take() {
+
+        // Try graceful shutdown first (SIGTERM)
+        if let Some(mut child) = self.explorer_process.take() {
+            eprintln!("Shutting down explorer process...");
+
+            // Send SIGTERM (graceful)
             let _ = child.kill();
+            let _ = child.wait();
         }
     }
 }
@@ -608,43 +472,13 @@ mod tests {
     }
 
     #[test]
-    fn test_esplora_ui_without_electrsonfig() -> Result<()> {
-        // Test that error handling works when http_enabled is false
-        let mut config = Config::default();
-        // Disable HTTP to make Esplora URL unavailable
-        config.electrsd.http_enabled = false;
-
-        let mut env = TestEnv::new_with_conf(config)?;
-
-        // Esplora URL should be None when HTTP is disabled
-        assert!(
-            env.esplora_url().is_none(),
-            "Esplora URL should be None when HTTP is disabled"
-        );
-
-        assert!(env.start_esplora_ui(8989).is_err());
-
-        Ok(())
-    }
-
-    #[test]
     #[ignore]
     fn test_container_ui_manual() -> Result<()> {
         let mut env = TestEnv::new()?;
         env.start_explorer_in_container()?;
         env.mine_block()?;
-
+        // put a breakpoint on the Ok statement so you inspect the blockchain before it is dropped
         Ok(())
     }
 
-    #[test]
-    #[ignore]
-    fn test_esplora_ui_manual() -> Result<()> {
-        let env = TestEnv::new()?;
-        env.mine_block()?;
-        //println!("Esplora UI started. You can now set a breakpoint and inspect the blockchain.");
-        // println!("Press Ctrl+C to stop or wait for 10 minutes...");
-        // std::thread::sleep(Duration::from_secs(600));
-        Ok(())
-    }
 }
