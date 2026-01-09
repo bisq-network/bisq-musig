@@ -14,8 +14,9 @@ axum-reverse-proxy = { version = "1.0.3", default-features = false, features = [
 secp = { workspace = true }
 electrsd = { version = "0.36.1", features = [
 "esplora_a33e97e1",
-"corepc-node_29_0",
+#"corepc-node_29_0",
 ] }
+corepc-node = { version = "0.10.1",features = ["download","29_0"] }
 tokio = { workspace = true, features = [ "rt-multi-thread"]}
 ureq = "2.12.1"
 

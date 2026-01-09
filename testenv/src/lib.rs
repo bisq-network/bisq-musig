@@ -5,6 +5,7 @@ use bdk_electrum::BdkElectrumClient;
 use bdk_wallet::bitcoin::key::Secp256k1;
 use bdk_wallet::bitcoin::secp256k1::All;
 use bdk_wallet::bitcoin::{address::NetworkChecked, Address, Amount, BlockHash, Network, Transaction, Txid};
+use corepc_node::get_available_port;
 use electrsd::corepc_node;
 use electrsd::electrum_client::Client;
 use electrsd::{corepc_node::Node, electrum_client::ElectrumApi, ElectrsD};
@@ -53,7 +54,6 @@ impl Default for Config<'_> {
                 // Allow connections from any IP (use 0.0.0.0/0 for "everywhere")
                 conf.args.push("-rpcallowip=0.0.0.0/0");
 
-                // conf.args.push("-rpcport=18443"); // seems at startup a random port is already used.
                 conf.args.push("-blockfilterindex=1");
                 conf.args.push("-peerblockfilters=1");
                 conf.args.push("-txindex=1");
@@ -134,8 +134,9 @@ impl TestEnv {
         let client = Client::from_config(&electrsd.electrum_url, bdk_electrum::electrum_client::Config::default())?;
         let bdk_electrum_client = BdkElectrumClient::new(client);
 
+
         // permit will be dropped when TestEnv is dropped
-        let test_env = Self {
+        let mut test_env = Self {
             bitcoind,
             electrsd,
             timeout: config.timeout,
@@ -152,6 +153,8 @@ impl TestEnv {
         };
         println!("Bitcoin regtest environment ready!");
         // test_env.start_esplora_ui(8989)?;
+        // create rpc proxy for the btc-rpc-explorer so it has a fixed port to access bitcoind
+        test_env.start_rpc_proxy()?;
         Ok(test_env)
     }
 
@@ -308,6 +311,48 @@ impl TestEnv {
         self.rpc_proxy_process = Some(child);
 
         println!("RPC proxy mapping bitcoind port {bitcoind_rpc_port} to 18443");
+        Ok(())
+    }
+
+    pub fn start_explorer_in_container(&mut self) -> Result<()> {
+        // this start a container for debugging
+        let bitcoind_rpc_port = self.bitcoind.params.rpc_socket.port();
+        let browserport = get_available_port()?;
+
+        let electrum_port = self.electrsd.electrum_url.split(':').last()
+                .context("Failed to parse electrum port")?;
+
+        let mut container = std::process::Command::new("podman");
+        container.args(["run", "-it", "--rm", "-p",
+            format!("{}:3002", browserport).as_str(),
+            "--add-host=host.containers.internal:host-gateway",
+            "-e",
+            "BTCEXP_BITCOIND_HOST=host.containers.internal",
+            "-e",
+            "BTCEXP_HOST=0.0.0.0",
+            "-e",
+            format!("BTCEXP_BITCOIND_PORT={}", bitcoind_rpc_port).as_str(),
+            "-e", "BTCEXP_BITCOIND_USER=bitcoin",
+            "-e", "BTCEXP_BITCOIND_PASS=bitcoin",
+            "-e", "BTCEXP_ELECTRUM_SERVER=host.containers.internal",
+            "-e", format!("BTCEXP_ELECTRUM_PORT={}", electrum_port).as_str(),
+            "docker.io/getumbrel/btc-rpc-explorer:v3.5.1",
+        ]);
+
+        // println!("Spawning container: {:?}", container);
+        let child = container
+                .stdout(std::process::Stdio::inherit())//TODO change to null in production
+                .stderr(std::process::Stdio::inherit())
+                .spawn()
+                .context("Failed to spawn rpc_proxy")?;
+
+        // let id = child.id();
+        // let output = child.wait_with_output()?;
+        // eprintln!("id: {} out:{}", id, std::str::from_utf8(&output.stdout)?);
+
+        self.rpc_proxy_process = Some(child);
+
+        eprintln!("Starting explorer in container, access it at http://127.0.0.1:{}/blocks", browserport);
         Ok(())
     }
 
@@ -578,6 +623,16 @@ mod tests {
         );
 
         assert!(env.start_esplora_ui(8989).is_err());
+
+        Ok(())
+    }
+
+    #[test]
+    #[ignore]
+    fn test_container_ui_manual() -> Result<()> {
+        let mut env = TestEnv::new()?;
+        env.start_explorer_in_container()?;
+        env.mine_block()?;
 
         Ok(())
     }

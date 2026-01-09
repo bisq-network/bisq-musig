@@ -15,7 +15,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let target_port: u16 = args[1].parse()?;
     let listen_port: u16 = args[2].parse()?;
 
-    let target_url = format!("http://127.0.0.1:{}", target_port);
+    let target_url = format!("http://localhost:{}", target_port);
 
     eprintln!("Starting RPC proxy...");
     eprintln!("Forwarding all requests to {}", target_url);
@@ -24,7 +24,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let app: Router = proxy.into();
 
-    let addr = SocketAddr::from(([127, 0, 0, 1], listen_port));
+    let addr = SocketAddr::from(([0, 0, 0, 0], listen_port));
     let listener = TcpListener::bind(addr).await?;
 
     eprintln!("RPC proxy listening at: http://{}", addr);
