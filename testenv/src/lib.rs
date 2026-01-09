@@ -108,7 +108,6 @@ impl TestEnv {
                 Node::from_downloaded_with_conf(&config.bitcoind)?
             }
         };
-        eprintln!("rpc: {}", bitcoind.rpc_url());
 
         // Try to get electrs executable (from environment or downloads)
         let electrs_exe = match std::env::var("ELECTRS_EXEC") {
@@ -130,7 +129,6 @@ impl TestEnv {
         let electrsd = ElectrsD::with_conf(electrs_exe, &bitcoind, &config.electrsd)
             .with_context(|| "Starting electrsd failed...")?;
 
-        println!("Electrum URL: {}", electrsd.electrum_url);
         let client = Client::from_config(&electrsd.electrum_url, bdk_electrum::electrum_client::Config::default())?;
         let bdk_electrum_client = BdkElectrumClient::new(client);
 
@@ -147,9 +145,6 @@ impl TestEnv {
             _tmp_dir: tmp_dir,
             explorer_process: None,
             container_name: None,
-        };
-        if let Some(url) = test_env.esplora_url() {
-            println!("Esplora REST address: http://{url}/mempool", );
         };
         println!("Bitcoin regtest environment ready!");
         Ok(test_env)
@@ -420,7 +415,7 @@ mod tests {
 
     #[test]
     fn test_address_operations() -> Result<()> {
-        let env = TestEnv::new()?;
+        let mut env = TestEnv::new()?;
 
         // Create new address
         let address = env.new_address()?;
