@@ -8,8 +8,8 @@ A clean Bitcoin regtest environment using electrsd with automatic executable dow
 - **Dependencies**: No Docker for running the tests
 - **Modern Rust API**: Clean, ergonomic interface inspired by BDK
 - **Cross-Platform**: Works on Linux, macOS, and Windows
-- **Web UI**: Built-in Esplora blockchain explorer for visual debugging
-  (needs docker or podman)
+- **Web UI**: Built-in blockchain explorer for visual debugging
+  (needs podman)
 
 ## Quick Start
 
@@ -33,49 +33,33 @@ env.wait_for_block(Duration::from_secs(5))?;
 println!("Transaction confirmed: {}", txid);
 ```
 
-### Web UI (Esplora)
+### Web UI (btc-rpc-explorer)
 
-The test environment provides a web-based blockchain explorer for visual debugging. This requires running both a backend API proxy and a frontend container.
+The test environment provides a web-based blockchain explorer for visual debugging.
 
-#### Step 1: Start the Backend API Proxy
+#### Step 1: tell TZestenv, that you want to debug
 
 ```rust,ignore
 // Create environment
 let mut env = TestEnv::new()?;
 
-// Start Esplora UI API proxy (non-blocking, runs in separate process)
-env.start_esplora_ui(8989)?;
+// Start the Container with the web-ui in a seperate process.
+// only include this line if you want to debug. do not check in into git. 
+env.start_explorer_in_container()?;
 ```
 
-#### Step 2: Start the Frontend Container
+this will automatically start the podman container, so you need to have podman installed.
+It will destroy the container when Testenv is dropped.
 
-In a separate terminal, run the Esplora frontend container:
+#### Step 2: Access the Web Interface
 
-Using Podman
+When the frontend container is started, it will print the URL to access the explorer on
+the screen using eprintln!(). The port always changes and therefore the parrallel testing works,
+even though it make little sense to have more than one frontend container running.
 
-```sh
-podman run -d \
-  --name esplora \
-  -p 8888:80 \
-  docker.io/blockstream/esplora:latest \
-  bash -c "export SKIP_INDEXER=1 && /srv/explorer/run.sh bitcoin-regtest explorer"
-```
-
-Using Docker (if preferred)
-
-```bash
-docker run -d  \
-  --name esplora \
-  -p 8888:80 \
-  docker.io/blockstream/esplora:latest \
-  bash -c "/srv/explorer/run.sh bitcoin-regtest explorer"
-```
-
-#### Step 3: Access the Web Interface
-
-- http://localhost:8989
-
-> **Note**: Keep the Rust environment running while using the web interface. The frontend container connects to the API proxy provided by the `start_esplora_ui()` function.
+> **Note**: Keep the Rust environment running while using the web interface. So you need to set a breakpoint,
+> then you have time to inspect the blockchain. If the program terminates, the blockchain
+> is dropped (and the container).
 
 ### Custom Configuration Usage
 
@@ -89,7 +73,6 @@ config.bitcoind.args.push("-rpcpassword=custompass");
 config.bitcoind.args.push("-maxmempool=100");
 
 // Customize electrsd settings
-config.electrsd.http_enabled = true;
 // config.electrsd.view_stderr = true;  // Uncomment to see electrsd logs
 
 // Create environment with custom configuration
@@ -97,7 +80,6 @@ let env = TestEnv::new_with_conf(config)?;
 
 env.mine_blocks(5)?;
 
-// UI will be available at http://localhost:8989
 ```
 
 ### Environment Variables
