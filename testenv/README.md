@@ -37,7 +37,7 @@ println!("Transaction confirmed: {}", txid);
 
 The test environment provides a web-based blockchain explorer for visual debugging.
 
-#### Step 1: tell TZestenv, that you want to debug
+#### Step 1: tell Testenv, that you want to debug
 
 ```rust,ignore
 // Create environment
