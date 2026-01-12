@@ -5,16 +5,19 @@ A clean Bitcoin regtest environment using electrsd with automatic executable dow
 ## Features
 
 - **Automatic Downloads**: Downloads required executables (bitcoind, electrs) automatically
-- **Zero Dependencies**: No Docker or external setup required
+- **Dependencies**: No Docker for running the tests
 - **Modern Rust API**: Clean, ergonomic interface inspired by BDK
 - **Cross-Platform**: Works on Linux, macOS, and Windows
-- **Web UI**: Built-in Esplora blockchain explorer for visual debugging
+- **Web UI**: Built-in blockchain explorer for visual debugging
+  (needs podman)
 
 ## Quick Start
 
 ### Basic Usage
 
-```rust
+Inside your test use TestEnv.
+
+```rust,ignore
 // Create environment (automatically downloads executables)
 let env = TestEnv::new()?;
 env.mine_block()?;
@@ -30,49 +33,37 @@ env.wait_for_block(Duration::from_secs(5))?;
 println!("Transaction confirmed: {}", txid);
 ```
 
-### Web UI (Esplora)
+### Web UI (btc-rpc-explorer)
 
-The test environment provides a web-based blockchain explorer for visual debugging. This requires running both a backend API proxy and a frontend container.
+The test environment provides a web-based blockchain explorer for visual debugging.
 
-#### Step 1: Start the Backend API Proxy
+#### Step 1: tell Testenv, that you want to debug
 
-```rust
+```rust,ignore
 // Create environment
-let env = TestEnv::new()?;
+let mut env = TestEnv::new()?;
 
-// Start Esplora UI API proxy (blocks until terminated)
-env.start_esplora_ui(8989).await;
+// Start the Container with the web-ui in a seperate process.
+// only include this line if you want to debug. do not check in into git. 
+env.start_explorer_in_container()?;
 ```
 
-#### Step 2: Start the Frontend Container
+this will automatically start the podman container, so you need to have podman installed.
+It will destroy the container when Testenv is dropped.
 
-In a separate terminal, run the Esplora frontend container:
+#### Step 2: Access the Web Interface
 
-```bash
-# Using Podman
-podman run -d --rm \
-  --name esplora \
-  -p 8888:80 \
-  docker.io/blockstream/esplora:latest \
-  bash -c "/srv/explorer/run.sh bitcoin-mainnet explorer"
+When the frontend container is started, it will print the URL to access the explorer on
+the screen using eprintln!(). The port always changes and therefore the parrallel testing works,
+even though it make little sense to have more than one frontend container running.
 
-# Using Docker (if preferred)
-docker run -d --rm \
-  --name esplora \
-  -p 8888:80 \
-  docker.io/blockstream/esplora:latest \
-  bash -c "/srv/explorer/run.sh bitcoin-mainnet explorer"
-```
-
-#### Step 3: Access the Web Interface
-
-- http://localhost:8989
-
-> **Note**: Keep the Rust environment running while using the web interface. The frontend container connects to the API proxy provided by the `start_esplora_ui()` function.
+> **Note**: Keep the Rust environment running while using the web interface. So you need to set a breakpoint,
+> then you have time to inspect the blockchain. If the program terminates, the blockchain
+> is dropped (and the container).
 
 ### Custom Configuration Usage
 
-```rust
+```rust,ignore
 // Create custom configuration
 let mut config = Config::default();
 
@@ -82,7 +73,6 @@ config.bitcoind.args.push("-rpcpassword=custompass");
 config.bitcoind.args.push("-maxmempool=100");
 
 // Customize electrsd settings
-config.electrsd.http_enabled = true;
 // config.electrsd.view_stderr = true;  // Uncomment to see electrsd logs
 
 // Create environment with custom configuration
@@ -90,7 +80,6 @@ let env = TestEnv::new_with_conf(config)?;
 
 env.mine_blocks(5)?;
 
-// UI will be available at http://localhost:8989
 ```
 
 ### Environment Variables
@@ -124,7 +113,7 @@ The main environment manager that handles both bitcoind and electrs instances.
 
 #### Web UI
 
-- `start_esplora_ui(port)` - Start Esplora blockchain explorer API proxy (blocks until terminated)
+- `start_esplora_ui(port)` - Starts the Esplora blockchain explorer API proxy in a separate child process.
 
 #### Blockchain Operations
 

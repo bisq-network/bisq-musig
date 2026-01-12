@@ -1,20 +1,25 @@
 /// Bitcoin regtest environment using electrsd with automatic executable downloads
 use anyhow::{Context, Result};
 use bdk_electrum::bdk_core::bitcoin::{KnownHrp, XOnlyPublicKey};
-use axum::Router;
-use axum_reverse_proxy::ReverseProxy;
 use bdk_electrum::BdkElectrumClient;
+
+
 use bdk_wallet::bitcoin::key::Secp256k1;
 use bdk_wallet::bitcoin::secp256k1::All;
 use bdk_wallet::bitcoin::{address::NetworkChecked, Address, Amount, BlockHash, Network, Transaction, Txid};
+use corepc_node::get_available_port;
 use electrsd::corepc_node;
 use electrsd::electrum_client::Client;
 use electrsd::{corepc_node::Node, electrum_client::ElectrumApi, ElectrsD};
+use hmac::{Hmac, Mac};
+use rand::{Rng, RngCore};
 use secp::Scalar;
+use sha2::Sha256;
 use simple_semaphore::{Permit, Semaphore};
 use std::sync::Arc;
 use std::time::Duration;
 use tempfile::{tempdir, TempDir};
+
 
 /// Bitcoin regtest environment manager
 pub struct TestEnv {
@@ -26,6 +31,9 @@ pub struct TestEnv {
     ctx: Secp256k1<All>,
     _permit: Permit,
     _tmp_dir: TempDir,
+    explorer_process: Option<std::process::Child>,
+    container_name: Option<String>,
+    bitcoin_rpc_pwd: String,
 }
 
 /// Configuration parameters.
@@ -44,6 +52,12 @@ impl Default for Config<'_> {
         Self {
             bitcoind: {
                 let mut conf = corepc_node::Conf::default();
+                // Listen on all interfaces (0.0.0.0) instead of just localhost
+                conf.args.push("-rpcbind=0.0.0.0");
+
+                // Allow connections from any IP (use 0.0.0.0/0 for "everywhere")
+                conf.args.push("-rpcallowip=0.0.0.0/0");
+
                 conf.args.push("-blockfilterindex=1");
                 conf.args.push("-peerblockfilters=1");
                 conf.args.push("-txindex=1");
@@ -67,6 +81,77 @@ const NETWORK: Network = Network::Regtest;
 static SEMAPHORE: once_cell::sync::Lazy<Arc<Semaphore>> =
     once_cell::sync::Lazy::new(|| Semaphore::new(1));
 
+
+// Type alias for Hmac-Sha256
+type HmacSha256 = Hmac<Sha256>;
+
+/// Generates a Bitcoin Core rpcauth string.
+///
+/// - `username`: The RPC username.
+/// - `password`: The password (if None, a random one is generated).
+///
+/// Returns a tuple of (rpcauth_string, password).
+pub fn generate_rpcauth(username: &str, password: Option<&str>) -> (String, String) {
+    // Generate or use provided password
+    let pw = match password {
+        Some(p) => p.to_string(),
+        None => {
+            // Generate a random 32-char alphanumeric password
+            let mut rng = rand::thread_rng();
+            (0..32)
+                    .map(|_| {
+                        let chars = b"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
+                        chars[rng.gen_range(0..chars.len())] as char
+                    })
+                    .collect()
+        }
+    };
+
+    // Generate a random 16-byte salt
+    let mut salt_bytes = [0u8; 16];
+    rand::thread_rng().fill_bytes(&mut salt_bytes);
+    let salt_hex = hex::encode(salt_bytes);
+
+    // Compute HMAC-SHA256(salt, password)
+    let mut mac = HmacSha256::new_from_slice(salt_hex.as_bytes())
+            .expect("HMAC can take key of any size");
+    mac.update(pw.as_bytes());
+    let hash_bytes = mac.finalize().into_bytes();
+    let hash_hex = hex::encode(hash_bytes);
+
+    // Build the rpcauth string
+    let rpcauth = format!("rpcauth={}:{}${}", username, salt_hex, hash_hex);
+
+    (rpcauth, pw)
+}
+pub fn validate_rpcauth(rpcauth_line: &str, username: &str, password: &str) -> bool {
+    let line = rpcauth_line.trim().strip_prefix("rpcauth=").unwrap_or(rpcauth_line.trim());
+
+    // Expected format: <user>:<salt_hex>$<hmac_hex>
+    let (user_part, rest) = match line.split_once(':') {
+        Some(x) => x,
+        None => return false,
+    };
+    if user_part != username {
+        return false;
+    }
+
+    let (salt_hex, hmac_hex_expected) = match rest.split_once('$') {
+        Some(x) => x,
+        None => return false,
+    };
+
+    let mut mac = match HmacSha256::new_from_slice(salt_hex.as_bytes()) {
+        Ok(m) => m,
+        Err(_) => return false,
+    };
+    mac.update(password.as_bytes());
+    let hmac_hex_actual = hex::encode(mac.finalize().into_bytes());
+
+    // Constant-time compare would be ideal; for most local tooling this is OK,
+    // but you can use `subtle` crate if you want constant-time equality.
+    hmac_hex_actual.eq_ignore_ascii_case(hmac_hex_expected)
+}
 impl TestEnv {
     /// Create a new test environment with automatic executable downloads
     pub fn new() -> Result<Self> {
@@ -75,50 +160,59 @@ impl TestEnv {
 
     /// create environment with automatic downloads
     pub fn new_with_conf(config: Config) -> Result<Self> {
+        // let _ = rustls::crypto::ring::default_provider().install_default();
         let permit = SEMAPHORE.acquire(); // have testenvs single threaded because of bitcoind and electrs references.
         let tmp_dir = tempdir().expect("failed to create temporary directory");
         std::env::set_current_dir(tmp_dir.path()).expect("failed to set current directory");
 
         // Try to start bitcoind (from environment or downloads)
-        eprintln!("Starting bitcoind...");
+        println!("Starting bitcoind...");
+        // rpcauth for each bitcoind and save the pwd
+        // let (rpc_auth, bitcoin_rpc_pwd) = generate_rpcauth("bitcoin", Some("bitcoin"));
+        let (rpc_auth, bitcoin_rpc_pwd) = generate_rpcauth("bitcoin", None);
+
+        let auth_config = format!("-{}", rpc_auth);
+        let mut bitcoin_config = config.bitcoind.clone();
+        bitcoin_config.args.push(&*auth_config);
+
         let bitcoind = match std::env::var("BITCOIND_EXEC") {
             Ok(path) => {
-                eprintln!("Using custom bitcoind executable: {}", path);
-                Node::with_conf(&path, &config.bitcoind)?
+                println!("Using custom bitcoind executable: {}", path);
+                Node::with_conf(&path, &bitcoin_config)?
             }
             Err(_) => {
-                eprintln!(
+                println!(
                     "BITCOIND_EXEC not set! Falling back to downloaded version at {}",
                     corepc_node::downloaded_exe_path()?
                 );
 
-                Node::from_downloaded_with_conf(&config.bitcoind)?
+                Node::from_downloaded_with_conf(&bitcoin_config)?
             }
         };
 
         // Try to get electrs executable (from environment or downloads)
         let electrs_exe = match std::env::var("ELECTRS_EXEC") {
             Ok(path) => {
-                eprintln!("Using custom electrs executable: {}", path);
+                println!("Using custom electrs executable: {}", path);
                 path
             }
             Err(_) => {
                 // Try to use downloaded electrs
                 let path = electrsd::downloaded_exe_path()
                     .expect("No downloaded electrs found, trying electrs in PATH...");
-                eprintln!("Using downloaded electrs: {}", path);
+                println!("Using downloaded electrs: {}", path);
                 path
             }
         };
 
-        eprintln!("Starting electrsd...");
+        println!("Starting electrsd...");
 
         let electrsd = ElectrsD::with_conf(electrs_exe, &bitcoind, &config.electrsd)
             .with_context(|| "Starting electrsd failed...")?;
 
-        eprintln!("Electrum URL: {}", electrsd.electrum_url);
         let client = Client::from_config(&electrsd.electrum_url, bdk_electrum::electrum_client::Config::default())?;
         let bdk_electrum_client = BdkElectrumClient::new(client);
+
 
         // permit will be dropped when TestEnv is dropped
         let test_env = Self {
@@ -130,12 +224,11 @@ impl TestEnv {
             ctx: Secp256k1::new(),
             _permit: permit,
             _tmp_dir: tmp_dir,
+            explorer_process: None,
+            container_name: None,
+            bitcoin_rpc_pwd
         };
-        if let Some(url) = test_env.esplora_url() {
-            eprintln!("Esplora REST address: http://{url}/mempool",);
-        };
-        eprintln!("Bitcoin regtest environment ready!");
-
+        println!("Bitcoin regtest environment ready!");
         Ok(test_env)
     }
 
@@ -145,39 +238,48 @@ impl TestEnv {
         Ok(txid)
     }
 
-    pub async fn start_esplora_ui(&self, port: u16) -> Result<()> {
-        let Some(api_url) = self.esplora_url() else {
-            eprintln!("Failed to start Esplora UI! Please set electrsd.http_enabled = true");
-            return Err(anyhow::anyhow!("Esplora URL not available"));
-        };
+    pub fn start_explorer_in_container(&mut self) -> Result<()> {
+        // this start a container for debugging
+        let bitcoind_rpc_port = self.bitcoind.params.rpc_socket.port();
+        let browserport = get_available_port()?;
 
-        eprintln!("Starting Esplora UI...");
+        let electrum_port = self.electrsd.electrum_url.split(':').last()
+                .context("Failed to parse electrum port")?;
 
-        // Create a reverse proxy that forwards requests from /api/*
-        let api = ReverseProxy::new("/api", &format!("http://{api_url}"));
+        let container_name = format!("btc-explorer-{}", browserport);
 
-        //The actual frontend should be running in a container on the port 8888(look at the README for more details)
-        let frontend = ReverseProxy::new("/", "http://localhost:8888");
-        let app: Router = api.into();
+        let mut container = std::process::Command::new("podman");
+        container.args(["run", "-it", "--rm",
+            "--name", &container_name,
+            "-p",
+            format!("{}:3002", browserport).as_str(),
+            "--add-host=host.containers.internal:host-gateway",
+            "-e",
+            "BTCEXP_BITCOIND_HOST=host.containers.internal",
+            "-e",
+            "BTCEXP_HOST=0.0.0.0",
+            "-e",
+            format!("BTCEXP_BITCOIND_PORT={}", bitcoind_rpc_port).as_str(),
+            "-e", "BTCEXP_BITCOIND_USER=bitcoin",
+            "-e", format!("BTCEXP_BITCOIND_PASS={}", self.bitcoin_rpc_pwd).as_str(),
+            "-e", "BTCEXP_ADDRESS_API=electrum",
+            "-e", format!("BTCEXP_ELECTRUM_SERVERS=tcp://host.containers.internal:{}", electrum_port).as_str(),
+            "docker.io/getumbrel/btc-rpc-explorer:v3.5.1",
+        ]);
 
-        // Forward all other requests to actual frontend
-        let app: Router = app.fallback_service(frontend);
+        // println!("Spawning container: {:?}", container);
+        let child = container
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .spawn()
+                .context("Failed to spawn rpc_proxy")?;
 
-        let listener = tokio::net::TcpListener::bind(&format!("127.0.0.1:{port}"))
-            .await
-            .context("Failed to bind to port 8989 for Esplora UI")?;
+        self.explorer_process = Some(child);
+        self.container_name = Some(container_name);
 
-        let local_addr = listener
-            .local_addr()
-            .context("Failed to get local address for Esplora UI")?;
-
-        eprintln!("Esplora UI served at: http://{:?}", local_addr);
-
-        axum::serve(listener, app)
-            .await
-            .context("Esplora UI server failed")?;
-
-        eprintln!("!!! Esplora UI terminated!!");
+        eprintln!("Starting explorer in container, access it at http://127.0.0.1:{}/blocks", browserport);
+        eprintln!("you can check the container logs with: ");
+        eprintln!("podman logs -f --timestamps {}", self.container_name.as_ref().unwrap());
         Ok(())
     }
 
@@ -339,6 +441,27 @@ impl TestEnv {
     }
 }
 
+impl Drop for TestEnv {
+    fn drop(&mut self) {
+        if let Some(name) = self.container_name.take() {
+            eprintln!("Stopping explorer container {}...", name);
+            let output = std::process::Command::new("podman")
+                    .args(["stop", &name])
+                    .output();
+            eprintln!("explorer container returned {:?}...", output);
+        }
+
+        // Try graceful shutdown first (SIGTERM)
+        if let Some(mut child) = self.explorer_process.take() {
+            eprintln!("Shutting down explorer process...");
+
+            // Send SIGTERM (graceful)
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -374,18 +497,18 @@ mod tests {
 
         // Create new address
         let address = env.new_address()?;
-        eprintln!("Created address: {}", address);
+        println!("Created address: {}", address);
 
         // Address is already verified to be on regtest network when created via new_address()
 
         // Get initial balance
         let initial_balance = env.bitcoind.client.get_balance()?;
-        eprintln!("Initial balance: {:?} BTC", initial_balance);
+        println!("Initial balance: {:?} BTC", initial_balance);
 
         // Fund address with 1000 satoshis
         let amount = Amount::from_sat(1000);
         let txid = env.fund_address(&address, amount)?;
-        eprintln!("Funded address with txid: {}", txid);
+        println!("Funded address with txid: {}", txid);
 
         // Verify the transaction was created
         assert_ne!(
@@ -401,7 +524,7 @@ mod tests {
 
         // Wait for the transaction to appear in electrum
         env.wait_for_tx(txid)?;
-        eprintln!("Transaction confirmed in electrum");
+        println!("Transaction confirmed in electrum");
 
         // Verify we can get the transaction from bitcoind
         let tx = env.bitcoind.client.get_transaction(txid)?;
@@ -416,26 +539,37 @@ mod tests {
             .unwrap_or_default();
 
         assert_eq!(receive_amount, amount);
-        eprintln!("Transaction amount verified: {} ", receive_amount);
+        println!("Transaction amount verified: {} ", receive_amount);
 
         Ok(())
     }
 
     #[test]
-    fn test_esplora_ui_without_electrsonfig() -> Result<()> {
-        // Test that error handling works when http_enabled is false
-        let mut config = Config::default();
-        // Disable HTTP to make Esplora URL unavailable
-        config.electrsd.http_enabled = false;
-
-        let env = TestEnv::new_with_conf(config)?;
-
-        // Esplora URL should be None when HTTP is disabled
-        assert!(
-            env.esplora_url().is_none(),
-            "Esplora URL should be None when HTTP is disabled"
-        );
-
+    #[ignore]
+    fn test_container_ui_manual() -> Result<()> {
+        let mut env = TestEnv::new()?;
+        env.start_explorer_in_container()?;
+        env.mine_block()?;
+        // put a breakpoint on the Ok statement so you inspect the blockchain before it is dropped
         Ok(())
+    }
+
+    #[test]
+    fn test_rpcauth_validation() {
+        let username = "bitcoin";
+        let password = "bitcoin";
+        let rpcauth_line = "rpcauth=bitcoin:81ad5d600eb1df69d27323dd1ef31162$7c4315f44d8eea5cb6764295c0233a5e0d51d5ea461e122f337bc6e8502f0d93";
+
+        assert!(validate_rpcauth(rpcauth_line, username, password));
+
+        // Test with wrong password
+        assert!(!validate_rpcauth(rpcauth_line, username, "wrongpassword"));
+
+        // Test with wrong username
+        assert!(!validate_rpcauth(rpcauth_line, "wronguser", password));
+
+        // Test generation and validation
+        let (generated_auth, generated_pw) = generate_rpcauth("testuser", None);
+        assert!(validate_rpcauth(&generated_auth, "testuser", &generated_pw));
     }
 }
