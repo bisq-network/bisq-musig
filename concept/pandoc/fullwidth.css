@@ -1,0 +1,24 @@
+body {
+  margin: 0 auto;
+  padding-left: 50px;
+  padding-right: 50px;
+  padding-top: 50px;
+  padding-bottom: 50px;
+  hyphens: auto;
+  overflow-wrap: break-word;
+  text-rendering: optimizeLegibility;
+  font-kerning: normal;
+}
+
+h1.title {
+  display: none;
+}
+
+img {
+  max-width: 100%;
+  height: auto;
+}
+
+figcaption {
+  display: none;
+}
