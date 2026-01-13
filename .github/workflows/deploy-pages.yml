@@ -2,7 +2,7 @@ name: Deploy MD to GitHub Pages
 
 on:
   push:
-    branches: ["feat-esplora-debug"]
+    branches: [ "main" ]
   workflow_dispatch:
 
 permissions:
