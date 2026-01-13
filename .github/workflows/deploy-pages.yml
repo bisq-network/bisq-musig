@@ -24,10 +24,9 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Install pandoc and katex
+      - name: Install pandoc
         run: |
           sudo apt-get update && sudo apt-get install -y pandoc
-          sudo npm install -g katex
 
       - name: Setup Pages
         uses: actions/configure-pages@v4
@@ -43,7 +42,7 @@ jobs:
             mkdir -p "$(dirname "$html_file")"
             
             echo "Converting $md_file to $html_file"
-            pandoc "$md_file" -s -o "$html_file" --metadata title="${relative_path%.md}" --lua-filter="$GITHUB_WORKSPACE/concept/pandoc/convert_links.lua" --css="$GITHUB_WORKSPACE/concept/pandoc/fullwidth.css" --embed-resources --standalone --katex=node_modules/katex/dist
+            pandoc "$md_file" -s -o "$html_file" --metadata title="${relative_path%.md}" --lua-filter="$GITHUB_WORKSPACE/concept/pandoc/convert_links.lua" --css="$GITHUB_WORKSPACE/concept/pandoc/fullwidth.css" --embed-resources --standalone
           done
           
           # Copy other assets like images, and existing HTML files
