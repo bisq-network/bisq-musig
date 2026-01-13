@@ -13,12 +13,14 @@ of a 2of2 multisig such that when Alice uses it, she must reveal $t$ to Bob.
 Let
 
 $$T=t \cdot G$$
-
-where \
-$t$ is secret adaptor, the secret which will be revealed\
-$T$ is public adaptor\
-$G$ is the Generator point of secp256k1\
-$m$ (the message) is the serialisation of a transaction which spends the output of the 2of2 Multisig.
+$$\begin{aligned}
+\text{where}& \hspace{1000pt} \\
+t & \text{ is secret adaptor, the secret which will be revealed} \\
+T &\text{ is public adaptor} \\
+G &\text{ is the Generator point of secp256k1} \\
+m &\text{ (the message) is the serialisation of a transaction which spends the output of the 2of2 Multisig.}
+\end{aligned}
+$$
 
 The function $H_{tagged}(x_1,...,x_n)$ is a hash function where the name 'tagged' is used as literal to init the hash
 and if $x_i$ is a Curvepoint then we use the compressed x-key instead. Operator '||' stands for concatenation.
@@ -37,11 +39,13 @@ Alice does the Key Aggregation in MuSig2
 
 $$(1) \hspace{5pt} P = a_a \cdot P_a + a_b \cdot P_b$$
 
-$ \begin{eqnarray}
-where \\ \hspace{5pt} a_a &=& H_{agg}(sha256(P_a,P_b),P_a) \\
-a_b &=& 1 \\
-P_a &\ne& P_b
-\end{eqnarray}$
+$$\begin{aligned}
+\text{where}& \\
+a_a &= H_{agg}(sha256(P_a,P_b),P_a)  \hspace{1000pt} \\
+a_b &= 1 \\
+P_a &\ne P_b \\
+\end{aligned}
+$$
 
 by calling `KeyAggContext::new([P_a,P_b])` with the pubkeys of all participants.
 $a_i$ is called the coefficients.
@@ -58,12 +62,12 @@ Up to here, its independent of the message and can be precalculated.
 
 From collected Nonce the aggregated Nonce $R$ is calculated:
 
-$\hspace{100pt}\begin{eqnarray*}
-(2)\hspace{5pt} R_1 &=& R_{a,1} + R_{b,1} \\
-R_2 &=& R_{a,2} + R_{b,2} \\
-b &=& H_{non}(R_1 , R_2, P, m) \\
-(3)\hspace{5pt} R &=& R_1 + b \cdot R_2 + T
-\end{eqnarray*}$
+$$\begin{aligned}
+(2)~~ R_1 &= R_{a,1} + R_{b,1} \\
+R_2 &= R_{a,2} + R_{b,2} \\
+b &= H_{non}(R_1 , R_2, P, m) \\
+(3)~~ R &= R_1 + b \cdot R_2 + T
+\end{aligned}$$
 
 Note that the $T$ is added to $R$, this seperates normal MuSig2 from adaptive MuSig2.
 This is done via `AggNonce::sum()` and `musig2::adaptor::sign_partial(T)`. This is split into 2 methods, the aggregated Nounce is in `musig2`
@@ -100,21 +104,21 @@ pre-signature, not a valid signature.
 We can prove that this pre-signature is indeed a valid adaptor signature by multiplying with $G$ and
 setting $e:=H_{sig}(R,P,m)$:
 
-$\begin{eqnarray}
-s\cdot G &=& s_a\cdot G+s_b\cdot G ;| \hspace{3pt} with (4) \\
-&=&(r_{a,1} + b \cdot r_{a,2} + a_a \cdot e \cdot p_a)\cdot G + (r_{b,1}+b \cdot r_{b,2} + a_b \cdot e \cdot p_b)\cdot G \\
-&=&R_{a,1}+b\cdot R_{a,2} + a_a\cdot e \cdot P_a + R_{b,1}+b\cdot R_{b,2} + a_b\cdot e \cdot P_b;| \hspace{3pt} with (2) \\
-&=& R_1 + b \cdot R_2 + a_a \cdot e \cdot P_a + a_b \cdot e \cdot P_b;| \hspace{3pt} with (1) \\
-&=& R_1 + b \cdot R_2 + e \cdot P;| \hspace{3pt} with (3) \\
-&=& R - T + e \cdot P
-\end{eqnarray}$
+$$\begin{aligned}
+s\cdot G &= s_a\cdot G+s_b\cdot G ;| ~~ with (4) \\
+&=(r_{a,1} + b \cdot r_{a,2} + a_a \cdot e \cdot p_a)\cdot G + (r_{b,1}+b \cdot r_{b,2} + a_b \cdot e \cdot p_b)\cdot G \\
+&=R_{a,1}+b\cdot R_{a,2} + a_a\cdot e \cdot P_a + R_{b,1}+b\cdot R_{b,2} + a_b\cdot e \cdot P_b;| ~~ with (2) \\
+&= R_1 + b \cdot R_2 + a_a \cdot e \cdot P_a + a_b \cdot e \cdot P_b;| ~~ with (1) \\
+&= R_1 + b \cdot R_2 + e \cdot P;| ~~ with (3) \\
+&= R - T + e \cdot P
+\end{aligned}$$
 
 that means
 
-$$\begin{eqnarray}
-s \cdot G + T &=& R+e \cdot P \\
-\Leftrightarrow (s + t) \cdot G &=& R + e \cdot P
-\end{eqnarray}$$
+$$\begin{aligned}
+s \cdot G + T &= R+e \cdot P \\
+\Leftrightarrow (s + t) \cdot G &= R + e \cdot P
+\end{aligned}$$
 
 so with the discrete logarithm (DLOG) of $T$, which is  $t$, we would have a valid signature.
 
