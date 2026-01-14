@@ -1,4 +1,4 @@
-# bisq MuSig2 Protocol
+# Bisq MuSig2 Protocol
 
 This is module inside Bisq2. it implements a new Multisig protocol for Bisq2, this protocol is similar to the protocol used in Bisq1.
 It enables to buy/sell bitcoin from other peers without needing any trust in the other peer or into any coordinator or any third party. Since there is no intermediary to
@@ -13,12 +13,15 @@ Main changes to the Bisq1 protocol are:
 
 ## overview
 
-This project is the handling the cryptographic part of the overall protocol. Even though it is the centerpiece there are more pieces necessary to pull this off.
+This project is the handling the cryptographic part of the overall protocol. Even though it is the centerpiece
+there are more pieces necessary to pull this off.
 Here is an Overview drawing:
-![modules](concept/renderedForWeb/bisq-musig-modules.png)
+
+![modules](concept/bisq-musig-modules.png)
 
 ## docs
 
+Detailed docs are in the [Concepts](concept/README.md) section.
 To get a more indepth understanding of what this module is doing, please read [SingleTxOverview](./concept/SingleTxOverview.md)
 This module's programming language is Rust.
 Technologies include:
@@ -77,5 +80,5 @@ cargo test --package protocol --lib --tests -- --nocapture
 ## reading the Markdown files
 
 Some of the markdown files have LaTeX included, you can best view them using RustRover.
-Github sucks at displaying LaTeX. I also keep an html-export of the markdown files
-in the directory 'renderedForWeb', so you can view them without RustRover.
+Github sucks at displaying LaTeX. There is also an html export on the github pages of the project
+at [github pages](https://chrisson15.github.io/bisq-musig/)
