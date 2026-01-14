@@ -7,13 +7,13 @@ theoretical foundations to understand silent payments in our use case. Keep in m
 and still has some simplifications.
 In this section, Alice and Carol are the
 traders and Bob is the BM that receives the trade fee payment. Prerequisite to this section would be the chapter
-of `working principle of silent payments` from [the silent payment article](https://htmlpreview.github.io/?https://github.com/ChrisSon15/bisq-musig/blob/main/concept/renderedForWeb/SilentPayment.html), but we are going
+of `working principle of silent payments` from [the silent payment article](SilentPayment.md), but we are going
 much more into details as its
 needed for the cooperative payment with SP.
 The trade fee payment is modeled as another UTXO of `DepositTx`,
 this was suggested by Hendrik lately as this is a simple solution for now.
 
-![DepostTx.drawio.svg](../renderedForWeb/DepostTx.drawio.svg)
+![DepostTx.drawio.svg](DepostTx.drawio.svg)
 
 Bob needs to make his SP address known to the traders, which is done through the DAO as it is done
 today in Bisq1. From the SP address there is a way to calculate the shared secret and from that the
@@ -64,13 +64,13 @@ Since we have only one SP output, we can hardcode index $0$.
 
 By using Deffie-Hellman we can prove that (1) and (2)
 actually calculate to the same address:
-$$\begin{eqnarray}
-a \cdot B_{SCAN} + c \cdot B_{SCAN} &=& (a+c) \cdot B_{SCAN} \\
-&=& (a+c) \cdot b_{SCAN} \cdot G \\
-&=& b_{SCAN} \cdot (a+c) \cdot G \\
-&=& b_{SCAN} \cdot (a \cdot G + c \cdot G) \\
-&=& b_{SCAN} \cdot (A+C) \\
-\end{eqnarray}$$
+$$\begin{aligned}
+a \cdot B_{SCAN} + c \cdot B_{SCAN} &= (a+c) \cdot B_{SCAN} \\
+&= (a+c) \cdot b_{SCAN} \cdot G \\
+&= b_{SCAN} \cdot (a+c) \cdot G \\
+&= b_{SCAN} \cdot (a \cdot G + c \cdot G) \\
+&= b_{SCAN} \cdot (A+C) \\
+\end{aligned}$$
 
 ### exchange of data
 

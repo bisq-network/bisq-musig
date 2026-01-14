@@ -25,15 +25,15 @@ A Schnorr based 2of2 multisignature, makes use of the additivity of the keys and
 the
 taproot transaction output in a key spend path.
 
-The details of the MuSig2 protocol (and adaptive signatures) are described in length [here locally](./MuSig2adaptor-rust.md)
-or [here on the web](https://html-preview.github.io/?url=https://github.com/bisq-network/bisq-musig/blob/main/concept/renderedForWeb/MuSig2adaptor-rust.html).
+The details of the MuSig2 protocol (and adaptive signatures) are described in length [here](./MuSig2adaptor-rust.md)
 
 The 2 public key from Alice and Bob can be combined to a aggregated public key.
-> $P' := P_a + P_b$ \
-> and the same for the corresponding private key \
-> $p' := p_a + p_b$ \
-> with the linearity of elliptic curves \
-> $P' = p' \cdot G$
+
+$P' := P_a + P_b$ \
+and the same for the corresponding private key \
+$p' := p_a + p_b$ \
+with the linearity of elliptic curves \
+$P' = p' \cdot G$
 
 this effectively means, that when Alice passes her private key to Bob, he can calculate the private key for $P'$ and therefore has the private key for spending the multisig-output as he wants. So he has full control over
 the UTXO.

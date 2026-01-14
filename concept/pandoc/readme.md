@@ -7,10 +7,10 @@ To locally preview the html you can use these script in here.
 However, you will need to install
 
 ```
-**pandoc** -- converter from markdown to html \
-**katex** -- extension for pandoc to use the LaTex dialect we are using here (MathJax won't do) \
+**pandoc** -- converter from markdown to html 
+**katex** -- extension for pandoc to use the LaTex dialect we are using here (MathJax won't do) 
 **inotifywait** -- (optional) if you want to use the watch script to convert the markdown to html everytime you save the file.
-```
+``` 
 ## Scripts for local preview
 
 To convert all md-files in directory concept into the output directory
@@ -33,5 +33,5 @@ Both scripts assume that you run them from the directory they are in (/concept/p
 After any commit on the branch 'main' the documentation will be converted automatically
 and appears on the github pages at:
 
-> [Documentation on Web](https://chrisson15.github.io/bisq-musig/)
+[Documentation on Github](https://chrisson15.github.io/bisq-musig/)
 

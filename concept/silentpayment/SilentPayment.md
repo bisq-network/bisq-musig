@@ -24,12 +24,12 @@ to the silent payment address $B$ )
 Only Bob will be able to spend that output because the secret
 key of $B$, which is $b$, is needed:
 
-$\hspace{100pt} \begin{eqnarray}
-P &=& B + hash(b \cdot A) \cdot G \\
-&=& b \cdot G+hash(b \cdot A) \cdot G \\
-&=& (b + hash(b \cdot A))\cdot G\\
-&=& p \cdot G
-\end{eqnarray}$
+$$\begin{aligned}
+P &= B + hash(b \cdot A) \cdot G \\
+&= b \cdot G+hash(b \cdot A) \cdot G \\
+&= (b + hash(b \cdot A))\cdot G\\
+&= p \cdot G
+\end{aligned}$$
 
 so the secret key $p$ is $p=b + hash(b \cdot A)$. Bob knows $b$, because that's his private key and
 he learns $A$ by scanning the blockchain and extracting from each transaction the pubkeys and testing if
@@ -61,7 +61,7 @@ which allows the verify to produce the expected output for Bob.
 
 ## state of implementation
 
-here is Josie's answer from Mar 28, 2025:
+here is Josie's answer from Mar, 2025:
 "The wallets that can receive today are very experimental, in my opinion, and not ready for mainnet. If you are able to require a special version of Bitcoin Core wallet, I think that is the best option: silent payments
 works best when the user is running their own Bitcoin Core node.
 
