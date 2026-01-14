@@ -8,6 +8,7 @@ substates of it. It is intended that this state maschine will be implemented in 
 Bisq2 using the FSM.
 
 ![StateMachine.drawio.png](StateMachine.drawio.png)
+
 1. signing of Txs
    this is already implemented in rust, basically the running test link serves as a rust 
    implementation of what needs to be implemented in Java with FSM. Please see the [test-case here](https://github.com/bisq-network/bisq-musig/blob/main/protocol/src/lib.rs#L23).
@@ -19,29 +20,29 @@ Bisq2 using the FSM.
    -no substates-
 
 3. Seller broadcasts SwapTx
-   3.1. Seller broadcasts SwapTx has no additional state fpr the seller
-   3.2. Buyer gets informed of chain-services that SwapTx is being detected, then continue with 6.
+    1. Seller broadcasts SwapTx has no additional state for the seller
+    2. Buyer gets informed of chain-services that SwapTx is being detected, then continue with 6.
 
-4. Traders exchange secret keys for P'
-   4.1. Seller sends hie partial key to Buyer
-   4.2. Buyer receives a partial key from Seller
-   4.3. continue with 7.
+4. Traders exchange secret keys for P'\
+    1. Seller sends hie partial key to Buyer\
+    1. Buyer receives a partial key from Seller
+    1. continue with 7.
 
-5. Seller or Buyer broadcast WarningTx
+5. Seller or Buyer broadcast WarningTx.
    Note that there are two (slightly) different WarningTxs for seller and buyer
-   5.1. S or B presses the button to broadcast WarningTx
-   5.2. B or S sees that WarningTx is confirmed on blockchain (seeing in mempool is not enough)
-   5.3. continue with 8.
+    1. S or B presses the button to broadcast WarningTx
+    2. B or S sees that WarningTx is confirmed on blockchain (seeing in mempool is not enough)
+    3. continue with 8.
 
 6. No additional substates (will be one call to the rust code)
 
 7. Traders exchange secret keys for Q'
-   7.1. Buyer send private key for Q' to seller
-   7.2. Users (Buyer and seller) get informed that the trade is over and funds can be spend.
+    1. Buyer send private key for Q' to seller
+    2. Users (Buyer and seller) get informed that the trade is over and funds can be spend.
 
-8.+9. can be made into one state API-call for the java code.
+8. +9. can be made into one state API-call for the java code.
 Something like checkWarningKeysExchanged(...) could be called and returns true iff keys were present and funds have been transafered to wallet.
-9.1. Users need to be informed about funds being transferred.
+    1. Users need to be informed about funds being transferred.
 
 10. t1 expired
     time trigger should go off if other trader broadcasted the WarningTx and t1 expired. no substates

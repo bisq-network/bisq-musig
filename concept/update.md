@@ -18,4 +18,5 @@ With this the bisq-musig protocol is on par with the Bisq1 protocol in terms of 
 
 ### Anchor outputs
 
-The WarningTx and RedirectTx need anchor outputs, because they dont have any output which could be used by Alice or Bob to just speed up mining through CPFP. For the RedirectTx it is important to be able to get it mined in a certain timeframe, otherwise the ClaimTx could be used.
+The WarningTx and RedirectTx need anchor outputs, because they dont have any output which could be used by Alice or Bob to just speed up mining through CPFP. For the RedirectTx it is important to be able to get it mined
+in a certain timeframe, otherwise the ClaimTx could be used.

@@ -26,7 +26,7 @@ Bob -- the peer trader, which does a trade with Alice.
 
 ## unidrectional channels
 
-![tradefeepayment.drawio.png](../renderedForWeb/tradefeepayment.drawio.png)
+![tradefeepayment.drawio.png](tradefeepayment.drawio.png)
 
 ### opening
 

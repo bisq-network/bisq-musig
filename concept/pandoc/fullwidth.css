@@ -1,0 +1,21 @@
+body {
+  margin: 0 auto;
+    padding: 50px;
+    hyphens: auto;
+  overflow-wrap: break-word;
+  text-rendering: optimizeLegibility;
+  font-kerning: normal;
+}
+
+h1.title {
+  display: none;
+}
+
+img {
+  max-width: 100%;
+  height: auto;
+}
+
+figcaption {
+  display: none;
+}

@@ -1,0 +1,68 @@
+name: Deploy MD to GitHub Pages
+
+on:
+  push:
+    branches: [ "main" ]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: "pages"
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install pandoc and katex
+        run: |
+          sudo apt-get update && sudo apt-get install -y pandoc
+          npm install katex
+
+      - name: Setup Pages
+        uses: actions/configure-pages@v4
+
+      - name: Build HTML from MD
+        run: |
+          mkdir -p public
+          # Find all .md files and convert them
+          find . -name "*.md" -not -path "./target/*" -not -path "./.github/*" | while read md_file; do
+            # Create the same directory structure in public/
+            relative_path=$(realpath --relative-to="." "$md_file")
+            html_file="public/${relative_path%.md}.md.html"
+            mkdir -p "$(dirname "$html_file")"
+            
+            echo "Converting $md_file to $html_file"
+            pandoc "$md_file" -s -o "$html_file" --metadata title="${relative_path%.md}" --lua-filter="$GITHUB_WORKSPACE/concept/pandoc/convert_links.lua" --css="$GITHUB_WORKSPACE/concept/pandoc/fullwidth.css" --embed-resources --standalone --katex="node_modules/katex/dist/"
+          done
+          
+          # Copy other assets like images, and existing HTML files
+          # We use -n to not overwrite the HTML files we just generated from MD
+          find . -type f \( -name "*.png" -o -name "*.jpg" -o -name "*.jpeg" -o -name "*.gif" -o -name "*.svg" -o -name "*.html" -o -name "*.css" -o -name "*.js" \) -not -path "./target/*" -not -path "./.github/*" -not -path "./public/*" | while read asset; do
+             relative_path=$(realpath --relative-to="." "$asset")
+             dest="public/$relative_path"
+             mkdir -p "$(dirname "$dest")"
+             cp -n "$asset" "$dest"
+          done
+          
+          # Create an index.html 
+          cp public/README.md.html public/index.html
+
+      - name: Upload artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: './public'
+
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
