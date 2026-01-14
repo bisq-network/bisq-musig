@@ -12,7 +12,7 @@ of a 2of2 multisig such that when Alice uses it, she must reveal $t$ to Bob.
 
 Let
 
-$$T=t \cdot G$$
+$$T=t \cdot G $$
 $$\begin{aligned}
 \text{where}& \hspace{1000pt} \\
 t & \text{ is secret adaptor, the secret which will be revealed} \\
@@ -25,7 +25,7 @@ $$
 The function $H_{tagged}(x_1,...,x_n)$ is a hash function where the name 'tagged' is used as literal to init the hash
 and if $x_i$ is a Curvepoint then we use the compressed x-key instead. Operator '||' stands for concatenation.
 
-$$H_{tagged}(x_1,...,x_n):=sha256(sha256(sha256('tagged')||sha256('tagged'))||x_1||...||x_n)$$
+$$H_{tagged}(x_1,...,x_n):=sha256(sha256(sha256('tagged')~||~sha256('tagged'))||x_1||...||x_n)$$
 
 ## key aggregation
 

@@ -3,7 +3,7 @@ function Link(el)
     return el
   end
   if el.target:match("%.md$") then
-    el.target = el.target:gsub("%.md$", ".html")
+    el.target = el.target:gsub("%.md$", ".md.html")
   end
   return el
 end
