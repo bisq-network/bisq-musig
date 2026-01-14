@@ -39,7 +39,7 @@ jobs:
           find . -name "*.md" -not -path "./target/*" -not -path "./.github/*" | while read md_file; do
             # Create the same directory structure in public/
             relative_path=$(realpath --relative-to="." "$md_file")
-            html_file="public/${relative_path%.md}.html"
+            html_file="public/${relative_path%.md}.md.html"
             mkdir -p "$(dirname "$html_file")"
             
             echo "Converting $md_file to $html_file"
