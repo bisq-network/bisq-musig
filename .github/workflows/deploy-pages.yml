@@ -55,10 +55,8 @@ jobs:
              cp -n "$asset" "$dest"
           done
           
-          # Create an index.html if it doesn't exist
-          if [ ! -f public/index.html ] && [ -f public/README.html ]; then
-            cp public/README.html public/index.html
-          fi
+          # Create an index.html 
+          cp public/README.md.html public/index.html
 
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v3
