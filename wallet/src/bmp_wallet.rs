@@ -205,9 +205,9 @@ impl BMPWallet<Connection> {
     /// - spawn two threads one for trace logs and another for the server node
     /// - Return the requester and the subscriber from which the updates can be pulled
     ///
-    /// Note: The caller is responsible for shuting down the requester at will.
+    /// Note: The caller is responsible for shutting down the requester at will.
     pub fn run_node(
-        &self,
+        wallet: &Wallet,
         scan_type: bdk_kyoto::ScanType,
     ) -> anyhow::Result<(Requester, UpdateSubscriber)> {
         let LightClient {
@@ -216,14 +216,13 @@ impl BMPWallet<Connection> {
             warning_subscriber,
             update_subscriber,
             node,
-        } = Builder::new(self.network())
+        } = Builder::new(wallet.network())
             .required_peers(2)
-            .build_with_wallet(self, scan_type)?;
+            .build_with_wallet(wallet, scan_type)?;
 
         tokio::task::spawn(async move { node.run().await });
         // Trace the logs with a custom function.
         tokio::task::spawn(async move { trace_logs(info_subscriber, warning_subscriber).await });
-
         Ok((requester, update_subscriber))
     }
 
@@ -348,6 +347,7 @@ pub trait WalletApi {
 
     fn sync_all(&mut self, data_source: &impl ChainDataSource) -> anyhow::Result<bool>;
     fn sync_cbf(&mut self, scan_type: bdk_kyoto::ScanType) -> anyhow::Result<()>;
+    fn sync_cbf_imported(&mut self, scan_type: bdk_kyoto::ScanType) -> anyhow::Result<()>;
 }
 
 impl WalletApi for BMPWallet<Connection> {
@@ -421,16 +421,63 @@ impl WalletApi for BMPWallet<Connection> {
     }
 
     fn sync_cbf(&mut self, scan_type: bdk_kyoto::ScanType) -> anyhow::Result<()> {
-        let (requester, mut updates_sub) = self.run_node(scan_type)?;
+        let (requester, mut updates_sub) = Self::run_node(self, scan_type)?;
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()?;
-
         let updates = rt.block_on(async { updates_sub.update().await })?;
 
         self.apply_update(updates)?;
 
         requester.shutdown()?;
+        Ok(())
+    }
+
+    fn sync_cbf_imported(&mut self, scan_type: bdk_kyoto::ScanType) -> anyhow::Result<()> {
+        let addresses = self
+            .imported_keys
+            .iter()
+            .map(|s| s.base_point_mul().serialize_xonly())
+            .collect::<Vec<_>>();
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()?;
+
+        let (node, _) = Builder::new(self.network()).build();
+
+        // Share the same node between the different syncing wallets
+        tokio::task::spawn(async move { node.run().await });
+
+        let mut req: Option<Requester> = None;
+
+        for addr in addresses {
+            let db_path = format!("bmp_{}.db3", addr.to_lower_hex_string());
+            let mut db = Connection::open(db_path)?;
+
+            let imported_wallet_opt = Wallet::load()
+                .check_network(self.wallet.network())
+                .extract_keys()
+                .load_wallet(&mut db)?;
+
+            if let Some(mut imported_wallet) = imported_wallet_opt {
+                let LightClient {
+                    requester,
+                    info_subscriber: _,
+                    warning_subscriber: _,
+                    mut update_subscriber,
+                    node: _,
+                } = Builder::new(self.network())
+                    .required_peers(2)
+                    .build_with_wallet(&imported_wallet, scan_type)?;
+
+                let updates = rt.block_on(async { update_subscriber.update().await })?;
+                imported_wallet.apply_update(updates)?;
+                req.get_or_insert(requester);
+            }
+        }
+
+        req.is_some().then(|| req.unwrap().shutdown());
+
         Ok(())
     }
 
