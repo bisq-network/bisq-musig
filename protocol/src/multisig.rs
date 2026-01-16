@@ -83,6 +83,10 @@ impl KeyCtx {
         self.peers_key_share.as_ref().ok_or(MultisigErrorKind::MissingKeyShare)
     }
 
+    pub fn aggregated_key(&self) -> Result<&KeyPair> {
+        self.aggregated_key.as_ref().ok_or(MultisigErrorKind::MissingAggPubKey)
+    }
+
     fn key_shares(&self) -> Result<[&KeyPair; 2]> {
         let mut shares = [self.my_key_share()?, self.peers_key_share()?];
         shares.sort_by_key(|p| p.pub_key());
@@ -138,13 +142,17 @@ pub struct TweakedKeyCtx {
 }
 
 impl TweakedKeyCtx {
-    pub fn p2tr_address(&self, network: Network) -> Address {
+    pub fn tweaked_public_key(&self) -> TweakedPublicKey {
         let pub_key: Point = self.key_agg_ctx.aggregated_pubkey();
         let pub_key = pub_key.to_public_key().into();
 
         // This is safe, as `self` can only be constructed with a Taproot tweak applied to its
         // inner KeyAggContext (performed via the 'musig2::secp' crate):
-        Address::p2tr_tweaked(TweakedPublicKey::dangerous_assume_tweaked(pub_key), network)
+        TweakedPublicKey::dangerous_assume_tweaked(pub_key)
+    }
+
+    pub fn p2tr_address(&self, network: Network) -> Address {
+        Address::p2tr_tweaked(self.tweaked_public_key(), network)
     }
 }
 
@@ -284,7 +292,7 @@ pub trait PointExt {
 impl PointExt for Point {
     fn to_public_key(&self) -> PublicKey {
         // NOTE: We have to round-trip the public key because 'musig2' & 'bitcoin' currently use
-        // different versions of the 'secp256k1' crate:
+        // different versions of the 'secp256k1' crate. TODO: Consider unifying the versions.
         PublicKey::from_slice(&self.serialize_uncompressed())
             .expect("curve point should have a valid uncompressed DER encoding")
     }
