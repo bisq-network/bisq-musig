@@ -5,7 +5,7 @@ use base64::engine::general_purpose;
 use base64::Engine;
 use bdk_electrum::bdk_core::bitcoin::{absolute, Address, FeeRate, OutPoint};
 use bdk_kyoto::bip157::{tokio, Builder};
-use bdk_kyoto::{BuilderExt, LightClient, Requester, UpdateSubscriber};
+use bdk_kyoto::{BuilderExt, LightClient, Requester, ScanType, TrustedPeer, UpdateSubscriber};
 use bdk_wallet::bitcoin::bip32::Xpriv;
 use bdk_wallet::bitcoin::hex::DisplayHex;
 use bdk_wallet::bitcoin::{
@@ -206,9 +206,10 @@ impl BMPWallet<Connection> {
     /// - Return the requester and the subscriber from which the updates can be pulled
     ///
     /// Note: The caller is responsible for shutting down the requester at will.
-    pub fn run_node(
+    pub async fn run_node(
         wallet: &Wallet,
         scan_type: bdk_kyoto::ScanType,
+        peers: Vec<TrustedPeer>,
     ) -> anyhow::Result<(Requester, UpdateSubscriber)> {
         let LightClient {
             requester,
@@ -217,7 +218,7 @@ impl BMPWallet<Connection> {
             update_subscriber,
             node,
         } = Builder::new(wallet.network())
-            .required_peers(2)
+            .add_peers(peers)
             .build_with_wallet(wallet, scan_type)?;
 
         tokio::task::spawn(async move { node.run().await });
@@ -346,8 +347,16 @@ pub trait WalletApi {
     ) -> anyhow::Result<(), SignerError>;
 
     fn sync_all(&mut self, data_source: &impl ChainDataSource) -> anyhow::Result<bool>;
-    fn sync_cbf(&mut self, scan_type: bdk_kyoto::ScanType) -> anyhow::Result<()>;
-    fn sync_cbf_imported(&mut self, scan_type: bdk_kyoto::ScanType) -> anyhow::Result<()>;
+    fn sync_cbf(
+        &mut self,
+        scan_type: bdk_kyoto::ScanType,
+        peers: Vec<TrustedPeer>,
+    ) -> impl std::future::Future<Output = anyhow::Result<()>> + Send;
+    fn sync_cbf_imported(
+        &mut self,
+        scan_type: bdk_kyoto::ScanType,
+        peers: Vec<TrustedPeer>,
+    ) -> impl std::future::Future<Output = anyhow::Result<()>> + Send;
 }
 
 impl WalletApi for BMPWallet<Connection> {
@@ -420,61 +429,78 @@ impl WalletApi for BMPWallet<Connection> {
         Ok(())
     }
 
-    fn sync_cbf(&mut self, scan_type: bdk_kyoto::ScanType) -> anyhow::Result<()> {
-        let (requester, mut updates_sub) = Self::run_node(self, scan_type)?;
-        let rt = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()?;
-        let updates = rt.block_on(async { updates_sub.update().await })?;
+    async fn sync_cbf(
+        &mut self,
+        scan_type: ScanType,
+        peers: Vec<TrustedPeer>,
+    ) -> anyhow::Result<()> {
+        let (requester, mut updates_sub) = Self::run_node(self, scan_type, peers).await?;
+        let updates = updates_sub.update().await?;
 
         self.apply_update(updates)?;
+        self.persist()?;
 
         requester.shutdown()?;
         Ok(())
     }
 
-    fn sync_cbf_imported(&mut self, scan_type: bdk_kyoto::ScanType) -> anyhow::Result<()> {
-        let addresses = self
+    /// Sync the imported keys from protocol using CBF
+    /// @TODO: use a shared node connection between the different imported keys sync
+    async fn sync_cbf_imported(
+        &mut self,
+        scan_type: ScanType,
+        peers: Vec<TrustedPeer>,
+    ) -> anyhow::Result<()> {
+        let pubkeys = self
             .imported_keys
             .iter()
             .map(|s| s.base_point_mul().serialize_xonly())
             .collect::<Vec<_>>();
-        let rt = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()?;
-
-        let (node, _) = Builder::new(self.network()).build();
-
-        // Share the same node between the different syncing wallets
-        tokio::task::spawn(async move { node.run().await });
 
         let mut req: Option<Requester> = None;
 
-        for addr in addresses {
-            let db_path = format!("bmp_{}.db3", addr.to_lower_hex_string());
+        let mut final_imported_balance = Balance::default();
+
+        for key in pubkeys {
+            let db_path = format!("bmp_{}.db3", key.to_lower_hex_string());
             let mut db = Connection::open(db_path)?;
 
             let imported_wallet_opt = Wallet::load()
                 .check_network(self.wallet.network())
                 .extract_keys()
                 .load_wallet(&mut db)?;
+            let mut imported_wallet = match imported_wallet_opt {
+                Some(wallet) => wallet,
+                None => {
+                    let descriptor = format!("tr({})", key.to_lower_hex_string());
+                    Wallet::create_single(descriptor)
+                        .network(self.wallet.network())
+                        .create_wallet(&mut db)?
+                }
+            };
 
-            if let Some(mut imported_wallet) = imported_wallet_opt {
-                let LightClient {
-                    requester,
-                    info_subscriber: _,
-                    warning_subscriber: _,
-                    mut update_subscriber,
-                    node: _,
-                } = Builder::new(self.network())
-                    .required_peers(2)
-                    .build_with_wallet(&imported_wallet, scan_type)?;
+            let LightClient {
+                requester,
+                info_subscriber: _,
+                warning_subscriber: _,
+                mut update_subscriber,
+                node,
+            } = Builder::new(self.network())
+                .add_peers(peers.clone())
+                .build_with_wallet(&imported_wallet, scan_type)?;
 
-                let updates = rt.block_on(async { update_subscriber.update().await })?;
-                imported_wallet.apply_update(updates)?;
-                req.get_or_insert(requester);
-            }
+            tokio::task::spawn(async move { node.run().await.unwrap() });
+            let updates = update_subscriber.update().await?;
+            imported_wallet.apply_update(updates)?;
+
+            imported_wallet.persist(&mut db)?;
+
+            final_imported_balance = final_imported_balance + imported_wallet.balance();
+
+            req.get_or_insert(requester);
         }
+
+        self.imported_balance = final_imported_balance;
 
         req.is_some().then(|| req.unwrap().shutdown());
 
