@@ -5,6 +5,7 @@ edition = "2021"
 
 [dependencies]
 # Workspace dependencies
+bdk_bitcoind_rpc = { workspace = true }
 anyhow = { workspace = true }
 bdk_wallet = { workspace = true, features = ["test-utils"] }
 bdk_electrum = { workspace = true }

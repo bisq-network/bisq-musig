@@ -81,4 +81,4 @@ cargo test --package protocol --lib --tests -- --nocapture
 
 Some of the markdown files have LaTeX included, you can best view them using RustRover.
 Github sucks at displaying LaTeX. There is also an html export on the github pages of the project
-at [github pages](https://chrisson15.github.io/bisq-musig/)
+at [github pages](https://bisq-network.github.io/bisq-musig/)

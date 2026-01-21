@@ -1,6 +1,4 @@
-use std::error::Error;
-use std::sync::Arc;
-
+use bdk_bitcoind_rpc::bitcoincore_rpc::bitcoin::NetworkKind::Test;
 use clap::Parser;
 use rpc::bmp_service::BmpServiceImpl;
 use rpc::bmp_wallet_service::BmpWalletServiceImpl;
@@ -8,6 +6,10 @@ use rpc::pb::bmp_protocol::bmp_protocol_service_server::BmpProtocolServiceServer
 use rpc::pb::bmp_wallet::wallet_server::WalletServer as BmpWalletServer;
 use rpc::server::{MusigImpl, MusigServer, WalletImpl, WalletServer};
 use rpc::wallet::WalletServiceImpl;
+use std::error::Error;
+use std::sync::Arc;
+use std::time::Duration;
+use testenv::TestEnv;
 use tonic::transport::Server;
 use tracing::info;
 use tracing_subscriber::field::MakeExt;
@@ -45,7 +47,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     let addr = format!("127.0.0.1:{}", cli.port).parse()?;
     let musig = MusigImpl::default();
-    let wallet = WalletImpl { wallet_service: Arc::new(WalletServiceImpl::new()) };
+    let testenv = TestEnv::new()?;
+    let wallet = WalletImpl { wallet_service: Arc::new(WalletServiceImpl::create_with_rpc_params(testenv.bitcoin_core_rpc_client()?, Duration::new(1, 0))) };
     wallet.wallet_service.clone().spawn_connection();
 
     let bmp_protocol_impl = BmpServiceImpl::default();

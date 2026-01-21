@@ -2,8 +2,7 @@ use std::collections::HashMap;
 use std::sync::Mutex;
 
 use bdk_wallet::bitcoin::Amount;
-use protocol::nigiri;
-use protocol::protocol_musig_adaptor::{BMPContext, BMPProtocol, ProtocolRole, Round1Parameter};
+use protocol::protocol_musig_adaptor::{BMPContext, BMPProtocol, MemWallet, ProtocolRole, Round1Parameter};
 use protocol::wallet_service::WalletService;
 use tonic::{Request, Response, Result, Status};
 use tracing::info;
@@ -27,8 +26,10 @@ impl BmpProtocolService for BmpServiceImpl {
         let req = request.into_inner();
         info!("Received initialize request: {req:?}");
 
-        //todo retrieve the actual wallet
-        let mock_wallet = nigiri::funded_wallet();
+        //todo wallet should be a parameter
+        let mock_wallet = MemWallet::funded_wallet().map_err(
+            |_| Status::internal("init failed.")
+        )?;
         let wallet_service = WalletService::new().load(mock_wallet);
 
         let role =

@@ -2,20 +2,20 @@
 
 use std::sync::{Arc, Mutex, RwLock};
 
+use crate::observable::ObservableHashMap;
 use bdk_bitcoind_rpc::bitcoincore_rpc::{Auth, Client, RpcApi as _};
-use bdk_bitcoind_rpc::Emitter;
+use bdk_bitcoind_rpc::{bitcoincore_rpc, Emitter};
 use bdk_wallet::bitcoin::{Network, Transaction, Txid};
 use bdk_wallet::chain::{ChainPosition, CheckPoint, ConfirmationBlockTime};
 use bdk_wallet::{AddressInfo, Balance, KeychainKind, LocalOutput, Wallet};
 use drop_stream::DropStreamExt as _;
 use futures_util::never::Never;
 use futures_util::stream::{BoxStream, StreamExt as _};
+use testenv::TestEnv;
 use thiserror::Error;
 use tokio::task::{self, JoinHandle};
 use tokio::time::{self, Duration, MissedTickBehavior};
 use tracing::{debug, error, info, trace};
-
-use crate::observable::ObservableHashMap;
 
 const LOCALNET_COOKIE_FILE_PATH: &str = ".localnet/bitcoind/regtest/.cookie";
 //noinspection SpellCheckingInspection
@@ -55,19 +55,14 @@ pub struct WalletServiceImpl {
     tx_confidence_map: Mutex<ObservableHashMap<Txid, TxConfidence>>,
 
     // Make the following RPC parameters configurable for testing:
-    rpc_auth: Auth,
+    rpc_client: bitcoincore_rpc::Client,
     poll_period: Duration,
 }
 
 impl WalletServiceImpl {
-    pub fn new() -> Self {
-        Self::create_with_rpc_params(
-            Auth::CookieFile(LOCALNET_COOKIE_FILE_PATH.into()),
-            Duration::from_secs(1))
-    }
 
     // TODO: Make wallet setup properly configurable, not just the RPC authentication method and polling period.
-    pub fn create_with_rpc_params(rpc_auth: Auth, poll_period: Duration) -> Self {
+    pub fn create_with_rpc_params(rpc_client: bitcoincore_rpc::Client, poll_period: Duration) -> Self {
         let wallet = Wallet::create(EXTERNAL_DESCRIPTOR, INTERNAL_DESCRIPTOR)
             .network(Network::Regtest)
             .create_wallet_no_persist()
@@ -76,7 +71,7 @@ impl WalletServiceImpl {
         let mut tx_confidence_map = ObservableHashMap::new();
         tx_confidence_map.sync(tx_confidence_entries(&wallet));
 
-        Self { wallet: RwLock::new(wallet), tx_confidence_map: Mutex::new(tx_confidence_map), rpc_auth, poll_period }
+        Self { wallet: RwLock::new(wallet), tx_confidence_map: Mutex::new(tx_confidence_map), rpc_client, poll_period }
     }
 
     fn sync_tx_confidence_map(&self) {
@@ -109,10 +104,6 @@ impl WalletServiceImpl {
     }
 }
 
-impl Default for WalletServiceImpl {
-    fn default() -> Self { Self::new() }
-}
-
 fn unconfirmed_txs(wallet: &Wallet) -> impl Iterator<Item=Arc<Transaction>> + '_ {
     tx_confidence_entries(wallet)
         .filter_map(|(_, conf)| (conf.num_confirmations == 0).then_some(conf.wallet_tx.tx))
@@ -132,12 +123,7 @@ fn tx_confidence_entries(wallet: &Wallet) -> impl Iterator<Item=(Txid, TxConfide
 #[tonic::async_trait]
 impl WalletService for WalletServiceImpl {
     async fn connect(&self) -> Result<Never> {
-        let rpc_client: Client = task::block_in_place(|| Client::new(
-            "https://127.0.0.1:18443",
-            self.rpc_auth.clone(),
-        ))?;
-
-        let blockchain_info = task::block_in_place(|| rpc_client.get_blockchain_info())?;
+        let blockchain_info = task::block_in_place(|| self.rpc_client.get_blockchain_info())?;
         info!(chain = %blockchain_info.chain, best_block_hash = %blockchain_info.best_block_hash,
             blocks = blockchain_info.blocks, "Connected to Bitcoin Core RPC.");
 
@@ -145,7 +131,7 @@ impl WalletService for WalletServiceImpl {
         let start_height = wallet_tip.height();
         info!(start_hash = %wallet_tip.hash(), start_height, "Fetched latest wallet checkpoint.");
 
-        let mut emitter = Emitter::new(&rpc_client, wallet_tip, start_height,
+        let mut emitter = Emitter::new(&self.rpc_client, wallet_tip, start_height,
             unconfirmed_txs(&self.wallet.read().unwrap()));
         self.sync_from_rpc_emitter(&mut emitter)?;
         info!(wallet_balance_total = %self.balance().total(), "Finished initial sync.");

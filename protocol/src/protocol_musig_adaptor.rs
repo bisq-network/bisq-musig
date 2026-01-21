@@ -1,7 +1,11 @@
 use std::io::Write as _;
 use std::str::FromStr as _;
 
-use bdk_electrum::{electrum_client, BdkElectrumClient};
+use crate::receiver::{Receiver, ReceiverList};
+use crate::transaction::{
+    DepositTxBuilder, ForwardingTxBuilder, RedirectTxBuilder, WarningTxBuilder, WithWitnesses as _,
+};
+use crate::wallet_service::WalletService;
 use bdk_wallet::bitcoin::bip32::Xpriv;
 use bdk_wallet::bitcoin::hashes::sha256t::Hash;
 use bdk_wallet::bitcoin::key::Secp256k1;
@@ -19,21 +23,17 @@ use musig2::{
     SecNonce, SecNonceBuilder,
 };
 use rand::{Rng as _, RngCore as _};
+use testenv::TestEnv;
 
-use crate::receiver::{Receiver, ReceiverList};
-use crate::transaction::{
-    DepositTxBuilder, ForwardingTxBuilder, RedirectTxBuilder, WarningTxBuilder, WithWitnesses as _,
-};
-use crate::wallet_service::WalletService;
 
 pub struct MemWallet {
     wallet: Wallet,
-    client: BdkElectrumClient<electrum_client::Client>,
+    testenv: TestEnv,
 }
 
 impl MemWallet {
     pub fn transaction_broadcast(&self, tx: &Transaction) -> anyhow::Result<Txid> {
-        let result = self.client.transaction_broadcast(tx);
+        let result = self.testenv.bdk_electrum_client().transaction_broadcast(tx);
 
         if let Err(e) = result {
             if e.to_string().contains("Transaction already in block chain") {
@@ -93,15 +93,29 @@ impl MemWallet {
             .keymap(KeychainKind::External, external_map)
             .keymap(KeychainKind::Internal, internal_map)
             .create_wallet_no_persist()?;
-        let client = BdkElectrumClient::new(electrum_client::Client::new(ELECTRUM_URL)?);
 
-        Ok(Self { wallet, client })
+        // this is a test wallet, it should live in TestEnv or better be abandoned altogether
+        let testenv = TestEnv::new()?;
+        let client = testenv.bdk_electrum_client();
+        //BdkElectrumClient::new(electrum_client::Client::new(ELECTRUM_URL)?);
+
+        Ok(Self { wallet, testenv })
+    }
+
+    // test functionality for getting some coins in here
+    pub fn funded_wallet() -> anyhow::Result<Self> {
+        let mut me = MemWallet::new()?;
+        let adr = me.next_unused_address();
+        me.testenv.fund_address(&adr, Amount::from_btc(1f64)?)?;
+        me.testenv.mine_block()?;
+        me.sync()?;
+        Ok(me)
     }
 
     pub fn sync(&mut self) -> anyhow::Result<()> {
         // Populate the electrum client's transaction cache so it doesn't re-download transaction we
         // already have.
-        self.client
+        self.testenv.bdk_electrum_client()
             .populate_tx_cache(self.wallet.tx_graph().full_txs().map(|tx_node| tx_node.tx));
 
         let request = self.wallet.start_full_scan().inspect({
@@ -117,7 +131,7 @@ impl MemWallet {
         });
         eprintln!("requesting update...");
         let update = self
-            .client
+                .testenv.bdk_electrum_client()
             .full_scan(request, STOP_GAP, BATCH_SIZE, false)?;
         self.wallet.apply_update(update)?;
         Ok(())
@@ -144,7 +158,7 @@ impl MemWallet {
         assert!(finalized);
 
         let tx = psbt.extract_tx()?;
-        self.client.transaction_broadcast(&tx)?;
+        self.testenv.bdk_electrum_client().transaction_broadcast(&tx)?;
         Ok(tx.compute_txid())
     }
 }
@@ -483,7 +497,7 @@ impl RedirectTx {
     }
 
     pub fn broadcast(&self, me: &BMPContext) -> anyhow::Result<Txid> {
-        Ok(me.funds.client.transaction_broadcast(self.builder.signed_tx()?)?)
+        Ok(me.funds.testenv.bdk_electrum_client().transaction_broadcast(self.builder.signed_tx()?)?)
     }
 
     /**
@@ -547,7 +561,7 @@ impl ClaimTx {
     }
 
     pub fn broadcast(&self, me: &BMPContext) -> anyhow::Result<Txid> {
-        Ok(me.funds.client.transaction_broadcast(self.signed_tx()?)?)
+        Ok(me.funds.testenv.bdk_electrum_client().transaction_broadcast(self.signed_tx()?)?)
     }
 }
 
@@ -643,7 +657,7 @@ impl WarningTx {
     }
 
     pub fn broadcast(&self, me: &BMPContext) -> anyhow::Result<Txid> {
-        Ok(me.funds.client.transaction_broadcast(self.signed_tx()?)?)
+        Ok(me.funds.testenv.bdk_electrum_client().transaction_broadcast(self.signed_tx()?)?)
     }
 }
 
@@ -754,7 +768,7 @@ impl SwapTx {
     }
 
     pub fn broadcast(&self, me: &BMPContext) -> anyhow::Result<Txid> {
-        Ok(me.funds.client.transaction_broadcast(self.builder.signed_tx()?)?)
+        Ok(me.funds.testenv.bdk_electrum_client().transaction_broadcast(self.builder.signed_tx()?)?)
     }
 }
 

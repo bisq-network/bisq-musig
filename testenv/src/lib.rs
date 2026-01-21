@@ -4,10 +4,12 @@ use bdk_electrum::bdk_core::bitcoin::{KnownHrp, XOnlyPublicKey};
 use bdk_electrum::BdkElectrumClient;
 
 
+use bdk_bitcoind_rpc::bitcoincore_rpc;
+use bdk_bitcoind_rpc::bitcoincore_rpc::Auth;
 use bdk_wallet::bitcoin::key::Secp256k1;
 use bdk_wallet::bitcoin::secp256k1::All;
 use bdk_wallet::bitcoin::{address::NetworkChecked, Address, Amount, BlockHash, Network, Transaction, Txid};
-use corepc_node::get_available_port;
+pub use corepc_node::get_available_port;
 use electrsd::corepc_node;
 use electrsd::electrum_client::Client;
 use electrsd::{corepc_node::Node, electrum_client::ElectrumApi, ElectrsD};
@@ -240,7 +242,7 @@ impl TestEnv {
 
     pub fn start_explorer_in_container(&mut self) -> Result<()> {
         // this start a container for debugging
-        let bitcoind_rpc_port = self.bitcoind.params.rpc_socket.port();
+        let bitcoind_rpc_port = self.bitcoin_rpc_port();
         let browserport = get_available_port()?;
 
         let electrum_port = self.electrsd.electrum_url.split(':').last()
@@ -283,10 +285,23 @@ impl TestEnv {
         Ok(())
     }
 
+    pub fn bitcoin_rpc_port(&self) -> u16 {
+        self.bitcoind.params.rpc_socket.port()
+    }
+
     /// Get the electrum client for blockchain operations
     pub fn electrum_client(&self) -> &impl ElectrumApi {
         // &self.electrsd.client
         &self.bdk_electrum_client.inner
+    }
+
+    pub fn bitcoind_client(&self) -> &corepc_node::Client {
+        &self.bitcoind.client
+    }
+    pub fn bitcoin_core_rpc_client(&self) -> bitcoincore_rpc::Result<bitcoincore_rpc::Client> {
+        let url = &self.bitcoind.rpc_url();
+        let auth: Auth = Auth::CookieFile(self.bitcoind.params.cookie_file.clone());
+        bitcoincore_rpc::Client::new(&url, auth)
     }
 
     /// Get the electrum URL
@@ -465,6 +480,7 @@ impl Drop for TestEnv {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use bdk_bitcoind_rpc::bitcoincore_rpc::RpcApi;
 
     #[test]
     fn test_basic_creation() -> Result<()> {
@@ -474,6 +490,17 @@ mod tests {
         assert!(env.block_count().is_ok());
         assert!(env.genesis_hash().is_ok());
         assert!(!env.electrum_url().is_empty());
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_core_rpc() -> Result<()> {
+        let env = TestEnv::new()?;
+        let rpc = env.bitcoin_core_rpc_client()?;
+        // check if the connection works
+        rpc.ping()?;
+        assert!(rpc.get_block_count()? == 1);
 
         Ok(())
     }
