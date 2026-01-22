@@ -65,9 +65,6 @@ impl ProtocolRole {
 // TODO think about stop_gap and batch_size
 const STOP_GAP: usize = 50;
 const BATCH_SIZE: usize = 5;
-const ELECTRUM_URL: &str =
-// "ssl://electrum.blockstream.info:60002";
-    "localhost:50000"; //TODO move to env
 
 impl MemWallet {
     pub fn new() -> anyhow::Result<Self> {
@@ -96,9 +93,6 @@ impl MemWallet {
 
         // this is a test wallet, it should live in TestEnv or better be abandoned altogether
         let testenv = TestEnv::new()?;
-        let client = testenv.bdk_electrum_client();
-        //BdkElectrumClient::new(electrum_client::Client::new(ELECTRUM_URL)?);
-
         Ok(Self { wallet, testenv })
     }
 

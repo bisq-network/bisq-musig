@@ -16,7 +16,6 @@ use tokio::task::{self, JoinHandle};
 use tokio::time::{self, Duration, MissedTickBehavior};
 use tracing::{debug, error, info, trace};
 
-const LOCALNET_COOKIE_FILE_PATH: &str = ".localnet/bitcoind/regtest/.cookie";
 //noinspection SpellCheckingInspection
 const EXTERNAL_DESCRIPTOR: &str = "tr(tprv8ZgxMBicQKsPdrjwWCyXqqJ4YqcyG4DmKtjjsRt29v1PtD3r3PuFJAj\
     WytzcvSTKnZAGAkPSmnrdnuHWxCAwy3i1iPhrtKAfXRH7dVCNGp6/86'/1'/0'/0/*)#g9xn7wf9";

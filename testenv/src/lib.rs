@@ -198,22 +198,24 @@ impl TestEnv {
 
         // also enables tracing if wanted
         //
-        let filter = EnvFilter::try_from_default_env()
-                .unwrap_or_else(|e| {
-                    if matches!(e.source(), Some(s) if s.is::<ParseError>()) {
-                        eprintln!("Could not parse `RUST_LOG` environment variable: {e}");
-                    }
-                    EnvFilter::new("info")//,rpc=debug")
-                });
+        if !tracing::dispatcher::has_been_set() {
+            let filter = EnvFilter::try_from_default_env()
+                    .unwrap_or_else(|e| {
+                        if matches!(e.source(), Some(s) if s.is::<ParseError>()) {
+                            eprintln!("Could not parse `RUST_LOG` environment variable: {e}");
+                        }
+                        EnvFilter::new("info")//,rpc=debug")
+                    });
 
-        tracing_subscriber::registry()
-                .with(filter)
-                .with(fmt::layer()
-                        .map_fmt_fields(MakeExt::debug_alt)
-                        .with_writer(std::io::stderr))
-                .init();
-
-
+            if !tracing::dispatcher::has_been_set() {
+                tracing_subscriber::registry()
+                        .with(filter)
+                        .with(fmt::layer()
+                                .map_fmt_fields(MakeExt::debug_alt)
+                                .with_writer(std::io::stderr))
+                        .init();
+            }
+        }
         // Try to get electrs executable (from environment or downloads)
         let electrs_exe = match std::env::var("ELECTRS_EXEC") {
             Ok(path) => {

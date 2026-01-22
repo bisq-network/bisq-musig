@@ -9,8 +9,6 @@ use rpc::wallet::{TxConfidence, WalletService, WalletServiceImpl};
 use testenv::TestEnv;
 use tokio::time::{self, Duration};
 
-const BITCOIND_RPC_URL: &str = "http://localhost:18443";
-
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn test_wallet_service_mine_single_tx() -> Result<()> {
     let mut testenv = TestEnv::new()?;
@@ -28,10 +26,6 @@ async fn test_wallet_service_mine_single_tx() -> Result<()> {
     let txid = testenv.fund_address(&addr.address, amount)?;
     testenv.trigger_sync()?;
     testenv.wait_for_tx(txid)?;
-
-// Wait for 1 sec
-    time::sleep(Duration::from_secs(1)).await;
-
 
     // Open up a tx confidence stream on the (unconfirmed) paying tx.
     let mut stream = wallet_service.get_tx_confidence_stream(txid);

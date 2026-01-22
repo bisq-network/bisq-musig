@@ -5,10 +5,9 @@ use std::fmt::Debug;
 use std::hash::Hash;
 
 use futures_util::Stream;
-use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::UnboundedReceiverStream;
-use tracing::{info, trace};
+use tracing::trace;
 
 #[derive(Debug, Default)]
 pub struct Observable<T> {

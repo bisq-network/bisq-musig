@@ -1,4 +1,3 @@
-use bdk_bitcoind_rpc::bitcoincore_rpc::bitcoin::NetworkKind::Test;
 use clap::Parser;
 use rpc::bmp_service::BmpServiceImpl;
 use rpc::bmp_wallet_service::BmpWalletServiceImpl;
@@ -8,15 +7,9 @@ use rpc::server::{MusigImpl, MusigServer, WalletImpl, WalletServer};
 use rpc::wallet::WalletServiceImpl;
 use std::error::Error;
 use std::sync::Arc;
-use std::time::Duration;
 use testenv::TestEnv;
 use tonic::transport::Server;
 use tracing::info;
-use tracing_subscriber::field::MakeExt;
-use tracing_subscriber::filter::{EnvFilter, ParseError};
-use tracing_subscriber::fmt;
-use tracing_subscriber::layer::SubscriberExt as _;
-use tracing_subscriber::util::SubscriberInitExt as _;
 
 #[derive(Debug, Parser)]
 #[command(version, about, long_about = None)]
@@ -30,24 +23,10 @@ struct Cli {
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
     let cli: Cli = Cli::parse();
-
-    let filter = EnvFilter::try_from_default_env()
-        .unwrap_or_else(|e| {
-            if matches!(e.source(), Some(s) if s.is::<ParseError>()) {
-                eprintln!("Could not parse `RUST_LOG` environment variable: {e}");
-            }
-            EnvFilter::new("info,rpc=debug")
-        });
-    tracing_subscriber::registry()
-        .with(filter)
-        .with(fmt::layer()
-            .map_fmt_fields(MakeExt::debug_alt)
-            .with_writer(std::io::stderr))
-        .init();
+    let testenv = TestEnv::new()?;
 
     let addr = format!("127.0.0.1:{}", cli.port).parse()?;
     let musig = MusigImpl::default();
-    let testenv = TestEnv::new()?;
     let wallet = WalletImpl { wallet_service: Arc::new(WalletServiceImpl::create_with_rpc_params(testenv.bitcoin_core_rpc_client()?)) };
     wallet.wallet_service.clone().spawn_connection();
 
