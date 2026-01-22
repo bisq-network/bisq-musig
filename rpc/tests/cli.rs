@@ -102,7 +102,7 @@ fn test_cli_no_connection() {
 async fn test_cli_wallet_balance() {
     let testenv = TestEnv::new().expect("testEnv could not start");
     let port = testenv::get_available_port().expect("port");
-    spawn_wallet_grpc_service(port, WalletServiceImpl::create_with_rpc_params(testenv.bitcoin_core_rpc_client().unwrap(), Duration::from_secs(2)));
+    spawn_wallet_grpc_service(port, WalletServiceImpl::create_with_rpc_params(testenv.bitcoin_core_rpc_client().unwrap()));
 
     task::spawn_blocking(move || assert_cli_with_port(port, ["wallet-balance"]))
         .await.unwrap()
@@ -115,7 +115,7 @@ async fn test_cli_wallet_balance() {
 async fn test_cli_new_address() {
     let testenv = TestEnv::new().expect("testEnv could not start"); // TODO: this doesnt make sense as a CLI make only sense if the bitcoind is
     let port = testenv::get_available_port().expect("port");
-    spawn_wallet_grpc_service(port, WalletServiceImpl::create_with_rpc_params(testenv.bitcoin_core_rpc_client().unwrap(), Duration::from_secs(2)));
+    spawn_wallet_grpc_service(port, WalletServiceImpl::create_with_rpc_params(testenv.bitcoin_core_rpc_client().unwrap()));
 
     task::spawn_blocking(move || assert_cli_with_port(port, ["new-address"]))
         .await.unwrap()

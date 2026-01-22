@@ -1,11 +1,9 @@
 /// Bitcoin regtest environment using electrsd with automatic executable downloads
 use anyhow::{Context, Result};
+use bdk_bitcoind_rpc::bitcoincore_rpc;
+use bdk_bitcoind_rpc::bitcoincore_rpc::{Auth, RpcApi};
 use bdk_electrum::bdk_core::bitcoin::{KnownHrp, XOnlyPublicKey};
 use bdk_electrum::BdkElectrumClient;
-
-
-use bdk_bitcoind_rpc::bitcoincore_rpc;
-use bdk_bitcoind_rpc::bitcoincore_rpc::Auth;
 use bdk_wallet::bitcoin::key::Secp256k1;
 use bdk_wallet::bitcoin::secp256k1::All;
 use bdk_wallet::bitcoin::{address::NetworkChecked, Address, Amount, BlockHash, Network, Transaction, Txid};
@@ -18,9 +16,15 @@ use rand::{Rng, RngCore};
 use secp::Scalar;
 use sha2::Sha256;
 use simple_semaphore::{Permit, Semaphore};
+use std::error::Error;
 use std::sync::Arc;
 use std::time::Duration;
 use tempfile::{tempdir, TempDir};
+use tracing_subscriber::field::MakeExt;
+use tracing_subscriber::filter::{EnvFilter, ParseError};
+use tracing_subscriber::fmt;
+use tracing_subscriber::layer::SubscriberExt as _;
+use tracing_subscriber::util::SubscriberInitExt as _;
 
 
 /// Bitcoin regtest environment manager
@@ -192,6 +196,24 @@ impl TestEnv {
             }
         };
 
+        // also enables tracing if wanted
+        //
+        let filter = EnvFilter::try_from_default_env()
+                .unwrap_or_else(|e| {
+                    if matches!(e.source(), Some(s) if s.is::<ParseError>()) {
+                        eprintln!("Could not parse `RUST_LOG` environment variable: {e}");
+                    }
+                    EnvFilter::new("info")//,rpc=debug")
+                });
+
+        tracing_subscriber::registry()
+                .with(filter)
+                .with(fmt::layer()
+                        .map_fmt_fields(MakeExt::debug_alt)
+                        .with_writer(std::io::stderr))
+                .init();
+
+
         // Try to get electrs executable (from environment or downloads)
         let electrs_exe = match std::env::var("ELECTRS_EXEC") {
             Ok(path) => {
@@ -205,6 +227,7 @@ impl TestEnv {
                 println!("Using downloaded electrs: {}", path);
                 path
             }
+
         };
 
         println!("Starting electrsd...");
@@ -251,7 +274,7 @@ impl TestEnv {
         let container_name = format!("btc-explorer-{}", browserport);
 
         let mut container = std::process::Command::new("podman");
-        container.args(["run", "-it", "--rm",
+        container.args(["run", "--rm",
             "--name", &container_name,
             "-p",
             format!("{}:3002", browserport).as_str(),
@@ -409,9 +432,15 @@ impl TestEnv {
     /// Wait for electrum to see a specific transaction
     pub fn wait_for_tx(&self, txid: Txid) -> Result<()> {
         let start = std::time::Instant::now();
+        let rpc_api = self.bitcoin_core_rpc_client()?;
+        let direct_client = &self.bitcoind.client;
+        self.trigger_sync()?;
 
         while start.elapsed() < self.timeout {
-            if self.bdk_electrum_client.fetch_tx(txid).is_ok() {
+            let api_seen = rpc_api.get_transaction(&txid, Some(false)).is_ok();
+            let direct_seen = direct_client.get_transaction(txid).is_ok();
+            let electrum_seen = self.bdk_electrum_client.fetch_tx(txid).is_ok();
+            if electrum_seen && direct_seen && api_seen {
                 return Ok(());
             }
             std::thread::sleep(self.delay);

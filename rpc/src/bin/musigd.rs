@@ -48,7 +48,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let addr = format!("127.0.0.1:{}", cli.port).parse()?;
     let musig = MusigImpl::default();
     let testenv = TestEnv::new()?;
-    let wallet = WalletImpl { wallet_service: Arc::new(WalletServiceImpl::create_with_rpc_params(testenv.bitcoin_core_rpc_client()?, Duration::new(1, 0))) };
+    let wallet = WalletImpl { wallet_service: Arc::new(WalletServiceImpl::create_with_rpc_params(testenv.bitcoin_core_rpc_client()?)) };
     wallet.wallet_service.clone().spawn_connection();
 
     let bmp_protocol_impl = BmpServiceImpl::default();

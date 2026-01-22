@@ -3,7 +3,7 @@
 use std::sync::{Arc, Mutex, RwLock};
 
 use crate::observable::ObservableHashMap;
-use bdk_bitcoind_rpc::bitcoincore_rpc::{Auth, Client, RpcApi as _};
+use bdk_bitcoind_rpc::bitcoincore_rpc::{Client, RpcApi as _};
 use bdk_bitcoind_rpc::{bitcoincore_rpc, Emitter};
 use bdk_wallet::bitcoin::{Network, Transaction, Txid};
 use bdk_wallet::chain::{ChainPosition, CheckPoint, ConfirmationBlockTime};
@@ -11,7 +11,6 @@ use bdk_wallet::{AddressInfo, Balance, KeychainKind, LocalOutput, Wallet};
 use drop_stream::DropStreamExt as _;
 use futures_util::never::Never;
 use futures_util::stream::{BoxStream, StreamExt as _};
-use testenv::TestEnv;
 use thiserror::Error;
 use tokio::task::{self, JoinHandle};
 use tokio::time::{self, Duration, MissedTickBehavior};
@@ -58,11 +57,12 @@ pub struct WalletServiceImpl {
     rpc_client: bitcoincore_rpc::Client,
     poll_period: Duration,
 }
+const BITCOIND_POLLING_PERIOD: Duration = Duration::from_millis(100);
 
 impl WalletServiceImpl {
 
     // TODO: Make wallet setup properly configurable, not just the RPC authentication method and polling period.
-    pub fn create_with_rpc_params(rpc_client: bitcoincore_rpc::Client, poll_period: Duration) -> Self {
+    pub fn create_with_rpc_params(rpc_client: bitcoincore_rpc::Client) -> Self {
         let wallet = Wallet::create(EXTERNAL_DESCRIPTOR, INTERNAL_DESCRIPTOR)
             .network(Network::Regtest)
             .create_wallet_no_persist()
@@ -71,7 +71,7 @@ impl WalletServiceImpl {
         let mut tx_confidence_map = ObservableHashMap::new();
         tx_confidence_map.sync(tx_confidence_entries(&wallet));
 
-        Self { wallet: RwLock::new(wallet), tx_confidence_map: Mutex::new(tx_confidence_map), rpc_client, poll_period }
+        Self { wallet: RwLock::new(wallet), tx_confidence_map: Mutex::new(tx_confidence_map), rpc_client, poll_period: BITCOIND_POLLING_PERIOD }
     }
 
     fn sync_tx_confidence_map(&self) {
@@ -110,12 +110,15 @@ fn unconfirmed_txs(wallet: &Wallet) -> impl Iterator<Item=Arc<Transaction>> + '_
 }
 
 fn tx_confidence_entries(wallet: &Wallet) -> impl Iterator<Item=(Txid, TxConfidence)> + '_ {
+    trace!( "Syncing confirmations.");
+
     let next_height = wallet.latest_checkpoint().height() + 1;
     wallet.transactions()
         .map(move |wallet_tx| {
             let wallet_tx: WalletTx = wallet_tx.into();
             let conf_height = wallet_tx.chain_position.confirmation_height_upper_bound().unwrap_or(next_height);
             let num_confirmations = next_height - conf_height;
+            trace!(%num_confirmations, %wallet_tx.txid, "New transaction confirmations.");
             (wallet_tx.txid, TxConfidence { wallet_tx, num_confirmations })
         })
 }

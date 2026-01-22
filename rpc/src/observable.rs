@@ -1,18 +1,22 @@
 use std::borrow::Borrow;
 use std::collections::hash_map::Entry;
 use std::collections::{HashMap, HashSet};
+use std::fmt::Debug;
 use std::hash::Hash;
 
 use futures_util::Stream;
+use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::UnboundedReceiverStream;
+use tracing::{info, trace};
 
-#[derive(Default)]
+#[derive(Debug, Default)]
 pub struct Observable<T> {
     value: T,
     senders: Vec<mpsc::UnboundedSender<T>>,
 }
 
+#[derive(Debug)]
 struct StillObservedError<T>(Observable<T>);
 
 impl<T> Observable<T> {
@@ -61,7 +65,7 @@ fn shrink_amortized<T>(vec: &mut Vec<T>) {
         vec.shrink_to(vec.len() * 2);
     }
 }
-
+#[derive(Debug)]
 pub struct ObservableHashMap<K, V> {
     map: HashMap<K, Observable<Option<V>>>,
 }
@@ -118,8 +122,9 @@ impl<K, V> ObservableHashMap<K, V>
 }
 
 impl<K, V> ObservableHashMap<K, V>
-    where K: Clone + Eq + Hash,
-          V: Clone + PartialEq
+where
+        K: Clone + Eq + Hash + Debug,
+        V: Clone + PartialEq + Debug,
 {
     pub fn sync(&mut self, entries: impl IntoIterator<Item=(K, V)>) {
         let mut remaining_keys: HashSet<K> = self.map.keys().cloned().collect();
@@ -130,6 +135,8 @@ impl<K, V> ObservableHashMap<K, V>
         for key in remaining_keys {
             self.remove(&key);
         }
+        trace!("ObservableHashMap.len {}",self.map.len());
+        // dbg!(&self.map);
     }
 }
 
