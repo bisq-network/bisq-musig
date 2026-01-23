@@ -11,8 +11,8 @@ use tokio::time::{self, Duration};
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn test_wallet_service_mine_single_tx() -> Result<()> {
-    let mut testenv = TestEnv::new()?;
-    testenv.start_explorer_in_container()?;
+    let testenv = TestEnv::new()?;
+    // testenv.start_explorer_in_container()?;
 
     let rpc_client = testenv.bitcoin_core_rpc_client()?;
 
@@ -24,7 +24,6 @@ async fn test_wallet_service_mine_single_tx() -> Result<()> {
     let amount = Amount::from_sat(1_000_000);
 
     let txid = testenv.fund_address(&addr.address, amount)?;
-    testenv.trigger_sync()?;
     testenv.wait_for_tx(txid)?;
 
     // Open up a tx confidence stream on the (unconfirmed) paying tx.
@@ -60,7 +59,6 @@ async fn test_wallet_service_mine_single_tx() -> Result<()> {
             break;
         }
     }
-    // eprintln!("num: {}", expect.as_ref().unwrap().as_ref().unwrap().num_confirmations);
     assert!(matches!(expect, Some(Some(TxConfidence { num_confirmations: 1, .. }))));
     Ok(())
 }
