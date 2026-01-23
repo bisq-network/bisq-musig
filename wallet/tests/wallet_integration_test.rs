@@ -1,12 +1,15 @@
+use std::str::FromStr;
+
 use anyhow::Ok;
 use bdk_electrum::electrum_client::{Client, Config};
 use bdk_electrum::BdkElectrumClient;
+use bdk_kyoto::bip157::tokio;
+use bdk_kyoto::TrustedPeer;
 use bdk_wallet::bitcoin::{Address, Amount, Network};
 use bdk_wallet::psbt::PsbtUtils;
 use bdk_wallet::{KeychainKind, SignOptions};
 use rand::RngCore;
 use secp::Scalar;
-use std::str::FromStr;
 use testenv::TestEnv;
 use wallet::bmp_wallet::*;
 
@@ -210,3 +213,79 @@ fn test_broadcast_transaction_three() -> anyhow::Result<()> {
 
     Ok(())
 }
+
+#[tokio::test]
+async fn test_cbf_main_wallet() -> anyhow::Result<()> {
+    let env = TestEnv::new()?;
+    let mut wallet = BMPWallet::new(Network::Regtest)?;
+    let addr = wallet.next_unused_address(KeychainKind::External);
+    env.fund_address(&addr, Amount::from_sat(100000))?;
+
+    assert_eq!(wallet.balance(), Amount::from_sat(0));
+
+    env.mine_blocks(4)?;
+
+    let scan_type = bdk_kyoto::ScanType::Sync;
+    let peers = vec![TrustedPeer::from_socket_addr(
+        env.p2p_socket_addr().unwrap(),
+    )];
+    wallet.sync_cbf(scan_type, peers).await?;
+    assert_eq!(wallet.balance(), Amount::from_sat(100000));
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_cbf_imported() -> anyhow::Result<()> {
+    let env = TestEnv::new()?;
+    let mut wallet = BMPWallet::new(Network::Regtest)?;
+
+    let prv_keys = [new_private_key(), new_private_key(), new_private_key()];
+    prv_keys.iter().for_each(|e| wallet.import_private_key(*e));
+    prv_keys.iter().for_each(|e| {
+        env.fund_from_prv_key(e, Amount::from_sat(10000)).unwrap();
+    });
+
+    assert_eq!(wallet.balance(), Amount::from_sat(0));
+
+    env.mine_blocks(4)?;
+
+    let scan_type = bdk_kyoto::ScanType::Sync;
+    let peers = vec![TrustedPeer::from_socket_addr(
+        env.p2p_socket_addr().unwrap(),
+    )];
+    wallet.sync_cbf_imported(scan_type, peers).await?;
+    assert_eq!(wallet.balance(), Amount::from_sat(30000));
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_cbf_imported_and_main() -> anyhow::Result<()> {
+    let env = TestEnv::new()?;
+    let mut wallet = BMPWallet::new(Network::Regtest)?;
+    let addr = wallet.next_unused_address(KeychainKind::External);
+    env.fund_address(&addr, Amount::from_sat(100000))?;
+
+    let prv_keys = [new_private_key(), new_private_key(), new_private_key()];
+    prv_keys.iter().for_each(|e| wallet.import_private_key(*e));
+    prv_keys.iter().for_each(|e| {
+        env.fund_from_prv_key(e, Amount::from_sat(10000)).unwrap();
+    });
+
+    assert_eq!(wallet.balance(), Amount::from_sat(0));
+
+    env.mine_blocks(4)?;
+
+    let scan_type = bdk_kyoto::ScanType::Sync;
+    let peers = vec![TrustedPeer::from_socket_addr(
+        env.p2p_socket_addr().unwrap(),
+    )];
+
+    wallet.sync_cbf_imported(scan_type, peers.clone()).await?;
+    wallet.sync_cbf(scan_type, peers).await?;
+
+    assert_eq!(wallet.balance(), Amount::from_sat(130000));
+
+    Ok(())
+}
+
+// @TODO add integration test with CBF to make sure the wallet state is persisted after reload

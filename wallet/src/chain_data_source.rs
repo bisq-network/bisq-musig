@@ -10,7 +10,8 @@ pub trait ChainDataSource {
     const BATCH_SIZE: usize;
     const STOP_GAP: usize;
 
-    fn sync(&self, persister: &mut PersistedWallet<impl BMPWalletPersister>) -> anyhow::Result<()>;
+    fn sync(&self, _persister: &mut PersistedWallet<impl BMPWalletPersister>)
+        -> anyhow::Result<()>;
 }
 
 impl ChainDataSource for BdkElectrumClient<Client> {

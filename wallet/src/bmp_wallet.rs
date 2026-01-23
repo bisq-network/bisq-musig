@@ -4,6 +4,8 @@ use std::{fs, vec};
 use base64::engine::general_purpose;
 use base64::Engine;
 use bdk_electrum::bdk_core::bitcoin::{absolute, Address, FeeRate, OutPoint};
+use bdk_kyoto::bip157::{tokio, Builder};
+use bdk_kyoto::{BuilderExt, LightClient, Requester, ScanType, TrustedPeer, UpdateSubscriber};
 use bdk_wallet::bitcoin::bip32::Xpriv;
 use bdk_wallet::bitcoin::hex::DisplayHex;
 use bdk_wallet::bitcoin::{
@@ -15,14 +17,17 @@ use bdk_wallet::miniscript::psbt::PsbtExt;
 use bdk_wallet::rusqlite::{self, named_params, Connection};
 use bdk_wallet::signer::{InputSigner, SignerContext, SignerError, SignerWrapper};
 use bdk_wallet::template::{Bip86, DescriptorTemplate};
-use bdk_wallet::{AddressInfo, Balance, ChangeSet, KeychainKind, PersistedWallet, SignOptions, TxBuilder, TxOrdering, Utxo, Wallet, WalletPersister, WeightedUtxo};
+use bdk_wallet::{
+    AddressInfo, Balance, ChangeSet, KeychainKind, PersistedWallet, SignOptions, TxBuilder,
+    TxOrdering, Utxo, Wallet, WalletPersister, WeightedUtxo,
+};
 use rand::RngCore;
 use secp::Scalar;
 
 use crate::chain_data_source::ChainDataSource;
 use crate::coin_selection::AlwaysSpendImportedFirst;
 use crate::protocol_wallet_api::ProtocolWalletApi;
-use crate::utils::{derive_key_from_password, get_salt};
+use crate::utils::{derive_key_from_password, get_salt, trace_logs};
 
 pub trait BMPWalletPersister: WalletPersister {
     type DB;
@@ -194,6 +199,33 @@ impl BMPWallet<Connection> {
         self.imported_keys.push(pk);
     }
 
+    /// Helper function to run a CBF node
+    /// This will:
+    /// - Create a new Light client
+    /// - spawn two threads one for trace logs and another for the server node
+    /// - Return the requester and the subscriber from which the updates can be pulled
+    ///
+    /// Note: The caller is responsible for shutting down the requester at will.
+    pub async fn run_node(
+        wallet: &Wallet,
+        scan_type: bdk_kyoto::ScanType,
+        peers: Vec<TrustedPeer>,
+    ) -> anyhow::Result<(Requester, UpdateSubscriber)> {
+        let LightClient {
+            requester,
+            info_subscriber,
+            warning_subscriber,
+            update_subscriber,
+            node,
+        } = Builder::new(wallet.network())
+            .add_peers(peers)
+            .build_with_wallet(wallet, scan_type)?;
+
+        tokio::task::spawn(async move { node.run().await });
+        // Trace the logs with a custom function.
+        tokio::task::spawn(async move { trace_logs(info_subscriber, warning_subscriber).await });
+        Ok((requester, update_subscriber))
+    }
 
     fn build_tx(&mut self) -> TxBuilder<'_, AlwaysSpendImportedFirst> {
         let secp = self.secp_ctx();
@@ -315,6 +347,16 @@ pub trait WalletApi {
     ) -> anyhow::Result<(), SignerError>;
 
     fn sync_all(&mut self, data_source: &impl ChainDataSource) -> anyhow::Result<bool>;
+    fn sync_cbf(
+        &mut self,
+        scan_type: bdk_kyoto::ScanType,
+        peers: Vec<TrustedPeer>,
+    ) -> impl std::future::Future<Output = anyhow::Result<()>> + Send;
+    fn sync_cbf_imported(
+        &mut self,
+        scan_type: bdk_kyoto::ScanType,
+        peers: Vec<TrustedPeer>,
+    ) -> impl std::future::Future<Output = anyhow::Result<()>> + Send;
 }
 
 impl WalletApi for BMPWallet<Connection> {
@@ -383,6 +425,84 @@ impl WalletApi for BMPWallet<Connection> {
 
         let finalized = self.wallet.sign(psbt, sign_options)?;
         assert!(finalized, "PSBT should be finalized");
+
+        Ok(())
+    }
+
+    async fn sync_cbf(
+        &mut self,
+        scan_type: ScanType,
+        peers: Vec<TrustedPeer>,
+    ) -> anyhow::Result<()> {
+        let (requester, mut updates_sub) = Self::run_node(self, scan_type, peers).await?;
+        let updates = updates_sub.update().await?;
+
+        self.apply_update(updates)?;
+        self.persist()?;
+
+        requester.shutdown()?;
+        Ok(())
+    }
+
+    /// Sync the imported keys from protocol using CBF
+    /// @TODO: use a shared node connection between the different imported keys sync
+    async fn sync_cbf_imported(
+        &mut self,
+        scan_type: ScanType,
+        peers: Vec<TrustedPeer>,
+    ) -> anyhow::Result<()> {
+        let pubkeys = self
+            .imported_keys
+            .iter()
+            .map(|s| s.base_point_mul().serialize_xonly())
+            .collect::<Vec<_>>();
+
+        let mut req: Option<Requester> = None;
+
+        let mut final_imported_balance = Balance::default();
+
+        for key in pubkeys {
+            let db_path = format!("bmp_{}.db3", key.to_lower_hex_string());
+            let mut db = Connection::open(db_path)?;
+
+            let imported_wallet_opt = Wallet::load()
+                .check_network(self.wallet.network())
+                .extract_keys()
+                .load_wallet(&mut db)?;
+            let mut imported_wallet = match imported_wallet_opt {
+                Some(wallet) => wallet,
+                None => {
+                    let descriptor = format!("tr({})", key.to_lower_hex_string());
+                    Wallet::create_single(descriptor)
+                        .network(self.wallet.network())
+                        .create_wallet(&mut db)?
+                }
+            };
+
+            let LightClient {
+                requester,
+                info_subscriber: _,
+                warning_subscriber: _,
+                mut update_subscriber,
+                node,
+            } = Builder::new(self.network())
+                .add_peers(peers.clone())
+                .build_with_wallet(&imported_wallet, scan_type)?;
+
+            tokio::task::spawn(async move { node.run().await.unwrap() });
+            let updates = update_subscriber.update().await?;
+            imported_wallet.apply_update(updates)?;
+
+            imported_wallet.persist(&mut db)?;
+
+            final_imported_balance = final_imported_balance + imported_wallet.balance();
+
+            req.get_or_insert(requester);
+        }
+
+        self.imported_balance = final_imported_balance;
+
+        req.is_some().then(|| req.unwrap().shutdown());
 
         Ok(())
     }
