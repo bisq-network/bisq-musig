@@ -216,9 +216,8 @@ fn test_broadcast_transaction_three() -> anyhow::Result<()> {
 
 #[tokio::test]
 async fn test_cbf_main_wallet() -> anyhow::Result<()> {
-    let mut wallet = BMPWallet::new(Network::Regtest)?;
     let env = TestEnv::new()?;
-
+    let mut wallet = BMPWallet::new(Network::Regtest)?;
     let addr = wallet.next_unused_address(KeychainKind::External);
     env.fund_address(&addr, Amount::from_sat(100000))?;
 
@@ -237,8 +236,8 @@ async fn test_cbf_main_wallet() -> anyhow::Result<()> {
 
 #[tokio::test]
 async fn test_cbf_imported() -> anyhow::Result<()> {
-    let mut wallet = BMPWallet::new(Network::Regtest)?;
     let env = TestEnv::new()?;
+    let mut wallet = BMPWallet::new(Network::Regtest)?;
 
     let prv_keys = [new_private_key(), new_private_key(), new_private_key()];
     prv_keys.iter().for_each(|e| wallet.import_private_key(*e));
@@ -261,9 +260,8 @@ async fn test_cbf_imported() -> anyhow::Result<()> {
 
 #[tokio::test]
 async fn test_cbf_imported_and_main() -> anyhow::Result<()> {
-    let mut wallet = BMPWallet::new(Network::Regtest)?;
     let env = TestEnv::new()?;
-
+    let mut wallet = BMPWallet::new(Network::Regtest)?;
     let addr = wallet.next_unused_address(KeychainKind::External);
     env.fund_address(&addr, Amount::from_sat(100000))?;
 
