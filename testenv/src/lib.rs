@@ -1,24 +1,27 @@
+use std::net::SocketAddrV4;
+use std::sync::Arc;
+use std::time::Duration;
+
 /// Bitcoin regtest environment using electrsd with automatic executable downloads
 use anyhow::{Context, Result};
 use bdk_bitcoind_rpc::bitcoincore_rpc;
 use bdk_bitcoind_rpc::bitcoincore_rpc::{Auth, RpcApi};
 use bdk_electrum::bdk_core::bitcoin::{KnownHrp, XOnlyPublicKey};
 use bdk_electrum::BdkElectrumClient;
+use bdk_wallet::bitcoin::address::NetworkChecked;
 use bdk_wallet::bitcoin::key::Secp256k1;
 use bdk_wallet::bitcoin::secp256k1::All;
-use bdk_wallet::bitcoin::{address::NetworkChecked, Address, Amount, BlockHash, Network, Transaction, Txid};
+use bdk_wallet::bitcoin::{Address, Amount, BlockHash, Network, Transaction, Txid};
 pub use corepc_node::get_available_port;
-use electrsd::corepc_node;
-use electrsd::electrum_client::Client;
-use electrsd::{corepc_node::Node, electrum_client::ElectrumApi, ElectrsD};
+use electrsd::corepc_node::Node;
+use electrsd::electrum_client::{Client, ElectrumApi};
+use electrsd::{corepc_node, ElectrsD};
 use hmac::{Hmac, Mac};
 use rand::{Rng, RngCore};
 use secp::Scalar;
 use sha2::Sha256;
 use simple_semaphore::{Permit, Semaphore};
 use std::error::Error;
-use std::sync::Arc;
-use std::time::Duration;
 use tempfile::{tempdir, TempDir};
 use tracing_subscriber::field::MakeExt;
 use tracing_subscriber::filter::{EnvFilter, ParseError};
@@ -60,6 +63,7 @@ impl Default for Config<'_> {
                 let mut conf = corepc_node::Conf::default();
                 // Listen on all interfaces (0.0.0.0) instead of just localhost
                 conf.args.push("-rpcbind=0.0.0.0");
+                conf.args.push("-listen=1");
 
                 // Allow connections from any IP (use 0.0.0.0/0 for "everywhere")
                 conf.args.push("-rpcallowip=0.0.0.0/0");
@@ -179,6 +183,7 @@ impl TestEnv {
 
         let auth_config = format!("-{}", rpc_auth);
         let mut bitcoin_config = config.bitcoind.clone();
+        bitcoin_config.p2p = corepc_node::P2P::Yes;
         bitcoin_config.args.push(&*auth_config);
 
         let bitcoind = match std::env::var("BITCOIND_EXEC") {
@@ -229,7 +234,6 @@ impl TestEnv {
                 println!("Using downloaded electrs: {}", path);
                 path
             }
-
         };
 
         println!("Starting electrsd...");
@@ -270,7 +274,7 @@ impl TestEnv {
         let bitcoind_rpc_port = self.bitcoin_rpc_port();
         let browserport = get_available_port()?;
 
-        let electrum_port = self.electrsd.electrum_url.split(':').last()
+        let electrum_port = self.electrsd.electrum_url.split(':').next_back()
                 .context("Failed to parse electrum port")?;
 
         let container_name = format!("btc-explorer-{}", browserport);
@@ -484,6 +488,11 @@ impl TestEnv {
     /// Get the working directory path
     pub fn workdir(&self) -> std::path::PathBuf {
         self.electrsd.workdir()
+    }
+
+    /// Get the running bitcoind socket address
+    pub fn p2p_socket_addr(&self) -> Option<SocketAddrV4> {
+        self.bitcoind.params.p2p_socket
     }
 }
 
