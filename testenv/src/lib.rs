@@ -252,7 +252,7 @@ impl TestEnv {
         let container_name = format!("btc-explorer-{}", browserport);
 
         let mut container = std::process::Command::new("podman");
-        container.args(["run", "-it", "--rm",
+        container.args(["run", "--rm",
             "--name", &container_name,
             "-p",
             format!("{}:3002", browserport).as_str(),

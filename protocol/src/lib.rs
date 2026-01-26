@@ -1,5 +1,4 @@
 pub mod multisig;
-pub mod nigiri;
 pub mod protocol_musig_adaptor;
 pub mod psbt;
 pub mod receiver;

@@ -1,16 +1,15 @@
 use std::collections::HashMap;
 use std::sync::Mutex;
 
-use bdk_wallet::bitcoin::Amount;
-use protocol::nigiri;
-use protocol::protocol_musig_adaptor::{BMPContext, BMPProtocol, ProtocolRole, Round1Parameter};
-use protocol::wallet_service::WalletService;
-use tonic::{Request, Response, Result, Status};
-use tracing::info;
-
 use crate::pb::bmp_protocol::bmp_protocol_service_server::BmpProtocolService;
 use crate::pb::bmp_protocol::{self, InitializeRequest, InitializeResponse, Role};
 use crate::pb::convert::TryProtoInto as _;
+use bdk_wallet::bitcoin::Amount;
+use protocol::protocol_musig_adaptor::{BMPContext, BMPProtocol, MemWallet, ProtocolRole, Round1Parameter};
+use protocol::wallet_service::WalletService;
+use testenv::TestEnv;
+use tonic::{Request, Response, Result, Status};
+use tracing::info;
 
 #[derive(Default)]
 pub struct BmpServiceImpl {
@@ -28,7 +27,8 @@ impl BmpProtocolService for BmpServiceImpl {
         info!("Received initialize request: {req:?}");
 
         //todo retrieve the actual wallet
-        let mock_wallet = nigiri::funded_wallet();
+        let env = TestEnv::new().unwrap(); // TODO move Wallet loading
+        let mock_wallet = MemWallet::funded_wallet(&env);
         let wallet_service = WalletService::new().load(mock_wallet);
 
         let role =
