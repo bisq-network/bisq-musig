@@ -1,33 +1,29 @@
-use std::process::{ExitCode, Termination};
-
 use bdk_electrum::bdk_core::bitcoin;
 use bdk_electrum::bdk_core::bitcoin::key::{Keypair, Secp256k1, TweakedKeypair, TweakedPublicKey};
 use bdk_electrum::bdk_core::bitcoin::secp256k1::Message;
 use bdk_electrum::bdk_core::bitcoin::{Amount, TapSighashType};
 use bdk_wallet::bitcoin::key::TapTweak as _;
-use musig2::KeyAggContext;
 use musig2::secp::Point;
-use protocol::nigiri;
-use protocol::protocol_musig_adaptor::{BMPContext, BMPProtocol, ProtocolRole};
+use musig2::KeyAggContext;
+use protocol::protocol_musig_adaptor::{BMPContext, BMPProtocol, MemWallet, ProtocolRole};
 use protocol::transaction::WithWitnesses as _;
 use protocol::wallet_service::WalletService;
-use tokio::sync::{Semaphore, SemaphorePermit};
+use testenv::TestEnv;
 
 #[test]
 fn test_initial_tx_creation() -> anyhow::Result<()> {
-    let (_, _, _permit) = initial_tx_creation()?;
+    let env = TestEnv::new()?;
+    // env.start_explorer_in_container()?;
+    let (_, _) = initial_tx_creation(&env)?;
     Ok(())
 }
 
-fn initial_tx_creation() -> anyhow::Result<(BMPProtocol, BMPProtocol, Permit)> {
-    println!("running...");
-    let permit = nigiri_check_start();
-    let mut alice_funds = nigiri::funded_wallet();
-    //TestWallet::new()?;
 
-    let bob_funds = nigiri::funded_wallet();
-    //TestWallet::new()?;
-    nigiri::fund_wallet(&mut alice_funds);
+fn initial_tx_creation(env: &TestEnv) -> anyhow::Result<(BMPProtocol, BMPProtocol)> {
+    println!("running...");
+    let alice_funds = MemWallet::funded_wallet(env);
+    let bob_funds = MemWallet::funded_wallet(env);
+
     let alice_service = WalletService::new().load(alice_funds);
     let bob_service = WalletService::new().load(bob_funds);
     let seller_amount = Amount::from_btc(1.4)?;
@@ -39,7 +35,7 @@ fn initial_tx_creation() -> anyhow::Result<(BMPProtocol, BMPProtocol, Permit)> {
     let mut alice = BMPProtocol::new(alice_context)?;
     let bob_context = BMPContext::new(bob_service, ProtocolRole::Buyer, seller_amount, buyer_amount)?;
     let mut bob = BMPProtocol::new(bob_context)?;
-    nigiri::tiktok();
+    env.mine_block()?;
 
     // Round 1--------
     let alice_response = alice.round1()?;
@@ -64,21 +60,24 @@ fn initial_tx_creation() -> anyhow::Result<(BMPProtocol, BMPProtocol, Permit)> {
     bob.round5(alice_r4)?;
 
     // done -----------------------------
-    nigiri::tiktok();
-    Ok((alice, bob, permit))
+    env.mine_block()?;
+    Ok((alice, bob))
 }
 
 #[test]
 fn test_swap() -> anyhow::Result<()> {
+    let mut env = TestEnv::new()?;
+    env.start_explorer_in_container()?;
+
     // create all transaction and Broadcast DepositTx already
-    let (mut alice, mut bob, _permit) = initial_tx_creation()?;
+    let (mut alice, mut bob) = initial_tx_creation(&env)?;
     dbg!(alice.swap_tx.unsigned_tx()?);
     dbg!(bob.swap_tx.unsigned_tx()?);
 
     // alice broadcasts SwapTx
     let alice_swap = alice.swap_tx.sign(&alice.p_tik)?;
     dbg!(alice.swap_tx.broadcast(&alice.ctx)?);
-    nigiri::tiktok();
+    env.mine_block()?;
     // bob must find the transaction and retrieve P_a from it and then spend DepositTx-Output0 to his wallet.
     // TODO need to read the transaction from blockchain looking for bob.swap_tx.txid
     // cheating and using the transaction from alice directly
@@ -97,23 +96,29 @@ fn test_swap() -> anyhow::Result<()> {
 
 #[test]
 fn test_warning() -> anyhow::Result<()> {
+    let env = TestEnv::new()?;
+    // env.start_explorer_in_container()?;
+
     // create all transaction and Broadcast DepositTx already
-    let (alice, _bob, _permit) = initial_tx_creation()?;
+    let (alice, _bob) = initial_tx_creation(&env)?;
     dbg!(alice.warning_tx_me.signed_tx()?);
     // alice broadcasts WarningTx
     dbg!(alice.warning_tx_me.broadcast(&alice.ctx)?);
-    nigiri::tiktok();
+    env.mine_block()?;
     Ok(())
 }
 
 #[test]
 fn test_claim() -> anyhow::Result<()> {
+    let env = TestEnv::new()?;
+    // env.start_explorer_in_container()?;
+
     // create all transaction and Broadcast DepositTx already
-    let (alice, _bob, _permit) = initial_tx_creation()?;
+    let (alice, _bob) = initial_tx_creation(&env)?;
     // alice broadcasts WarningTx
     alice.warning_tx_me.broadcast(&alice.ctx)?;
-    nigiri::tiktok();
-    nigiri::tiktok(); // we have set time-delay t2 to 2 Blocks
+    env.mine_block()?;
+    env.mine_block()?; // we have set time-delay t2 to 2 Blocks
     dbg!(alice.claim_tx_me.signed_tx()?);
 
     // according to BIP-68 min time to wait is 512sec
@@ -128,17 +133,20 @@ fn test_claim() -> anyhow::Result<()> {
     let tx = alice.claim_tx_me.broadcast(&alice.ctx)?;
 
     println!("http://localhost:5000/tx/{tx}");
-    nigiri::tiktok();
+    env.mine_block()?;
     Ok(())
 }
 
 #[test]
 fn test_claim_too_early() -> anyhow::Result<()> {
+    let env = TestEnv::new()?;
+    // env.start_explorer_in_container()?;
+
     // create all transaction and Broadcast DepositTx already
-    let (alice, _bob, _permit) = initial_tx_creation()?;
+    let (alice, _bob) = initial_tx_creation(&env)?;
     alice.warning_tx_me.broadcast(&alice.ctx)?;
-    // nigiri::tiktok();
-    nigiri::tiktok(); // we have set time-delay t2 to 2 Blocks
+    // env.mine_block()?;
+    env.mine_block()?; // we have set time-delay t2 to 2 Blocks
 
     let rtx = alice.claim_tx_me.broadcast(&alice.ctx);
     match rtx {
@@ -151,29 +159,35 @@ fn test_claim_too_early() -> anyhow::Result<()> {
                 "Wrong error message: {error_message}");
         }
     }
-    nigiri::tiktok();
+    env.mine_block()?;
     Ok(())
 }
 
 #[test]
 fn test_redirect() -> anyhow::Result<()> {
+    let env = TestEnv::new()?;
+    // env.start_explorer_in_container()?;
+
     // create all transaction and Broadcast DepositTx already
-    let (alice, bob, _permit) = initial_tx_creation()?;
+    let (alice, bob) = initial_tx_creation(&env)?;
     // alice broadcasts WarningTx
     let bob_warn_id = bob.warning_tx_me.broadcast(&bob.ctx)?;
-    nigiri::tiktok();
+    env.mine_block()?;
     dbg!(bob_warn_id);
 
     let tx = alice.redirect_tx_me.broadcast(&alice.ctx)?;
     dbg!(tx);
-    nigiri::tiktok();
+    env.mine_block()?;
     Ok(())
 }
 
 #[test]
 fn test_q_tik() -> anyhow::Result<()> {
+    let env = TestEnv::new()?;
+    // env.start_explorer_in_container()?;
+
     // create all transaction and Broadcast DepositTx already
-    let (mut alice, bob, _permit) = initial_tx_creation()?;
+    let (mut alice, bob) = initial_tx_creation(&env)?;
 
     // message
     let sighash = bob.swap_tx.builder.input_sighash()?;
@@ -227,22 +241,6 @@ fn test_q_tik() -> anyhow::Result<()> {
 
     let txid = alice.ctx.funds.transaction_broadcast(&tx)?;
     dbg!(txid);
-    nigiri::tiktok();
+    env.mine_block()?;
     Ok(())
-}
-
-#[tokio::test]
-async fn nigiri_check_start() -> Permit {
-    static PERMIT: Semaphore = Semaphore::const_new(1);
-    let permit = Permit(PERMIT.acquire().await.unwrap());
-    nigiri::check_start();
-    permit
-}
-
-#[must_use]
-#[expect(dead_code, reason = "field serves as an RAII guard")]
-struct Permit(SemaphorePermit<'static>);
-
-impl Termination for Permit {
-    fn report(self) -> ExitCode { ExitCode::SUCCESS }
 }

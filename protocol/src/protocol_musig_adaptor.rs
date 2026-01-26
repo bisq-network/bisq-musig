@@ -7,6 +7,8 @@ use crate::transaction::{
     DepositTxBuilder, ForwardingTxBuilder, RedirectTxBuilder, WarningTxBuilder, WithWitnesses as _,
 };
 use crate::wallet_service::WalletService;
+use bdk_electrum::electrum_client::Client;
+use bdk_electrum::{electrum_client, BdkElectrumClient};
 use bdk_wallet::bitcoin::bip32::Xpriv;
 use bdk_wallet::bitcoin::{
     relative, Address, Amount, FeeRate, Network, OutPoint, Psbt, ScriptBuf, Transaction, TxOut,
@@ -21,12 +23,12 @@ use testenv::TestEnv;
 
 pub struct MemWallet {
     wallet: Wallet,
-    testenv: TestEnv,
+    client: BdkElectrumClient<electrum_client::Client>,
 }
 
 impl MemWallet {
     pub fn transaction_broadcast(&self, tx: &Transaction) -> anyhow::Result<Txid> {
-        let result = self.testenv.bdk_electrum_client().transaction_broadcast(tx);
+        let result = self.client.transaction_broadcast(tx);
 
         if let Err(e) = result {
             if e.to_string().contains("Transaction already in block chain") {
@@ -36,6 +38,19 @@ impl MemWallet {
         }
 
         Ok(result?)
+    }
+
+
+    pub fn funded_wallet(env: &TestEnv) -> MemWallet {
+        // TODO move this line to TestEnv
+        let client = BdkElectrumClient::new(electrum_client::Client::new(&*env.electrum_url()).unwrap());
+        let mut wallet = MemWallet::new(client).unwrap();
+        let address = wallet.next_unused_address();
+        let txid = env.fund_address(&*address, Amount::from_btc(10f64).unwrap()).unwrap();
+        env.mine_block().unwrap();
+        env.wait_for_tx(txid).unwrap();
+        wallet.sync().unwrap();
+        wallet
     }
 }
 
@@ -60,7 +75,7 @@ const STOP_GAP: usize = 50;
 const BATCH_SIZE: usize = 5;
 
 impl MemWallet {
-    pub fn new() -> anyhow::Result<Self> {
+    pub fn new(client: BdkElectrumClient<Client>) -> anyhow::Result<Self> {
         let mut seed: [u8; 32] = [0u8; 32];
         rand::rng().fill_bytes(&mut seed);
 
@@ -84,25 +99,13 @@ impl MemWallet {
             .keymap(KeychainKind::Internal, internal_map)
             .create_wallet_no_persist()?;
 
-        // this is a test wallet, it should live in TestEnv or better be abandoned altogether
-        let testenv = TestEnv::new()?;
-        Ok(Self { wallet, testenv })
-    }
-
-    // test functionality for getting some coins in here
-    pub fn funded_wallet() -> anyhow::Result<Self> {
-        let mut me = MemWallet::new()?;
-        let adr = me.next_unused_address();
-        me.testenv.fund_address(&adr, Amount::from_btc(1f64)?)?;
-        me.testenv.mine_block()?;
-        me.sync()?;
-        Ok(me)
+        Ok(Self { wallet, client })
     }
 
     pub fn sync(&mut self) -> anyhow::Result<()> {
         // Populate the electrum client's transaction cache so it doesn't re-download transaction we
         // already have.
-        self.testenv.bdk_electrum_client()
+        self.client
             .populate_tx_cache(self.wallet.tx_graph().full_txs().map(|tx_node| tx_node.tx));
 
         let request = self.wallet.start_full_scan().inspect({
@@ -118,7 +121,7 @@ impl MemWallet {
         });
         eprintln!("requesting update...");
         let update = self
-                .testenv.bdk_electrum_client()
+            .client
             .full_scan(request, STOP_GAP, BATCH_SIZE, false)?;
         self.wallet.apply_update(update)?;
         Ok(())
@@ -145,7 +148,7 @@ impl MemWallet {
         assert!(finalized);
 
         let tx = psbt.extract_tx()?;
-        self.testenv.bdk_electrum_client().transaction_broadcast(&tx)?;
+        self.client.transaction_broadcast(&tx)?;
         Ok(tx.compute_txid())
     }
 }
@@ -482,13 +485,13 @@ impl RedirectTx {
 
         // now stuff those signatures into the transaction
         self.builder
-                .set_input_signature(self.sig.compute_taproot_signature(MaybeScalar::Zero)?)
+            .set_input_signature(self.sig.compute_taproot_signature(MaybeScalar::Zero)?)
             .compute_signed_tx()?;
         Ok(())
     }
 
     pub fn broadcast(&self, me: &BMPContext) -> anyhow::Result<Txid> {
-        Ok(me.funds.testenv.bdk_electrum_client().transaction_broadcast(self.builder.signed_tx()?)?)
+        Ok(me.funds.client.transaction_broadcast(self.builder.signed_tx()?)?)
     }
 
     /**
@@ -548,13 +551,13 @@ impl ClaimTx {
 
         // now stuff those signatures into the transaction
         self.builder
-                .set_input_signature(self.sig.compute_taproot_signature(MaybeScalar::Zero)?)
+            .set_input_signature(self.sig.compute_taproot_signature(MaybeScalar::Zero)?)
             .compute_signed_tx()?;
         Ok(())
     }
 
     pub fn broadcast(&self, me: &BMPContext) -> anyhow::Result<Txid> {
-        Ok(me.funds.testenv.bdk_electrum_client().transaction_broadcast(self.signed_tx()?)?)
+        Ok(me.funds.client.transaction_broadcast(self.signed_tx()?)?)
     }
 }
 
@@ -612,7 +615,7 @@ impl WarningTx {
         let tx = self.builder
             .set_buyer_input(deposit_tx.builder.buyer_payout()?.clone())
             .set_seller_input(deposit_tx.builder.seller_payout()?.clone())
-                .set_escrow_address(key_spend.p2tr_address(Network::Regtest))
+            .set_escrow_address(key_spend.p2tr_address(Network::Regtest))
             .set_anchor_address(Address::from_script(self.anchor_spend.as_ref().unwrap(), Network::Regtest)?) // TODO: Improve.
             .set_lock_time(relative::LockTime::ZERO)
             .set_fee_rate(FeeRate::from_sat_per_vb_unchecked(10)) // TODO: feerates shall come from pricenodes
@@ -647,14 +650,14 @@ impl WarningTx {
 
         // now stuff those signatures into the transaction
         self.builder
-                .set_buyer_input_signature(self.sig_p.compute_taproot_signature(MaybeScalar::Zero)?)
-                .set_seller_input_signature(self.sig_q.compute_taproot_signature(MaybeScalar::Zero)?)
+            .set_buyer_input_signature(self.sig_p.compute_taproot_signature(MaybeScalar::Zero)?)
+            .set_seller_input_signature(self.sig_q.compute_taproot_signature(MaybeScalar::Zero)?)
             .compute_signed_tx()?;
         Ok(())
     }
 
     pub fn broadcast(&self, me: &BMPContext) -> anyhow::Result<Txid> {
-        Ok(me.funds.testenv.bdk_electrum_client().transaction_broadcast(self.signed_tx()?)?)
+        Ok(me.funds.client.transaction_broadcast(self.signed_tx()?)?)
     }
 }
 
@@ -738,7 +741,7 @@ impl SwapTx {
         if self.role == ProtocolRole::Seller {
             let adaptor_secret = (*p_tik.my_key_share()?.prv_key()?).into();
             let tx = self.builder
-                    .set_input_signature(self.fund_sig.compute_taproot_signature(adaptor_secret)?)
+                .set_input_signature(self.fund_sig.compute_taproot_signature(adaptor_secret)?)
                 .compute_signed_tx()?
                 .signed_tx()?;
             // signed and ready to broadcast
@@ -768,7 +771,7 @@ impl SwapTx {
     }
 
     pub fn broadcast(&self, me: &BMPContext) -> anyhow::Result<Txid> {
-        Ok(me.funds.testenv.bdk_electrum_client().transaction_broadcast(self.builder.signed_tx()?)?)
+        Ok(me.funds.client.transaction_broadcast(self.builder.signed_tx()?)?)
     }
 }
 
@@ -811,8 +814,8 @@ impl DepositTx {
             self.builder.set_buyers_half_psbt(other_psbt);
         }
         self.builder
-                .set_buyer_payout_address(p_tik.with_taproot_tweak(None)?.p2tr_address(Network::Regtest))
-                .set_seller_payout_address(q_tik.with_taproot_tweak(None)?.p2tr_address(Network::Regtest))
+            .set_buyer_payout_address(p_tik.with_taproot_tweak(None)?.p2tr_address(Network::Regtest))
+            .set_seller_payout_address(q_tik.with_taproot_tweak(None)?.p2tr_address(Network::Regtest))
             .compute_unsigned_tx()?;
         Ok(())
     }
