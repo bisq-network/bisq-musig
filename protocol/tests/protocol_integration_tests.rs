@@ -4,19 +4,80 @@ use bdk_electrum::bdk_core::bitcoin;
 use bdk_electrum::bdk_core::bitcoin::key::{Keypair, Secp256k1, TweakedKeypair, TweakedPublicKey};
 use bdk_electrum::bdk_core::bitcoin::secp256k1::Message;
 use bdk_electrum::bdk_core::bitcoin::{Amount, TapSighashType};
+use bdk_electrum::{electrum_client, BdkElectrumClient};
 use bdk_wallet::bitcoin::key::TapTweak as _;
-use musig2::KeyAggContext;
 use musig2::secp::Point;
+use musig2::KeyAggContext;
 use protocol::nigiri;
-use protocol::protocol_musig_adaptor::{BMPContext, BMPProtocol, ProtocolRole};
+use protocol::protocol_musig_adaptor::{BMPContext, BMPProtocol, MemWallet, ProtocolRole};
 use protocol::transaction::WithWitnesses as _;
 use protocol::wallet_service::WalletService;
+use testenv::TestEnv;
 use tokio::sync::{Semaphore, SemaphorePermit};
 
 #[test]
 fn test_initial_tx_creation() -> anyhow::Result<()> {
-    let (_, _, _permit) = initial_tx_creation()?;
+    let env = TestEnv::new()?;
+    // env.start_explorer_in_container()?;
+    let (_, _) = initial_tx_creation_testenv(&env)?;
     Ok(())
+}
+
+fn funded_wallet(env: &TestEnv) -> MemWallet {
+    // TODO move this line to TestEnv
+    let client = BdkElectrumClient::new(electrum_client::Client::new(&*env.electrum_url()).unwrap());
+    let mut wallet = MemWallet::new(client).unwrap();
+    let address = wallet.next_unused_address();
+    let txid = env.fund_address(&*address, Amount::from_btc(10f64).unwrap()).unwrap();
+    env.mine_block().unwrap();
+    env.wait_for_tx(txid).unwrap();
+    wallet.sync().unwrap();
+    wallet
+}
+
+fn initial_tx_creation_testenv(env: &TestEnv) -> anyhow::Result<(BMPProtocol, BMPProtocol)> {
+    println!("running...");
+    let alice_funds = funded_wallet(env);
+    let bob_funds = funded_wallet(env);
+
+    let alice_service = WalletService::new().load(alice_funds);
+    let bob_service = WalletService::new().load(bob_funds);
+    let seller_amount = Amount::from_btc(1.4)?;
+    let buyer_amount = Amount::from_btc(0.2)?;
+
+    // up to here this was the preparation for the protocol, the code from now on needs to be called from outside API
+    let alice_context = BMPContext::new(alice_service, ProtocolRole::Seller, seller_amount, buyer_amount)?;
+
+    let mut alice = BMPProtocol::new(alice_context)?;
+    let bob_context = BMPContext::new(bob_service, ProtocolRole::Buyer, seller_amount, buyer_amount)?;
+    let mut bob = BMPProtocol::new(bob_context)?;
+    env.mine_block()?;
+
+    // Round 1--------
+    let alice_response = alice.round1()?;
+    let bob_response = bob.round1()?;
+
+    // Round2 -------
+    let alice_r2 = alice.round2(bob_response)?;
+    let bob_r2 = bob.round2(alice_response)?;
+
+    // Round 3 ----------
+    let alice_r3 = alice.round3(bob_r2)?;
+    let bob_r3 = bob.round3(alice_r2)?;
+
+    assert_eq!(alice_r3.deposit_txid, bob_r3.deposit_txid);
+
+    // Round 4 ---------------------------
+    let alice_r4 = alice.round4(bob_r3)?;
+    let bob_r4 = bob.round4(alice_r3)?;
+
+    // Round 5 all is ok, broadcasting deposit-tx ---------------------------
+    alice.round5(bob_r4)?;
+    bob.round5(alice_r4)?;
+
+    // done -----------------------------
+    env.mine_block()?;
+    Ok((alice, bob))
 }
 
 fn initial_tx_creation() -> anyhow::Result<(BMPProtocol, BMPProtocol, Permit)> {

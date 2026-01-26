@@ -14,11 +14,13 @@ rand = { workspace = true }
 rand_chacha = { workspace = true }
 thiserror = { workspace = true }
 rustls = { workspace = true }
+testenv = {path = "../testenv"} #tmp
 
 [dev-dependencies]
 bdk_wallet = { workspace = true, features = ["test-utils"] }
 const_format = { workspace = true }
 tokio = { workspace = true, features = ["macros", "test-util"] }
+testenv = {path = "../testenv"}
 
 [lints]
 workspace = true

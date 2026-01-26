@@ -1,11 +1,12 @@
 use std::io::Write as _;
 use std::str::FromStr as _;
 
-use bdk_electrum::{BdkElectrumClient, electrum_client};
+use bdk_electrum::electrum_client::Client;
+use bdk_electrum::{electrum_client, BdkElectrumClient};
 use bdk_wallet::bitcoin::bip32::Xpriv;
 use bdk_wallet::bitcoin::{
-    Address, Amount, FeeRate, Network, OutPoint, Psbt, ScriptBuf, Transaction, TxOut, Txid,
-    relative,
+    relative, Address, Amount, FeeRate, Network, OutPoint, Psbt, ScriptBuf, Transaction, TxOut,
+    Txid,
 };
 use bdk_wallet::template::{Bip86, DescriptorTemplate as _};
 use bdk_wallet::{AddressInfo, KeychainKind, SignOptions, Wallet};
@@ -59,12 +60,9 @@ impl ProtocolRole {
 // TODO think about stop_gap and batch_size
 const STOP_GAP: usize = 50;
 const BATCH_SIZE: usize = 5;
-const ELECTRUM_URL: &str =
-// "ssl://electrum.blockstream.info:60002";
-    "localhost:50000"; //TODO move to env
 
 impl MemWallet {
-    pub fn new() -> anyhow::Result<Self> {
+    pub fn new(client: BdkElectrumClient<Client>) -> anyhow::Result<Self> {
         let mut seed: [u8; 32] = [0u8; 32];
         rand::rng().fill_bytes(&mut seed);
 
@@ -87,7 +85,6 @@ impl MemWallet {
             .keymap(KeychainKind::External, external_map)
             .keymap(KeychainKind::Internal, internal_map)
             .create_wallet_no_persist()?;
-        let client = BdkElectrumClient::new(electrum_client::Client::new(ELECTRUM_URL)?);
 
         Ok(Self { wallet, client })
     }

@@ -1,13 +1,16 @@
+use crate::protocol_musig_adaptor::MemWallet;
+use bdk_electrum::{electrum_client, BdkElectrumClient};
+use bdk_wallet::bitcoin::Amount;
 use std::process::{Command, Output};
 use std::{thread, time};
-
-use bdk_wallet::bitcoin::Amount;
-
-use crate::protocol_musig_adaptor::MemWallet;
+use testenv::TestEnv;
 
 pub fn funded_wallet() -> MemWallet {
     println!("loading wallet...");
-    let mut wallet = MemWallet::new().unwrap();
+    let env = TestEnv::new().unwrap();
+    let client = BdkElectrumClient::new(electrum_client::Client::new(&*env.electrum_url()).unwrap());
+
+    let mut wallet = MemWallet::new(client).unwrap();
     fund_wallet(&mut wallet);
     wallet
 }
