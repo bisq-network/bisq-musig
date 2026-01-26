@@ -1,6 +1,12 @@
 use std::io::Write as _;
 use std::str::FromStr as _;
 
+use crate::multisig::{KeyCtx, SigCtx};
+use crate::receiver::{Receiver, ReceiverList};
+use crate::transaction::{
+    DepositTxBuilder, ForwardingTxBuilder, RedirectTxBuilder, WarningTxBuilder, WithWitnesses as _,
+};
+use crate::wallet_service::WalletService;
 use bdk_electrum::electrum_client::Client;
 use bdk_electrum::{electrum_client, BdkElectrumClient};
 use bdk_wallet::bitcoin::bip32::Xpriv;
@@ -13,13 +19,7 @@ use bdk_wallet::{AddressInfo, KeychainKind, SignOptions, Wallet};
 use musig2::secp::{MaybeScalar, Point};
 use musig2::{PartialSignature, PubNonce};
 use rand::RngCore as _;
-
-use crate::multisig::{KeyCtx, SigCtx};
-use crate::receiver::{Receiver, ReceiverList};
-use crate::transaction::{
-    DepositTxBuilder, ForwardingTxBuilder, RedirectTxBuilder, WarningTxBuilder, WithWitnesses as _,
-};
-use crate::wallet_service::WalletService;
+use testenv::TestEnv;
 
 pub struct MemWallet {
     wallet: Wallet,
@@ -38,6 +38,19 @@ impl MemWallet {
         }
 
         Ok(result?)
+    }
+
+
+    pub fn funded_wallet(env: &TestEnv) -> MemWallet {
+        // TODO move this line to TestEnv
+        let client = BdkElectrumClient::new(electrum_client::Client::new(&*env.electrum_url()).unwrap());
+        let mut wallet = MemWallet::new(client).unwrap();
+        let address = wallet.next_unused_address();
+        let txid = env.fund_address(&*address, Amount::from_btc(10f64).unwrap()).unwrap();
+        env.mine_block().unwrap();
+        env.wait_for_tx(txid).unwrap();
+        wallet.sync().unwrap();
+        wallet
     }
 }
 
