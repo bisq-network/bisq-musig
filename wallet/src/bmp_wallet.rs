@@ -181,6 +181,7 @@ pub struct BMPWallet<P: BMPWalletPersister> {
     wallet: PersistedWallet<P>,
     imported_keys: Vec<Scalar>,
     imported_balance: Balance,
+    signers_loaded: bool,
     db: P,
 }
 
@@ -423,6 +424,27 @@ impl WalletApi for BMPWallet<Connection> {
             }
         }
 
+        // Check whether the signing keys were loaded if not load them into the wallet
+        if !self.signers_loaded {
+            println!("Loading the signers into the wallet");
+            let recovery_phrase = self.get_seed_phrase().map_err(|_| SignerError::External("Unable to load keys.".to_string()))?;
+            let mnemonic = Mnemonic::parse_normalized(&recovery_phrase).map_err(|_| SignerError::External("Unable to parse recovery phrase".to_string()))?;
+
+            let xprv = Xpriv::new_master(self.network(), &mnemonic.to_entropy()).map_err(|_| SignerError::External("Unable to load keys".to_string()))?;
+
+            let (_, external_map, _) = Bip86(xprv, KeychainKind::External)
+            .build(self.network())
+            .map_err(|_| SignerError::External("BIP 86 derivation failed".to_string()))?;
+
+            let (_, internal_map, _) = Bip86(xprv, KeychainKind::Internal)
+                .build(self.network())
+                .map_err(|_| SignerError::External("BIP 86 derivation failed".to_string()))?;
+
+            self.wallet.set_keymap(KeychainKind::External, external_map);
+            self.wallet.set_keymap(KeychainKind::Internal, internal_map);
+            self.signers_loaded = true;
+        }
+
         let finalized = self.wallet.sign(psbt, sign_options)?;
         assert!(finalized, "PSBT should be finalized");
 
@@ -589,13 +611,13 @@ impl WalletApi for BMPWallet<Connection> {
 
         let mnemonic = Mnemonic::from_entropy(&seed)?;
         let words = mnemonic.to_string();
-
         Connection::persist_seed_phrase(&mut db, Self::SEEDS_TABLE_NAME, &words)?;
 
         Ok(Self {
             wallet,
             imported_keys: vec![],
             imported_balance: Balance::default(),
+            signers_loaded: true,
             db,
         })
     }
@@ -623,6 +645,7 @@ impl WalletApi for BMPWallet<Connection> {
                 wallet,
                 imported_keys,
                 imported_balance: Balance::default(),
+                signers_loaded: false,
                 db,
             });
         }
@@ -662,6 +685,7 @@ impl WalletApi for BMPWallet<Connection> {
             wallet: self.wallet,
             imported_keys: self.imported_keys,
             imported_balance: self.imported_balance,
+            signers_loaded: false,
             db: encrypted_conn,
         })
     }
@@ -695,6 +719,7 @@ impl WalletApi for BMPWallet<Connection> {
             wallet: self.wallet,
             imported_keys: self.imported_keys,
             imported_balance: self.imported_balance,
+            signers_loaded: false,
             db: encrypted_conn,
         })
     }

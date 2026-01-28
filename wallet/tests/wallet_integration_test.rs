@@ -326,26 +326,25 @@ async fn test_cbf_persitence() -> anyhow::Result<()> {
     
     env.fund_address(&addr, Amount::from_sat(70000))?;
     env.mine_block()?;
-    encrypted_wallet.sync_cbf(scan_type, peers).await?;
+    encrypted_wallet.sync_cbf(scan_type, peers.clone()).await?;
     assert_eq!(encrypted_wallet.balance(), Amount::from_sat(300000));
 
-    // @TODO: There's a bug in the wallet making this test won't pass. Uncomment this once fixed in next PR.
-
     // Create a transaction and broadcast it to the connected peer
-    // let receiving_addr  = Address::from_str("tb1pyfv094rr0vk28lf8v9yx3veaacdzg26ztqk4ga84zucqqhafnn5q9my9rz")?;
-    // let mut tx_builder = encrypted_wallet.build_tx();
-    // tx_builder.add_recipient(receiving_addr.assume_checked(), Amount::from_sat(70000));
+    let receiving_addr  = Address::from_str("tb1pyfv094rr0vk28lf8v9yx3veaacdzg26ztqk4ga84zucqqhafnn5q9my9rz")?;
+    let mut tx_builder = encrypted_wallet.build_tx();
+    tx_builder.add_recipient(receiving_addr.assume_checked(), Amount::from_sat(70000));
 
-    // let mut psbt = tx_builder.finish()?;
+    let mut psbt = tx_builder.finish()?;
     
-    // encrypted_wallet.sign(&mut psbt, SignOptions::default())?;
+    encrypted_wallet.sign(&mut psbt, SignOptions::default())?;
 
-    // let fee = psbt.fee_amount().unwrap();
+    let fee = psbt.fee_amount().unwrap();
 
-    // env.broadcast(&psbt.extract_tx()?)?;
+    env.broadcast(&psbt.extract_tx()?)?;
+    env.mine_block()?;
 
-    // env.mine_block()?;
-    // assert_eq!(encrypted_wallet.balance(), Amount::from_sat(230000) - fee);
+    encrypted_wallet.sync_cbf(scan_type, peers).await?;
+    assert_eq!(encrypted_wallet.balance(), Amount::from_sat(230000) - fee);
 
     Ok(())
 }
