@@ -231,38 +231,38 @@ impl BMPWallet<Connection> {
     fn build_tx(&mut self) -> TxBuilder<'_, AlwaysSpendImportedFirst> {
         let secp = self.secp_ctx();
         let imported_weighted_utxos = self
-                .tx_graph()
-                .floating_txouts()
-                .map(|utxo| {
-                    let output_script_pubkey = &utxo.1.script_pubkey;
+            .tx_graph()
+            .floating_txouts()
+            .map(|utxo| {
+                let output_script_pubkey = &utxo.1.script_pubkey;
 
-                    let tap_internal_key = self
-                            .imported_keys
-                            .iter()
-                            .map(|scalar| {
-                                let pbk = scalar.base_point_mul().serialize_xonly();
-                                XOnlyPublicKey::from_slice(&pbk)
-                                        .expect("Should be valid xonlypub key")
-                            })
-                            .find(|pubkey| {
-                                let script = ScriptBuf::new_p2tr(secp, *pubkey, None);
-                                script == *output_script_pubkey
-                            });
+                let tap_internal_key = self
+                    .imported_keys
+                    .iter()
+                    .map(|scalar| {
+                        let pbk = scalar.base_point_mul().serialize_xonly();
+                        XOnlyPublicKey::from_slice(&pbk)
+                        .expect("Should be valid xonlypub key")
+                    })
+                    .find(|pubkey| {
+                        let script = ScriptBuf::new_p2tr(secp, *pubkey, None);
+                        script == *output_script_pubkey
+                    });
 
-                    WeightedUtxo {
-                        utxo: Utxo::Foreign {
-                            outpoint: utxo.0,
-                            sequence: Sequence::ENABLE_RBF_NO_LOCKTIME,
-                            psbt_input: Box::new(psbt::Input {
-                                witness_utxo: Some(utxo.1.clone()),
-                                tap_internal_key,
-                                ..Default::default()
-                            }),
-                        },
-                        satisfaction_weight: Weight::from_wu_usize(65),
-                    }
-                })
-                .collect::<Vec<_>>();
+                WeightedUtxo {
+                    utxo: Utxo::Foreign {
+                        outpoint: utxo.0,
+                        sequence: Sequence::ENABLE_RBF_NO_LOCKTIME,
+                        psbt_input: Box::new(psbt::Input {
+                            witness_utxo: Some(utxo.1.clone()),
+                            tap_internal_key,
+                            ..Default::default()
+                        }),
+                    },
+                    satisfaction_weight: Weight::from_wu_usize(65),
+                }
+            })
+            .collect::<Vec<_>>();
 
         let coin_selection = AlwaysSpendImportedFirst(imported_weighted_utxos);
         self.wallet.build_tx().coin_selection(coin_selection)
@@ -285,10 +285,10 @@ impl ProtocolWalletApi for BMPWallet<Connection> {
     ) -> anyhow::Result<Psbt> {
         let mut builder = self.build_tx();
         builder
-                .ordering(TxOrdering::Untouched)
-                .nlocktime(absolute::LockTime::ZERO)
-                .fee_rate(fee_rate)
-                .set_recipients(recipients);
+            .ordering(TxOrdering::Untouched)
+            .nlocktime(absolute::LockTime::ZERO)
+            .fee_rate(fee_rate)
+            .set_recipients(recipients);
         Ok(builder.finish()?)
     }
 
@@ -427,14 +427,19 @@ impl WalletApi for BMPWallet<Connection> {
         // Check whether the signing keys were loaded if not load them into the wallet
         if !self.signers_loaded {
             println!("Loading the signers into the wallet");
-            let recovery_phrase = self.get_seed_phrase().map_err(|_| SignerError::External("Unable to load keys.".to_string()))?;
-            let mnemonic = Mnemonic::parse_normalized(&recovery_phrase).map_err(|_| SignerError::External("Unable to parse recovery phrase".to_string()))?;
+            let recovery_phrase = self
+                .get_seed_phrase()
+                .map_err(|_| SignerError::External("Unable to load keys.".to_string()))?;
+            let mnemonic = Mnemonic::parse_normalized(&recovery_phrase).map_err(|_| {
+                SignerError::External("Unable to parse recovery phrase".to_string())
+            })?;
 
-            let xprv = Xpriv::new_master(self.network(), &mnemonic.to_entropy()).map_err(|_| SignerError::External("Unable to load keys".to_string()))?;
+            let xprv = Xpriv::new_master(self.network(), &mnemonic.to_entropy())
+                .map_err(|_| SignerError::External("Unable to load keys".to_string()))?;
 
             let (_, external_map, _) = Bip86(xprv, KeychainKind::External)
-            .build(self.network())
-            .map_err(|_| SignerError::External("BIP 86 derivation failed".to_string()))?;
+                .build(self.network())
+                .map_err(|_| SignerError::External("BIP 86 derivation failed".to_string()))?;
 
             let (_, internal_map, _) = Bip86(xprv, KeychainKind::Internal)
                 .build(self.network())
@@ -707,7 +712,7 @@ impl WalletApi for BMPWallet<Connection> {
             "ATTACH DATABASE '{}' AS encrypted_db KEY '{}';",
             "bmp_encrypted.db3", enc_key
         );
-        sql  += " SELECT sqlcipher_export('encrypted_db'); DETACH DATABASE encrypted_db;";
+        sql += " SELECT sqlcipher_export('encrypted_db'); DETACH DATABASE encrypted_db;";
 
         self.db.execute_batch(&sql)?;
 
@@ -999,7 +1004,8 @@ mod tests {
                 tap_internal_key: Some(derive_public_key(&keys_to_import[0])),
                 ..Default::default()
             };
-            tx_builder.add_foreign_utxo(i.outpoint, psbt_input, Weight::from_wu(107))
+            tx_builder
+                .add_foreign_utxo(i.outpoint, psbt_input, Weight::from_wu(107))
                 .unwrap();
         });
 
@@ -1009,7 +1015,8 @@ mod tests {
                 tap_internal_key: Some(derive_public_key(&keys_to_import[1])),
                 ..Default::default()
             };
-            tx_builder.add_foreign_utxo(i.outpoint, psbt_input, Weight::from_wu(107))
+            tx_builder
+                .add_foreign_utxo(i.outpoint, psbt_input, Weight::from_wu(107))
                 .unwrap();
         });
 

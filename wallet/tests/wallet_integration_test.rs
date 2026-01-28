@@ -303,7 +303,7 @@ async fn test_cbf_persitence() -> anyhow::Result<()> {
     let env = TestEnv::new()?;
     env.mine_blocks(1)?;
     env.wait_for_block()?;
-    
+
     let mut wallet = BMPWallet::new(Network::Regtest)?;
     let addr = wallet.next_unused_address(KeychainKind::External);
     env.fund_address(&addr, Amount::from_sat(230000))?;
@@ -313,7 +313,7 @@ async fn test_cbf_persitence() -> anyhow::Result<()> {
         env.p2p_socket_addr().unwrap(),
     )];
     env.mine_block()?;
-    wallet.sync_cbf(scan_type, peers.clone()).await?;    
+    wallet.sync_cbf(scan_type, peers.clone()).await?;
     assert_eq!(wallet.balance(), Amount::from_sat(230000));
 
     // Reload the wallet from persisted state
@@ -323,19 +323,20 @@ async fn test_cbf_persitence() -> anyhow::Result<()> {
     // Encrypt the wallet then reload it and check for balance state
     let encrypted_wallet = loaded_wallet.encrypt("secret123")?;
     let mut encrypted_wallet = encrypted_wallet.decrypt("secret123")?;
-    
+
     env.fund_address(&addr, Amount::from_sat(70000))?;
     env.mine_block()?;
     encrypted_wallet.sync_cbf(scan_type, peers.clone()).await?;
     assert_eq!(encrypted_wallet.balance(), Amount::from_sat(300000));
 
     // Create a transaction and broadcast it to the connected peer
-    let receiving_addr  = Address::from_str("tb1pyfv094rr0vk28lf8v9yx3veaacdzg26ztqk4ga84zucqqhafnn5q9my9rz")?;
+    let receiving_addr =
+        Address::from_str("tb1pyfv094rr0vk28lf8v9yx3veaacdzg26ztqk4ga84zucqqhafnn5q9my9rz")?;
     let mut tx_builder = encrypted_wallet.build_tx();
     tx_builder.add_recipient(receiving_addr.assume_checked(), Amount::from_sat(70000));
 
     let mut psbt = tx_builder.finish()?;
-    
+
     encrypted_wallet.sign(&mut psbt, SignOptions::default())?;
 
     let fee = psbt.fee_amount().unwrap();

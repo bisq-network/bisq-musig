@@ -78,14 +78,16 @@ mod tests {
         let target_amount = Amount::from_int_btc(1);
         let drain_script = ScriptBuf::default();
 
-        let res = selection_strategy.coin_select(
-            imported_utxos.clone(),
-            local_utxos.clone(),
-            FeeRate::from_sat_per_kwu(50000),
-            target_amount,
-            &drain_script,
-            &mut thread_rng(),
-        ).unwrap();
+        let res = selection_strategy
+            .coin_select(
+                imported_utxos.clone(),
+                local_utxos.clone(),
+                FeeRate::from_sat_per_kwu(50000),
+                target_amount,
+                &drain_script,
+                &mut thread_rng(),
+            )
+            .unwrap();
 
         // Target amount is 1 BTC so the selected coins + fees should be from foreign
         let selected = res.selected;
