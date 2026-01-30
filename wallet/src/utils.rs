@@ -7,7 +7,6 @@ use bdk_kyoto::bip157::tokio;
 use bdk_kyoto::{Info, Receiver, UnboundedReceiver, Warning};
 use zeroize::Zeroize;
 
-
 /// Derives a 256-bit key from a password and salt using Argon2.
 pub fn derive_key_from_password(password: &str, salt: &[u8]) -> anyhow::Result<String> {
     let argon2 = Argon2::default();
