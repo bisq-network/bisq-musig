@@ -33,5 +33,5 @@ Both scripts assume that you run them from the directory they are in (/concept/p
 After any commit on the branch 'main' the documentation will be converted automatically
 and appears on the github pages at:
 
-[Documentation on Github](https://chrisson15.github.io/bisq-musig/)
+[Documentation on Github](https://bisq-network.github.io/bisq-musig/)
 

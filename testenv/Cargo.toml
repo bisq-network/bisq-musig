@@ -5,6 +5,7 @@ edition = "2021"
 
 [dependencies]
 # Workspace dependencies
+bdk_bitcoind_rpc = { workspace = true }
 anyhow = { workspace = true }
 bdk_wallet = { workspace = true, features = ["test-utils"] }
 bdk_electrum = { workspace = true }
@@ -23,3 +24,5 @@ sha2 = "0.10"
 rand = "0.8.5"
 hex = "0.4.3"
 log = "0.4.28"
+tracing = "0.1.41"
+tracing-subscriber = { version = "0.3.20", features = ["env-filter"] }
