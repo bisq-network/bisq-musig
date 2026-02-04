@@ -301,8 +301,7 @@ async fn test_cbf_imported_and_main() -> anyhow::Result<()> {
 #[tokio::test]
 async fn test_cbf_persitence() -> anyhow::Result<()> {
     let env = TestEnv::new()?;
-    env.mine_blocks(1)?;
-    env.wait_for_block()?;
+    env.mine_block()?;
 
     let mut wallet = BMPWallet::new(Network::Regtest)?;
     let addr = wallet.next_unused_address(KeychainKind::External);

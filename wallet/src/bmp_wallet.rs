@@ -426,7 +426,7 @@ impl WalletApi for BMPWallet<Connection> {
 
         // Check whether the signing keys were loaded if not load them into the wallet
         if !self.signers_loaded {
-            println!("Loading the signers into the wallet");
+            tracing::info!("Loading the signers into the wallet");
             let recovery_phrase = self
                 .get_seed_phrase()
                 .map_err(|_| SignerError::External("Unable to load keys.".to_string()))?;
@@ -786,14 +786,14 @@ mod tests {
 
         let seed = bmp_wallet.get_seed_phrase()?;
 
-        println!("Generated mnemonic {} ", seed);
+        tracing::info!("Generated mnemonic {} ", seed);
         assert!(!seed.is_empty());
 
         let receiving_addr = bmp_wallet.get_new_address()?;
 
         assert_eq!(receiving_addr.address_type(), Some(AddressType::P2tr));
 
-        println!("Generated address {:?}", receiving_addr);
+        tracing::info!("Generated address {:?}", receiving_addr);
 
         // Mark address as used and make sure next address will be different.
         assert!(bmp_wallet.mark_used(KeychainKind::External, receiving_addr.index));
@@ -887,16 +887,16 @@ mod tests {
         let mut bmp_wallet = BMPWallet::new(Network::Bitcoin)?;
         let client = MockedBDKElectrum {};
 
-        println!("Wallet balance before syncing {}", bmp_wallet.balance());
+        tracing::info!("Wallet balance before syncing {}", bmp_wallet.balance());
         assert_eq!(bmp_wallet.balance(), Amount::from_int_btc(0));
 
         let _ = bmp_wallet.sync_all(&client);
 
         assert_eq!(bmp_wallet.balance(), Amount::from_int_btc(1));
 
-        println!("Wallet balance after syncing {}", bmp_wallet.balance());
+        tracing::info!("Wallet balance after syncing {}", bmp_wallet.balance());
 
-        println!("{:#?}", bmp_wallet.tx_graph());
+        tracing::info!("{:#?}", bmp_wallet.tx_graph());
         Ok(())
     }
 
@@ -917,14 +917,14 @@ mod tests {
 
         let client = MockedBDKElectrum {};
 
-        println!("Wallet balance before syncing {}", bmp_wallet.balance());
+        tracing::info!("Wallet balance before syncing {}", bmp_wallet.balance());
         assert_eq!(bmp_wallet.balance(), Amount::from_int_btc(0));
 
         let _ = bmp_wallet.sync_all(&client);
 
         assert_eq!(bmp_wallet.balance(), Amount::from_int_btc(3));
 
-        println!("Wallet balance after syncing {}", bmp_wallet.balance());
+        tracing::info!("Wallet balance after syncing {}", bmp_wallet.balance());
         Ok(())
     }
 
@@ -936,7 +936,7 @@ mod tests {
         let client = MockedBDKElectrum {};
         let mut bmp_wallet = BMPWallet::new(Network::Regtest)?;
 
-        println!("Wallet balance before syncing {}", bmp_wallet.balance());
+        tracing::info!("Wallet balance before syncing {}", bmp_wallet.balance());
         assert_eq!(bmp_wallet.balance(), Amount::from_int_btc(0));
 
         let _ = bmp_wallet.sync_all(&client);
@@ -975,7 +975,7 @@ mod tests {
             .iter()
             .for_each(|k| bmp_wallet.import_private_key(*k));
 
-        println!("Wallet balance before syncing {}", bmp_wallet.balance());
+        tracing::info!("Wallet balance before syncing {}", bmp_wallet.balance());
         assert_eq!(bmp_wallet.balance(), Amount::from_int_btc(0));
 
         let _ = bmp_wallet.sync_all(&client);
@@ -1005,7 +1005,7 @@ mod tests {
                 ..Default::default()
             };
             tx_builder
-                .add_foreign_utxo(i.outpoint, psbt_input, Weight::from_wu(107))
+                .add_foreign_utxo(i.outpoint, psbt_input, Weight::from_wu(66))
                 .unwrap();
         });
 
@@ -1016,7 +1016,7 @@ mod tests {
                 ..Default::default()
             };
             tx_builder
-                .add_foreign_utxo(i.outpoint, psbt_input, Weight::from_wu(107))
+                .add_foreign_utxo(i.outpoint, psbt_input, Weight::from_wu(66))
                 .unwrap();
         });
 
