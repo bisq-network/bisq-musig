@@ -1,19 +1,19 @@
 # Bisq MuSig2 Protocol
 
-This is module inside Bisq2. it implements a new Multisig protocol for Bisq2, this protocol is similar to the protocol used in Bisq1.
+This is a module inside Bisq2. It implements the new Multisig protocol for Bisq2; this protocol is similar to the protocol used in Bisq1.
 It enables to buy/sell bitcoin from other peers without needing any trust in the other peer or into any coordinator or any third party. Since there is no intermediary to
-conduct the exchange, this is as close as its gets to the original bitcoin idea of conducting transaction in a p2p manner secured just by cryptography.
-Main changes to the Bisq1 protocol are:
+conduct the exchange, this is as close as it gets to the original bitcoin idea of conducting transaction in a p2p manner secured just by cryptography.
+The main changes to the Bisq1 protocol are:
 
-- more private, looks like a normal transaction without script.
-- fewer fees, happy path uses only one transaction
+- more private, it looks like a normal transaction without a script.
+- fewer fees, the happy path uses only one transaction
 - uses taproot
-- instead of scripts it uses advance cryptographic schemes like MuSig2 and Adaptor-signatures.
+- instead of scripts, it uses advance cryptographic schemes like MuSig2 and Adaptor-signatures.
 - protocol is designed to handle unresponsive traders automatically
 
 ## overview
 
-This project is the handling the cryptographic part of the overall protocol. Even though it is the centerpiece
+This project is the handling the cryptographic part of the overall protocol. Even though it is the centerpiece,
 there are more pieces necessary to pull this off.
 Here is an Overview drawing:
 
@@ -58,22 +58,12 @@ This helps us keeping clean build and focus on the essentials parts when reviewi
 
 ## running the tests
 
-to run the test you need a work regtest environment as provided by nigiri. You may need to
-for whatever reason I nigiri isn't fully operable unless you stop and start it again.
-Once after start-up I need to run this:
-
-```bash
-
-nigiri stop
-nigiri start
-```
-
-then to run the tests:
+The tests spin up a bitcoind and electrs instance as needed.
 
 ```bash
 
 cd protocol
-cargo test --package protocol --lib --tests -- --nocapture
+cargo test -- --nocapture
 
 ```
 
@@ -82,3 +72,26 @@ cargo test --package protocol --lib --tests -- --nocapture
 Some of the markdown files have LaTeX included, you can best view them using RustRover.
 Github sucks at displaying LaTeX. There is also an html export on the github pages of the project
 at [github pages](https://bisq-network.github.io/bisq-musig/)
+
+## Submodules
+
+### Wallet
+
+[wallet](wallet/README.md)
+
+### rpc
+
+[rpc](rpc/README.md)
+
+### protocol
+
+see /protocol
+
+### Test Environment
+
+[TestEnv](testenv/README.md)
+
+### Concept
+
+[Concept](concept/README.md)
+
