@@ -6,7 +6,6 @@ use crate::bmp_wallet::BMPWalletPersister;
 
 pub trait ChainDataSource {
     const RECOVERY_HEIGHT: usize;
-    const RECOVERY_LOOKAHEAD: usize;
     const BATCH_SIZE: usize;
     const STOP_GAP: usize;
 
@@ -18,7 +17,6 @@ impl ChainDataSource for BdkElectrumClient<Client> {
     // @TODO: revisit these values for having suitable one
     const STOP_GAP: usize = 10;
     const BATCH_SIZE: usize = 16;
-    const RECOVERY_LOOKAHEAD: usize = 50;
     const RECOVERY_HEIGHT: usize = 190_000;
 
     fn sync(&self, persister: &mut PersistedWallet<impl BMPWalletPersister>) -> anyhow::Result<()> {

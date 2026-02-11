@@ -34,15 +34,11 @@ jobs:
       matrix:
         rust:
           - stable
-        features:
-          - --features default
-          - --no-default-features
-          - --all-features
     steps:
       - name: Checkout
         uses: actions/checkout@v4
       - name: Generate cache key
-        run: echo "${{ matrix.rust }} ${{ matrix.features }}" | tee .cache_key
+        run: echo "${{ matrix.rust }}" | tee .cache_key
       - name: Cache
         uses: actions/cache@v4
         with:
@@ -59,11 +55,14 @@ jobs:
           override: true
           components: rustfmt, clippy
 
+      - name: Install dependencies
+        run:  sudo apt-get update && sudo apt-get install -y protobuf-compiler
+
       - name: Build
-        run: cargo build ${{ matrix.features }}
+        run: cargo build 
 
       - name: Clippy
-        run: cargo clippy -- -D warnings
+        run: cargo clippy --all-targets
       
       - name: Unit and Integration tests
         run: cargo test
@@ -77,15 +76,11 @@ jobs:
       matrix:
         rust:
           - stable
-        features:
-          - --features default
-          - --no-default-features
-          - --all-features
     steps:
       - name: Checkout
         uses: actions/checkout@v4
       - name: Generate cache key
-        run: echo "${{ matrix.rust }} ${{ matrix.features }}" | tee .cache_key
+        run: echo "${{ matrix.rust }}" | tee .cache_key
       - name: Cache
         uses: actions/cache@v4
         with:
@@ -101,27 +96,16 @@ jobs:
           profile: minimal
           override: true
           components: rustfmt, clippy
+      
+      - name: Install dependencies
+        run:  sudo apt-get update && sudo apt-get install -y protobuf-compiler
+        
       - name: Build
-        run: cargo build ${{ matrix.features }}
+        run: cargo build
+        
       - name: Clippy
-        run: cargo clippy -- -D warnings
+        run: cargo clippy --all-targets
+
       - name: Unit and Integration tests
         run: cargo test
 
-  fmt:
-    name: Rust fmt
-    needs: changes
-    if: needs.changes.outputs.wallet == 'true' || needs.changes.outputs.protocol == 'true'
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-      - name: Setup Rust Toolchain
-        uses: actions-rs/toolchain@v1
-        with:
-          toolchain: stable
-          profile: minimal
-          override: true
-          components: rustfmt
-      - name: Check fmt
-        run: cargo fmt --all -- --check

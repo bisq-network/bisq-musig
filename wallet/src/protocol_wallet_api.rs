@@ -30,4 +30,3 @@ pub trait ProtocolWalletApi {
     // After importing a rescan should be triggered
     fn import_private_key(&mut self, pk: Scalar);
 }
-
