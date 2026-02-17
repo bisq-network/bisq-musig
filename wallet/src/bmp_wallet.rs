@@ -241,8 +241,7 @@ impl BMPWallet<Connection> {
                     .iter()
                     .map(|scalar| {
                         let pbk = scalar.base_point_mul().serialize_xonly();
-                        XOnlyPublicKey::from_slice(&pbk)
-                        .expect("Should be valid xonlypub key")
+                        XOnlyPublicKey::from_slice(&pbk).expect("Should be valid xonlypub key")
                     })
                     .find(|pubkey| {
                         let script = ScriptBuf::new_p2tr(secp, *pubkey, None);
@@ -302,7 +301,8 @@ impl ProtocolWalletApi for BMPWallet<Connection> {
         for i in 0..psbt.inputs.len() {
             if is_selected(&psbt.unsigned_tx.input[i].previous_output) {
                 psbt.inputs[i].final_script_sig = psbt_copy.inputs[i].final_script_sig.take();
-                psbt.inputs[i].final_script_witness = psbt_copy.inputs[i].final_script_witness.take();
+                psbt.inputs[i].final_script_witness =
+                    psbt_copy.inputs[i].final_script_witness.take();
             }
         }
         Ok(())
