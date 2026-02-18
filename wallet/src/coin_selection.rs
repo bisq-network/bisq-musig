@@ -54,10 +54,9 @@ impl CoinSelectionAlgorithm for AlwaysSpendImportedFirst {
 
 #[cfg(test)]
 mod tests {
-
     use bdk_wallet::bitcoin::key::rand::thread_rng;
     use bdk_wallet::bitcoin::{Amount, FeeRate, ScriptBuf};
-    use bdk_wallet::coin_selection::{CoinSelectionAlgorithm, Excess};
+    use bdk_wallet::coin_selection::{CoinSelectionAlgorithm as _, Excess};
 
     use crate::coin_selection::AlwaysSpendImportedFirst;
     use crate::test_utils::{confirmed_utxo, foreign_utxo};

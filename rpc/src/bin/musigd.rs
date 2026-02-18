@@ -1,3 +1,6 @@
+use std::error::Error;
+use std::sync::Arc;
+
 use clap::Parser;
 use rpc::bmp_service::BmpServiceImpl;
 use rpc::bmp_wallet_service::BmpWalletServiceImpl;
@@ -5,8 +8,6 @@ use rpc::pb::bmp_protocol::bmp_protocol_service_server::BmpProtocolServiceServer
 use rpc::pb::bmp_wallet::wallet_server::WalletServer as BmpWalletServer;
 use rpc::server::{MusigImpl, MusigServer, WalletImpl, WalletServer};
 use rpc::wallet::WalletServiceImpl;
-use std::error::Error;
-use std::sync::Arc;
 use testenv::TestEnv;
 use tonic::transport::Server;
 use tracing::info;

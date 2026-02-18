@@ -1,4 +1,4 @@
-use std::str::FromStr;
+use std::str::FromStr as _;
 
 use anyhow::Ok;
 use bdk_electrum::electrum_client::{Client, Config};
@@ -6,9 +6,9 @@ use bdk_electrum::BdkElectrumClient;
 use bdk_kyoto::bip157::tokio;
 use bdk_kyoto::TrustedPeer;
 use bdk_wallet::bitcoin::{Address, Amount, Network};
-use bdk_wallet::psbt::PsbtUtils;
+use bdk_wallet::psbt::PsbtUtils as _;
 use bdk_wallet::{KeychainKind, SignOptions};
-use rand::RngCore;
+use rand::RngCore as _;
 use secp::Scalar;
 use testenv::TestEnv;
 use wallet::bmp_wallet::*;

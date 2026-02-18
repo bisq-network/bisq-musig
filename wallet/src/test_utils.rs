@@ -1,15 +1,15 @@
-use std::str::FromStr;
+use std::str::FromStr as _;
 
-use bdk_wallet::bitcoin::hashes::Hash;
-use bdk_wallet::bitcoin::hex::DisplayHex;
-use bdk_wallet::bitcoin::key::{Keypair, Secp256k1, TapTweak};
+use bdk_wallet::bitcoin::hashes::Hash as _;
+use bdk_wallet::bitcoin::hex::DisplayHex as _;
+use bdk_wallet::bitcoin::key::{Keypair, Secp256k1, TapTweak as _};
 use bdk_wallet::bitcoin::secp256k1::{schnorr, Message};
 use bdk_wallet::bitcoin::sighash::{Prevouts, SighashCache};
 use bdk_wallet::bitcoin::{
     psbt, Amount, BlockHash, Network, OutPoint, PrivateKey, ScriptBuf, Sequence, TapSighashType,
     Transaction, TxOut, Weight, Witness, XOnlyPublicKey,
 };
-use bdk_wallet::chain::{self, BlockId, ChainPosition, ConfirmationBlockTime};
+use bdk_wallet::chain::{BlockId, ChainPosition, ConfirmationBlockTime};
 use bdk_wallet::rusqlite::Connection;
 use bdk_wallet::test_utils::{insert_checkpoint, receive_output_in_latest_block};
 use bdk_wallet::{KeychainKind, LocalOutput, PersistedWallet, Utxo, Wallet, WeightedUtxo};
@@ -136,7 +136,7 @@ pub fn confirmed_utxo(
         index,
         ChainPosition::Confirmed {
             anchor: ConfirmationBlockTime {
-                block_id: chain::BlockId {
+                block_id: BlockId {
                     height: confirmation_height,
                     hash: BlockHash::all_zeros(),
                 },

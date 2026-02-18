@@ -2,9 +2,8 @@
 
 use std::sync::{Arc, Mutex, RwLock};
 
-use crate::observable::ObservableHashMap;
 use bdk_bitcoind_rpc::bitcoincore_rpc::{Client, RpcApi as _};
-use bdk_bitcoind_rpc::{bitcoincore_rpc, Emitter};
+use bdk_bitcoind_rpc::Emitter;
 use bdk_wallet::bitcoin::{Network, Transaction, Txid};
 use bdk_wallet::chain::{ChainPosition, CheckPoint, ConfirmationBlockTime};
 use bdk_wallet::{AddressInfo, Balance, KeychainKind, LocalOutput, Wallet};
@@ -15,6 +14,8 @@ use thiserror::Error;
 use tokio::task::{self, JoinHandle};
 use tokio::time::{self, Duration, MissedTickBehavior};
 use tracing::{debug, error, info, trace};
+
+use crate::observable::ObservableHashMap;
 
 //noinspection SpellCheckingInspection
 const EXTERNAL_DESCRIPTOR: &str = "tr(tprv8ZgxMBicQKsPdrjwWCyXqqJ4YqcyG4DmKtjjsRt29v1PtD3r3PuFJAj\
@@ -53,15 +54,15 @@ pub struct WalletServiceImpl {
     tx_confidence_map: Mutex<ObservableHashMap<Txid, TxConfidence>>,
 
     // Make the following RPC parameters configurable for testing:
-    rpc_client: bitcoincore_rpc::Client,
+    rpc_client: Client,
     poll_period: Duration,
 }
+
 const BITCOIND_POLLING_PERIOD: Duration = Duration::from_millis(100);
 
 impl WalletServiceImpl {
-
     // TODO: Make wallet setup properly configurable, not just the RPC authentication method and polling period.
-    pub fn create_with_rpc_params(rpc_client: bitcoincore_rpc::Client) -> Self {
+    pub fn create_with_rpc_params(rpc_client: Client) -> Self {
         let wallet = Wallet::create(EXTERNAL_DESCRIPTOR, INTERNAL_DESCRIPTOR)
             .network(Network::Regtest)
             .create_wallet_no_persist()

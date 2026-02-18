@@ -1,10 +1,9 @@
-use bdk_electrum::bdk_core::bitcoin;
-use bdk_electrum::bdk_core::bitcoin::key::{Keypair, Secp256k1, TweakedKeypair, TweakedPublicKey};
-use bdk_electrum::bdk_core::bitcoin::secp256k1::Message;
-use bdk_electrum::bdk_core::bitcoin::{Amount, TapSighashType};
-use bdk_wallet::bitcoin::key::TapTweak as _;
-use musig2::secp::Point;
+use bdk_wallet::bitcoin;
+use bitcoin::key::{Keypair, Secp256k1, TapTweak as _, TweakedKeypair, TweakedPublicKey};
+use bitcoin::secp256k1::Message;
+use bitcoin::{Amount, TapSighashType};
 use musig2::KeyAggContext;
+use musig2::secp::Point;
 use protocol::protocol_musig_adaptor::{BMPContext, BMPProtocol, MemWallet, ProtocolRole};
 use protocol::transaction::WithWitnesses as _;
 use protocol::wallet_service::WalletService;

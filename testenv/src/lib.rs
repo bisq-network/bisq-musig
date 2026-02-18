@@ -1,11 +1,12 @@
+
+use std::error::Error as _;
 use std::net::SocketAddrV4;
 use std::sync::{Arc, LazyLock};
 use std::time::Duration;
 
-/// Bitcoin regtest environment using electrsd with automatic executable downloads
-use anyhow::{Context, Result};
+use anyhow::{Context as _, Result};
 use bdk_bitcoind_rpc::bitcoincore_rpc;
-use bdk_bitcoind_rpc::bitcoincore_rpc::{Auth, RpcApi};
+use bdk_bitcoind_rpc::bitcoincore_rpc::{Auth, RpcApi as _};
 use bdk_electrum::bdk_core::bitcoin::{KnownHrp, XOnlyPublicKey};
 use bdk_electrum::BdkElectrumClient;
 use bdk_wallet::bitcoin::address::NetworkChecked;
@@ -16,12 +17,11 @@ pub use corepc_node::get_available_port;
 use electrsd::corepc_node::Node;
 use electrsd::electrum_client::{Client, ElectrumApi};
 use electrsd::{corepc_node, ElectrsD};
-use hmac::{Hmac, Mac};
-use rand::{Rng, RngCore};
+use hmac::{Hmac, Mac as _};
+use rand::{Rng as _, RngCore as _};
 use secp::Scalar;
 use sha2::Sha256;
 use simple_semaphore::{Permit, Semaphore};
-use std::error::Error;
 use tempfile::{tempdir, TempDir};
 use tracing_subscriber::field::MakeExt;
 use tracing_subscriber::filter::{EnvFilter, ParseError};
@@ -29,14 +29,13 @@ use tracing_subscriber::fmt;
 use tracing_subscriber::layer::SubscriberExt as _;
 use tracing_subscriber::util::SubscriberInitExt as _;
 
-
 /// Bitcoin regtest environment manager
 pub struct TestEnv {
     bitcoind: Node,
     electrsd: ElectrsD,
     timeout: Duration,
     delay: Duration,
-    bdk_electrum_client: bdk_electrum::BdkElectrumClient<Client>,
+    bdk_electrum_client: BdkElectrumClient<Client>,
     ctx: Secp256k1<All>,
     _permit: Permit,
     _tmp_dir: TempDir,
@@ -516,8 +515,9 @@ impl Drop for TestEnv {
 
 #[cfg(test)]
 mod tests {
+    use bdk_bitcoind_rpc::bitcoincore_rpc::RpcApi as _;
+
     use super::*;
-    use bdk_bitcoind_rpc::bitcoincore_rpc::RpcApi;
 
     #[test]
     fn test_basic_creation() -> Result<()> {

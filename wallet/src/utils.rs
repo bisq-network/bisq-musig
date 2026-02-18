@@ -2,10 +2,10 @@ use std::fs;
 
 use argon2::{Argon2, Block, Params};
 use base64::engine::general_purpose;
-use base64::Engine;
+use base64::Engine as _;
 use bdk_kyoto::bip157::tokio;
 use bdk_kyoto::{Info, Receiver, UnboundedReceiver, Warning};
-use zeroize::Zeroize;
+use zeroize::Zeroize as _;
 
 /// Derives a 256-bit key from a password and salt using Argon2.
 pub fn derive_key_from_password(password: &str, salt: &[u8]) -> anyhow::Result<String> {
