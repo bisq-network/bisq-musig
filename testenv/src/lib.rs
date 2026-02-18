@@ -1,5 +1,4 @@
 use std::net::SocketAddrV4;
-use std::sync::Arc;
 use std::time::Duration;
 
 /// Bitcoin regtest environment using electrsd with automatic executable downloads
@@ -22,6 +21,7 @@ use secp::Scalar;
 use sha2::Sha256;
 use simple_semaphore::{Permit, Semaphore};
 use std::error::Error;
+use std::sync::Arc;
 use tempfile::{tempdir, TempDir};
 use tracing_subscriber::field::MakeExt;
 use tracing_subscriber::filter::{EnvFilter, ParseError};
@@ -41,6 +41,7 @@ pub struct TestEnv {
     _permit: Permit,
     _tmp_dir: TempDir,
     explorer_process: Option<std::process::Child>,
+    explorer_port: u16,
     container_name: Option<String>,
     bitcoin_rpc_pwd: String,
 }
@@ -256,6 +257,7 @@ impl TestEnv {
             _permit: permit,
             _tmp_dir: tmp_dir,
             explorer_process: None,
+            explorer_port: 0,
             container_name: None,
             bitcoin_rpc_pwd
         };
@@ -272,18 +274,18 @@ impl TestEnv {
     pub fn start_explorer_in_container(&mut self) -> Result<()> {
         // this start a container for debugging
         let bitcoind_rpc_port = self.bitcoin_rpc_port();
-        let browserport = get_available_port()?;
+        self.explorer_port = get_available_port()?;
 
         let electrum_port = self.electrsd.electrum_url.split(':').next_back()
                 .context("Failed to parse electrum port")?;
 
-        let container_name = format!("btc-explorer-{}", browserport);
+        let container_name = format!("btc-explorer-{}", self.explorer_port);
 
         let mut container = std::process::Command::new("podman");
         container.args(["run", "--rm",
             "--name", &container_name,
             "-p",
-            format!("{}:3002", browserport).as_str(),
+            format!("{}:3002", self.explorer_port).as_str(),
             "--add-host=host.containers.internal:host-gateway",
             "-e",
             "BTCEXP_BITCOIND_HOST=host.containers.internal",
@@ -308,10 +310,16 @@ impl TestEnv {
         self.explorer_process = Some(child);
         self.container_name = Some(container_name);
 
-        eprintln!("Starting explorer in container, access it at http://127.0.0.1:{}/blocks", browserport);
+        eprintln!("Starting explorer in container, access it at http://127.0.0.1:{}/blocks", self.explorer_port);
         eprintln!("you can check the container logs with: ");
         eprintln!("podman logs -f --timestamps {}", self.container_name.as_ref().unwrap());
         Ok(())
+    }
+
+    pub fn debug_tx(&self, tx_name: &str, txid: Txid) {
+        if self.explorer_process.is_some() {
+            eprintln!("{} http://127.0.0.1:{}/tx/{}", tx_name, self.explorer_port, txid);
+        }
     }
 
     pub fn bitcoin_rpc_port(&self) -> u16 {

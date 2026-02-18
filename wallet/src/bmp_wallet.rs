@@ -643,7 +643,7 @@ impl WalletApi for BMPWallet<Connection> {
     }
 
     fn balance(&self) -> Amount {
-        (self.imported_balance.clone() + self.wallet.balance()).trusted_spendable()
+        self.imported_balance.trusted_spendable() + self.wallet.balance().trusted_spendable()
     }
 
     fn get_seed_phrase(&self) -> anyhow::Result<String> {
@@ -717,6 +717,8 @@ impl DerefMut for BMPWallet<Connection> {
 mod tests {
     use std::sync::Arc;
 
+    use crate::bmp_wallet::{BMPWallet, WalletApi};
+    use crate::test_utils::{derive_public_key, load_imported_wallet, MockedBDKElectrum};
     use bdk_wallet::bitcoin::hashes::Hash;
     use bdk_wallet::bitcoin::{psbt, Address, AddressType, Amount, BlockHash, Network, Weight};
     use bdk_wallet::chain::{self, BlockId};
@@ -726,9 +728,7 @@ mod tests {
     use secp::Scalar;
     use simple_semaphore::{self, Semaphore};
     use tempfile::{tempdir, TempDir};
-
-    use crate::bmp_wallet::{BMPWallet, WalletApi};
-    use crate::test_utils::{derive_public_key, load_imported_wallet, MockedBDKElectrum};
+    use testenv::TestEnv;
 
     static SEMAPHORE: once_cell::sync::Lazy<Arc<Semaphore>> =
         once_cell::sync::Lazy::new(|| Semaphore::new(1));
@@ -747,8 +747,7 @@ mod tests {
 
     #[test]
     fn test_create_wallet() -> anyhow::Result<()> {
-        let _permit = SEMAPHORE.acquire();
-        let _tmp_dir = tear_up();
+        let env = TestEnv::new()?;
 
         let mut bmp_wallet = BMPWallet::new(Network::Regtest)?;
         assert_eq!(bmp_wallet.imported_keys.len(), 0);
@@ -781,8 +780,7 @@ mod tests {
 
     #[test]
     fn test_load_wallet() -> anyhow::Result<()> {
-        let _permit = SEMAPHORE.acquire();
-        let _tmp_dir = tear_up();
+        let env = TestEnv::new()?;
 
         let stored_seed: String;
         let stored_balance: Amount;
@@ -851,8 +849,7 @@ mod tests {
 
     #[test]
     fn test_sync() -> anyhow::Result<()> {
-        let _permit = SEMAPHORE.acquire();
-        let _tmp_dir = tear_up();
+        let env = TestEnv::new()?;
 
         let mut bmp_wallet = BMPWallet::new(Network::Bitcoin)?;
         let client = MockedBDKElectrum {};
@@ -872,8 +869,7 @@ mod tests {
 
     #[test]
     fn test_sync_with_imported_keys() -> anyhow::Result<()> {
-        let _permit = SEMAPHORE.acquire();
-        let _tmp_dir = tear_up();
+        let env = TestEnv::new()?;
 
         let pk1 = new_private_key();
         let pk2 = new_private_key();
@@ -900,8 +896,7 @@ mod tests {
 
     #[test]
     fn sign_inputs_main_wallet_only() -> anyhow::Result<()> {
-        let _permit = SEMAPHORE.acquire();
-        let _tmp_dir = tear_up();
+        let env = TestEnv::new()?;
 
         let client = MockedBDKElectrum {};
         let mut bmp_wallet = BMPWallet::new(Network::Regtest)?;
@@ -934,8 +929,7 @@ mod tests {
 
     #[test]
     fn sign_inputs_main_and_imported_keys() -> anyhow::Result<()> {
-        let _permit = SEMAPHORE.acquire();
-        let _tmp_dir = tear_up();
+        let env = TestEnv::new()?;
 
         let client = MockedBDKElectrum {};
         let mut bmp_wallet = BMPWallet::new(Network::Regtest)?;
@@ -1002,8 +996,7 @@ mod tests {
 
     #[test]
     fn test_selection_with_main_and_imported() -> anyhow::Result<()> {
-        let _permit = SEMAPHORE.acquire();
-        let _tmp_dir = tear_up();
+        let env = TestEnv::new()?;
 
         let client = MockedBDKElectrum {};
         let mut bmp_wallet = BMPWallet::new(Network::Regtest)?;
@@ -1046,8 +1039,7 @@ mod tests {
     #[test]
     #[should_panic = "value: file is not a database"]
     fn encrypted_wallet() {
-        let _permit = SEMAPHORE.acquire();
-        let _tmp_dir = tear_up();
+        let env = TestEnv::new().unwrap();
 
         let bmp_wallet = BMPWallet::new(Network::Regtest).unwrap();
         // bmp_wallet database is unencrypted by default, reading from it should be fine
@@ -1070,8 +1062,7 @@ mod tests {
 
     #[test]
     fn encrypted_wallet_with_decryption() {
-        let _permit = SEMAPHORE.acquire();
-        let _tmp_dir = tear_up();
+        let env = TestEnv::new().unwrap();
 
         let bmp_wallet = BMPWallet::new(Network::Regtest).unwrap();
         // bmp_wallet database is unencrypted by default, reading from it should be fine

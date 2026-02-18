@@ -71,12 +71,13 @@ fn test_swap() -> anyhow::Result<()> {
 
     // create all transaction and Broadcast DepositTx already
     let (mut alice, mut bob) = initial_tx_creation(&env)?;
-    dbg!(alice.swap_tx.unsigned_tx()?);
-    dbg!(bob.swap_tx.unsigned_tx()?);
+    env.debug_tx("alice.swap_tx", alice.swap_tx.unsigned_tx()?.compute_txid());
+    env.debug_tx("bob.swap_tx", bob.swap_tx.unsigned_tx()?.compute_txid());
 
     // alice broadcasts SwapTx
     let alice_swap = alice.swap_tx.sign(&alice.p_tik)?;
-    dbg!(alice.swap_tx.broadcast(&alice.ctx)?);
+    let alice_swap_txid = alice.swap_tx.broadcast(&alice.ctx)?;
+    env.debug_tx("alice_swap_txid", alice_swap_txid);
     env.mine_block()?;
     // bob must find the transaction and retrieve P_a from it and then spend DepositTx-Output0 to his wallet.
     // TODO need to read the transaction from blockchain looking for bob.swap_tx.txid
@@ -101,17 +102,18 @@ fn test_warning() -> anyhow::Result<()> {
 
     // create all transaction and Broadcast DepositTx already
     let (alice, _bob) = initial_tx_creation(&env)?;
-    dbg!(alice.warning_tx_me.signed_tx()?);
+
     // alice broadcasts WarningTx
-    dbg!(alice.warning_tx_me.broadcast(&alice.ctx)?);
+    let txid = alice.warning_tx_me.broadcast(&alice.ctx)?;
+    env.debug_tx("warning_tx_me", txid);
     env.mine_block()?;
     Ok(())
 }
 
 #[test]
 fn test_claim() -> anyhow::Result<()> {
-    let env = TestEnv::new()?;
-    // env.start_explorer_in_container()?;
+    let mut env = TestEnv::new()?;
+    env.start_explorer_in_container()?;
 
     // create all transaction and Broadcast DepositTx already
     let (alice, _bob) = initial_tx_creation(&env)?;
@@ -119,7 +121,7 @@ fn test_claim() -> anyhow::Result<()> {
     alice.warning_tx_me.broadcast(&alice.ctx)?;
     env.mine_block()?;
     env.mine_block()?; // we have set time-delay t2 to 2 Blocks
-    dbg!(alice.claim_tx_me.signed_tx()?);
+    // dbg!(alice.claim_tx_me.signed_tx()?);
 
     // according to BIP-68 min time to wait is 512sec
     // let mut remaining_time = 532;
@@ -132,7 +134,7 @@ fn test_claim() -> anyhow::Result<()> {
 
     let tx = alice.claim_tx_me.broadcast(&alice.ctx)?;
 
-    println!("http://localhost:5000/tx/{tx}");
+    env.debug_tx("claim_tx_me", tx);
     env.mine_block()?;
     Ok(())
 }
@@ -173,10 +175,10 @@ fn test_redirect() -> anyhow::Result<()> {
     // alice broadcasts WarningTx
     let bob_warn_id = bob.warning_tx_me.broadcast(&bob.ctx)?;
     env.mine_block()?;
-    dbg!(bob_warn_id);
+    env.debug_tx("bob_warn_id", bob_warn_id);
 
     let tx = alice.redirect_tx_me.broadcast(&alice.ctx)?;
-    dbg!(tx);
+    env.debug_tx("redirect_tx_me", tx);
     env.mine_block()?;
     Ok(())
 }
@@ -240,7 +242,7 @@ fn test_q_tik() -> anyhow::Result<()> {
         .with_key_spend_witness(0, &signature_secp);
 
     let txid = alice.ctx.funds.transaction_broadcast(&tx)?;
-    dbg!(txid);
+    env.debug_tx("bob.swap_tx", txid);
     env.mine_block()?;
     Ok(())
 }

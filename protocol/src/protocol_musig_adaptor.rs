@@ -81,9 +81,6 @@ impl MemWallet {
 
         let network: Network = Network::Regtest;
         let xprv: Xpriv = Xpriv::new_master(network, &seed)?;
-        println!("Generated Master Private Key:\n{xprv}\nWarning: be very careful with private \
-            keys when using MainNet! We are logging these values for convenience only because this \
-            is an example on RegTest.\n");
 
         let (descriptor, external_map, _) = Bip86(xprv, KeychainKind::External)
             .build(network)
@@ -396,7 +393,7 @@ impl BMPProtocol {
     #[expect(clippy::needless_pass_by_value, reason = "gives a safer & more consistent API")]
     pub fn round4(&mut self, bob: Round3Parameter) -> anyhow::Result<Round4Parameter> {
         self.check_round(4);
-        dbg!(&bob);
+        // dbg!(&bob);
         self.swap_tx.aggregate_sigs(bob.swap_part_sig)?;
         self.warning_tx_me.aggregate_sigs(bob.p_part_peer, bob.q_part_peer)?;
         self.claim_tx_me.aggregate_sigs(bob.claim_part_sig)?;
@@ -600,7 +597,7 @@ impl WarningTx {
         }
     }
 
-    fn build(&mut self, ctx: &mut BMPContext, p_tik: &KeyCtx, q_tik: &KeyCtx, deposit_tx: &DepositTx) -> anyhow::Result<()> {
+    fn build(&mut self, _ctx: &mut BMPContext, p_tik: &KeyCtx, q_tik: &KeyCtx, deposit_tx: &DepositTx) -> anyhow::Result<()> {
         self.sig_p.set_tweaked_key_ctx(p_tik.with_taproot_tweak(None)?);
         self.sig_p.init_my_nonce_share()?;
         self.sig_q.set_tweaked_key_ctx(q_tik.with_taproot_tweak(None)?);
@@ -612,7 +609,7 @@ impl WarningTx {
             ProtocolRole::Buyer => p_tik
         }.with_taproot_tweak(None)?;
 
-        let tx = self.builder
+        let _tx = self.builder
             .set_buyer_input(deposit_tx.builder.buyer_payout()?.clone())
             .set_seller_input(deposit_tx.builder.seller_payout()?.clone())
             .set_escrow_address(key_spend.p2tr_address(Network::Regtest))
@@ -622,7 +619,7 @@ impl WarningTx {
             .compute_unsigned_tx()?
             .unsigned_tx()?;
 
-        dbg!(ctx.role, self.role, tx.compute_txid());
+        // dbg!(ctx.role, self.role, tx.compute_txid());
         Ok(())
     }
 
@@ -641,10 +638,8 @@ impl WarningTx {
     }
 
     pub fn aggregate_sigs(&mut self, p_part_sig: PartialSignature, q_part_sig: PartialSignature) -> anyhow::Result<()> {
-        dbg!("agg p");
         self.sig_p.set_peers_partial_sig(p_part_sig);
         self.sig_p.aggregate_partial_signatures()?;
-        dbg!("agg q");
         self.sig_q.set_peers_partial_sig(q_part_sig);
         self.sig_q.aggregate_partial_signatures()?;
 
@@ -837,7 +832,7 @@ impl DepositTx {
         let tx = self.builder.signed_tx()?;
         // TODO both alice and bob will broadcast, is that a bug or a feature?
         let deposit_txid = ctx.funds.transaction_broadcast(&tx)?;
-        dbg!("DepositTx txid: {:?}", &deposit_txid);
+        // dbg!(&deposit_txid);
         Ok(deposit_txid)
     }
 
