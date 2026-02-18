@@ -4,24 +4,22 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-bdk_wallet = { workspace = true }
-bdk_electrum = { workspace = true }
 anyhow = { workspace = true }
-rand = { workspace = true }
-secp = { workspace = true }
-
-rusqlite = { workspace = true }
 argon2 = { workspace = true, features = ["zeroize"] }
-hex = { workspace = true }
 base64 = { workspace = true }
-zeroize = { workspace = true }
-rustls = { workspace = true }
+bdk_electrum = { workspace = true }
 bdk_kyoto = { workspace = true }
+bdk_wallet = { workspace = true }
+hex = { workspace = true }
+rand = { workspace = true }
+rusqlite = { workspace = true }
+secp = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
+zeroize = { workspace = true }
+
 [dev-dependencies]
-tempfile = "3.23.0"
-bdk_wallet = { workspace = true , features = ["test-utils"]}
-simple-semaphore = "0.2.0"
-once_cell = "1.21"
+bdk_wallet = { workspace = true, features = ["test-utils"] }
+simple-semaphore = { workspace = true }
+tempfile = { workspace = true }
 testenv = { path = "../testenv"}

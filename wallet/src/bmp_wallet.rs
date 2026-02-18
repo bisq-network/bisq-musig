@@ -745,7 +745,7 @@ impl DerefMut for BMPWallet<Connection> {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
+    use std::sync::{Arc, LazyLock};
 
     use bdk_wallet::bitcoin::hashes::Hash;
     use bdk_wallet::bitcoin::{psbt, Address, AddressType, Amount, BlockHash, Network, Weight};
@@ -760,8 +760,7 @@ mod tests {
     use crate::bmp_wallet::{BMPWallet, WalletApi};
     use crate::test_utils::{derive_public_key, load_imported_wallet, MockedBDKElectrum};
 
-    static SEMAPHORE: once_cell::sync::Lazy<Arc<Semaphore>> =
-        once_cell::sync::Lazy::new(|| Semaphore::new(1));
+    static SEMAPHORE: LazyLock<Arc<Semaphore>> = LazyLock::new(|| Semaphore::new(1));
 
     fn tear_up() -> TempDir {
         let tmp_dir = tempdir().unwrap();

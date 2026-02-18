@@ -1,5 +1,5 @@
 use std::net::SocketAddrV4;
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock};
 use std::time::Duration;
 
 /// Bitcoin regtest environment using electrsd with automatic executable downloads
@@ -88,9 +88,7 @@ impl Default for Config<'_> {
 }
 
 const NETWORK: Network = Network::Regtest;
-static SEMAPHORE: once_cell::sync::Lazy<Arc<Semaphore>> =
-    once_cell::sync::Lazy::new(|| Semaphore::new(1));
-
+static SEMAPHORE: LazyLock<Arc<Semaphore>> = LazyLock::new(|| Semaphore::new(1));
 
 // Type alias for Hmac-Sha256
 type HmacSha256 = Hmac<Sha256>;
@@ -103,23 +101,22 @@ type HmacSha256 = Hmac<Sha256>;
 /// Returns a tuple of (rpcauth_string, password).
 pub fn generate_rpcauth(username: &str, password: Option<&str>) -> (String, String) {
     // Generate or use provided password
-    let pw = match password {
-        Some(p) => p.to_string(),
-        None => {
-            // Generate a random 32-char alphanumeric password
-            let mut rng = rand::thread_rng();
-            (0..32)
-                    .map(|_| {
-                        let chars = b"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
-                        chars[rng.gen_range(0..chars.len())] as char
-                    })
-                    .collect()
-        }
+    let pw = if let Some(p) = password {
+        p.to_owned()
+    } else {
+        // Generate a random 32-char alphanumeric password
+        let mut rng = rand::rng();
+        (0..32)
+            .map(|_| {
+                let chars = b"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
+                chars[rng.random_range(0..chars.len())] as char
+            })
+            .collect()
     };
 
     // Generate a random 16-byte salt
     let mut salt_bytes = [0u8; 16];
-    rand::thread_rng().fill_bytes(&mut salt_bytes);
+    rand::rng().fill_bytes(&mut salt_bytes);
     let salt_hex = hex::encode(salt_bytes);
 
     // Compute HMAC-SHA256(salt, password)
