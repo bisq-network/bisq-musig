@@ -338,7 +338,7 @@ impl TestEnv {
     pub fn bitcoin_core_rpc_client(&self) -> bitcoincore_rpc::Result<bitcoincore_rpc::Client> {
         let url = &self.bitcoind.rpc_url();
         let auth: Auth = Auth::CookieFile(self.bitcoind.params.cookie_file.clone());
-        bitcoincore_rpc::Client::new(&url, auth)
+        bitcoincore_rpc::Client::new(url, auth)
     }
 
     /// Get the electrum URL

@@ -40,13 +40,15 @@ impl MemWallet {
         Ok(result?)
     }
 
-
-    pub fn funded_wallet(env: &TestEnv) -> MemWallet {
+    pub fn funded_wallet(env: &TestEnv) -> Self {
         // TODO move this line to TestEnv
-        let client = BdkElectrumClient::new(electrum_client::Client::new(&*env.electrum_url()).unwrap());
-        let mut wallet = MemWallet::new(client).unwrap();
+        let client =
+            BdkElectrumClient::new(electrum_client::Client::new(&env.electrum_url()).unwrap());
+        let mut wallet = Self::new(client).unwrap();
         let address = wallet.next_unused_address();
-        let txid = env.fund_address(&*address, Amount::from_btc(10f64).unwrap()).unwrap();
+        let txid = env
+            .fund_address(&address, Amount::from_btc(10f64).unwrap())
+            .unwrap();
         env.mine_block().unwrap();
         env.wait_for_tx(txid).unwrap();
         wallet.sync().unwrap();
@@ -204,7 +206,7 @@ pub struct Round4Parameter {
 
 /**
 this context is for the whole process and need to be persisted by the caller
- */
+*/
 pub struct BMPContext {
     // first of all, everything which is general to the protocol itself
     pub funds: MemWallet,
@@ -434,7 +436,7 @@ can raise the fees with CPFP to get it mined before `ClaimTx` can be broadcast.
 
 `RedirectTx` Bob spends from `WarningTx` Alice, that's important.
 Sending funds to the DAO is done by having a list of addresses (from contributors) and percentages. (must add up to 100%)
- */
+*/
 #[derive(Default)]
 pub struct RedirectTx {
     pub sig: SigCtx,
@@ -508,7 +510,7 @@ impl RedirectTx {
 `ClaimTx` -- One version for Alice and one for Bob.
 If the other side will not react on the `WarningTx` (by sending the `RedirectTx`)
 then Alice can claim the total amounts for herself.
- */
+*/
 #[derive(Default)]
 pub struct ClaimTx {
     pub sig: SigCtx,
@@ -561,7 +563,7 @@ impl ClaimTx {
 /**
 `WarningTx` -- there is one version for Alice and one for Bob.
 That means each party generates both transaction and sign them.
- */
+*/
 pub struct WarningTx {
     // is that my WarningTx? (mainly for safety checking):
     role: ProtocolRole,
@@ -658,7 +660,7 @@ impl WarningTx {
 
 /**
 Only the seller gets a `SwapTx`, this is the only asymmetric part of the p3
- */
+*/
 pub struct SwapTx {
     // this transaction is only for Alice, however even Bob will construct it for signing:
     pub role: ProtocolRole,

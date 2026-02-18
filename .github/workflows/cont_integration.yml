@@ -1,0 +1,111 @@
+name: CI
+
+on: [push, pull_request]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  changes:
+    name: Detect changes
+    runs-on: ubuntu-latest
+    outputs:
+      wallet: ${{ steps.filter.outputs.wallet }}
+      protocol: ${{ steps.filter.outputs.protocol }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check changed paths
+        id: filter
+        uses: dorny/paths-filter@v3
+        with:
+          filters: |
+            wallet:
+              - 'wallet/**'
+            protocol:
+              - 'protocol/**'
+
+  wallet:
+    name: Build and test wallet
+    needs: changes
+    if: needs.changes.outputs.wallet == 'true'
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        rust:
+          - stable
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Generate cache key
+        run: echo "${{ matrix.rust }}" | tee .cache_key
+      - name: Cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('.cache_key') }}-${{ hashFiles('**/Cargo.toml','**/Cargo.lock') }}
+      - name: Setup Rust Toolchain
+        uses: actions-rs/toolchain@v1
+        with:
+          toolchain: ${{ matrix.rust }}
+          profile: minimal
+          override: true
+          components: rustfmt, clippy
+
+      - name: Install dependencies
+        run:  sudo apt-get update && sudo apt-get install -y protobuf-compiler
+
+      - name: Build
+        run: cargo build 
+
+      - name: Clippy
+        run: cargo clippy --all-targets
+      
+      - name: Unit and Integration tests
+        run: cargo test
+
+  protocol:
+    name: Build and test protocol
+    needs: changes
+    if: needs.changes.outputs.protocol == 'true'
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        rust:
+          - stable
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Generate cache key
+        run: echo "${{ matrix.rust }}" | tee .cache_key
+      - name: Cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('.cache_key') }}-${{ hashFiles('**/Cargo.toml','**/Cargo.lock') }}
+      - name: Setup Rust Toolchain
+        uses: actions-rs/toolchain@v1
+        with:
+          toolchain: ${{ matrix.rust }}
+          profile: minimal
+          override: true
+          components: rustfmt, clippy
+      
+      - name: Install dependencies
+        run:  sudo apt-get update && sudo apt-get install -y protobuf-compiler
+        
+      - name: Build
+        run: cargo build
+        
+      - name: Clippy
+        run: cargo clippy --all-targets
+
+      - name: Unit and Integration tests
+        run: cargo test
+

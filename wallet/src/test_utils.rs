@@ -21,7 +21,6 @@ pub struct MockedBDKElectrum;
 
 impl ChainDataSource for MockedBDKElectrum {
     const RECOVERY_HEIGHT: usize = 10;
-    const RECOVERY_LOOKAHEAD: usize = 10;
     const BATCH_SIZE: usize = 10;
     const STOP_GAP: usize = 10;
 
