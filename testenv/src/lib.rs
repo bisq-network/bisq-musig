@@ -1,3 +1,4 @@
+//! Bitcoin regtest environment using electrsd with automatic executable downloads
 
 use std::error::Error as _;
 use std::net::SocketAddrV4;
@@ -97,7 +98,7 @@ type HmacSha256 = Hmac<Sha256>;
 /// - `username`: The RPC username.
 /// - `password`: The password (if None, a random one is generated).
 ///
-/// Returns a tuple of (rpcauth_string, password).
+/// Returns a tuple of (`rpcauth_string`, `password`).
 pub fn generate_rpcauth(username: &str, password: Option<&str>) -> (String, String) {
     // Generate or use provided password
     let pw = if let Some(p) = password {
@@ -126,30 +127,26 @@ pub fn generate_rpcauth(username: &str, password: Option<&str>) -> (String, Stri
     let hash_hex = hex::encode(hash_bytes);
 
     // Build the rpcauth string
-    let rpcauth = format!("rpcauth={}:{}${}", username, salt_hex, hash_hex);
+    let rpcauth = format!("rpcauth={username}:{salt_hex}${hash_hex}");
 
     (rpcauth, pw)
 }
+
 pub fn validate_rpcauth(rpcauth_line: &str, username: &str, password: &str) -> bool {
     let line = rpcauth_line.trim().strip_prefix("rpcauth=").unwrap_or(rpcauth_line.trim());
 
     // Expected format: <user>:<salt_hex>$<hmac_hex>
-    let (user_part, rest) = match line.split_once(':') {
-        Some(x) => x,
-        None => return false,
+    let Some((user_part, rest)) = line.split_once(':') else {
+        return false;
     };
     if user_part != username {
         return false;
     }
-
-    let (salt_hex, hmac_hex_expected) = match rest.split_once('$') {
-        Some(x) => x,
-        None => return false,
+    let Some((salt_hex, hmac_hex_expected)) = rest.split_once('$') else {
+        return false;
     };
-
-    let mut mac = match HmacSha256::new_from_slice(salt_hex.as_bytes()) {
-        Ok(m) => m,
-        Err(_) => return false,
+    let Ok(mut mac) = HmacSha256::new_from_slice(salt_hex.as_bytes()) else {
+        return false;
     };
     mac.update(password.as_bytes());
     let hmac_hex_actual = hex::encode(mac.finalize().into_bytes());
@@ -158,6 +155,7 @@ pub fn validate_rpcauth(rpcauth_line: &str, username: &str, password: &str) -> b
     // but you can use `subtle` crate if you want constant-time equality.
     hmac_hex_actual.eq_ignore_ascii_case(hmac_hex_expected)
 }
+
 impl TestEnv {
     /// Create a new test environment with automatic executable downloads
     pub fn new() -> Result<Self> {
@@ -166,7 +164,6 @@ impl TestEnv {
 
     /// create environment with automatic downloads
     pub fn new_with_conf(config: Config) -> Result<Self> {
-        // let _ = rustls::crypto::ring::default_provider().install_default();
         let permit = SEMAPHORE.acquire(); // have testenvs single threaded because of bitcoind and electrs references.
         let tmp_dir = tempdir().expect("failed to create temporary directory");
         std::env::set_current_dir(tmp_dir.path()).expect("failed to set current directory");
@@ -177,24 +174,20 @@ impl TestEnv {
         // let (rpc_auth, bitcoin_rpc_pwd) = generate_rpcauth("bitcoin", Some("bitcoin"));
         let (rpc_auth, bitcoin_rpc_pwd) = generate_rpcauth("bitcoin", None);
 
-        let auth_config = format!("-{}", rpc_auth);
-        let mut bitcoin_config = config.bitcoind.clone();
+        let auth_config = format!("-{rpc_auth}");
+        let mut bitcoin_config = config.bitcoind;
         bitcoin_config.p2p = corepc_node::P2P::Yes;
         bitcoin_config.args.push(&*auth_config);
 
-        let bitcoind = match std::env::var("BITCOIND_EXEC") {
-            Ok(path) => {
-                println!("Using custom bitcoind executable: {}", path);
-                Node::with_conf(&path, &bitcoin_config)?
-            }
-            Err(_) => {
-                println!(
-                    "BITCOIND_EXEC not set! Falling back to downloaded version at {}",
-                    corepc_node::downloaded_exe_path()?
-                );
-
-                Node::from_downloaded_with_conf(&bitcoin_config)?
-            }
+        let bitcoind = if let Ok(path) = std::env::var("BITCOIND_EXEC") {
+            println!("Using custom bitcoind executable: {path}");
+            Node::with_conf(&path, &bitcoin_config)?
+        } else {
+            println!(
+                "BITCOIND_EXEC not set! Falling back to downloaded version at {}",
+                corepc_node::downloaded_exe_path()?
+            );
+            Node::from_downloaded_with_conf(&bitcoin_config)?
         };
 
         // also enables tracing if wanted
@@ -217,19 +210,17 @@ impl TestEnv {
                         .init();
             }
         }
+
         // Try to get electrs executable (from environment or downloads)
-        let electrs_exe = match std::env::var("ELECTRS_EXEC") {
-            Ok(path) => {
-                println!("Using custom electrs executable: {}", path);
-                path
-            }
-            Err(_) => {
-                // Try to use downloaded electrs
-                let path = electrsd::downloaded_exe_path()
-                    .expect("No downloaded electrs found, trying electrs in PATH...");
-                println!("Using downloaded electrs: {}", path);
-                path
-            }
+        let electrs_exe = if let Ok(path) = std::env::var("ELECTRS_EXEC") {
+            println!("Using custom electrs executable: {path}");
+            path
+        } else {
+            // Try to use downloaded electrs
+            let path = electrsd::downloaded_exe_path()
+                .expect("No downloaded electrs found, trying electrs in PATH...");
+            println!("Using downloaded electrs: {path}");
+            path
         };
 
         println!("Starting electrsd...");
@@ -239,7 +230,6 @@ impl TestEnv {
 
         let client = Client::from_config(&electrsd.electrum_url, bdk_electrum::electrum_client::Config::default())?;
         let bdk_electrum_client = BdkElectrumClient::new(client);
-
 
         // permit will be dropped when TestEnv is dropped
         let test_env = Self {
@@ -268,29 +258,25 @@ impl TestEnv {
     pub fn start_explorer_in_container(&mut self) -> Result<()> {
         // this start a container for debugging
         let bitcoind_rpc_port = self.bitcoin_rpc_port();
-        let browserport = get_available_port()?;
+        let browser_port = get_available_port()?;
 
         let electrum_port = self.electrsd.electrum_url.split(':').next_back()
                 .context("Failed to parse electrum port")?;
 
-        let container_name = format!("btc-explorer-{}", browserport);
+        let container_name = format!("btc-explorer-{browser_port}");
 
         let mut container = std::process::Command::new("podman");
         container.args(["run", "--rm",
             "--name", &container_name,
-            "-p",
-            format!("{}:3002", browserport).as_str(),
+            "-p", &format!("{browser_port}:3002"),
             "--add-host=host.containers.internal:host-gateway",
-            "-e",
-            "BTCEXP_BITCOIND_HOST=host.containers.internal",
-            "-e",
-            "BTCEXP_HOST=0.0.0.0",
-            "-e",
-            format!("BTCEXP_BITCOIND_PORT={}", bitcoind_rpc_port).as_str(),
+            "-e", "BTCEXP_BITCOIND_HOST=host.containers.internal",
+            "-e", "BTCEXP_HOST=0.0.0.0",
+            "-e", &format!("BTCEXP_BITCOIND_PORT={bitcoind_rpc_port}"),
             "-e", "BTCEXP_BITCOIND_USER=bitcoin",
-            "-e", format!("BTCEXP_BITCOIND_PASS={}", self.bitcoin_rpc_pwd).as_str(),
+            "-e", &format!("BTCEXP_BITCOIND_PASS={}", self.bitcoin_rpc_pwd),
             "-e", "BTCEXP_ADDRESS_API=electrum",
-            "-e", format!("BTCEXP_ELECTRUM_SERVERS=tcp://host.containers.internal:{}", electrum_port).as_str(),
+            "-e", &format!("BTCEXP_ELECTRUM_SERVERS=tcp://host.containers.internal:{electrum_port}"),
             "docker.io/getumbrel/btc-rpc-explorer:v3.5.1",
         ]);
 
@@ -304,7 +290,7 @@ impl TestEnv {
         self.explorer_process = Some(child);
         self.container_name = Some(container_name);
 
-        eprintln!("Starting explorer in container, access it at http://127.0.0.1:{}/blocks", browserport);
+        eprintln!("Starting explorer in container, access it at http://127.0.0.1:{browser_port}/blocks");
         eprintln!("you can check the container logs with: ");
         eprintln!("podman logs -f --timestamps {}", self.container_name.as_ref().unwrap());
         Ok(())
@@ -323,6 +309,7 @@ impl TestEnv {
     pub fn bitcoind_client(&self) -> &corepc_node::Client {
         &self.bitcoind.client
     }
+
     pub fn bitcoin_core_rpc_client(&self) -> bitcoincore_rpc::Result<bitcoincore_rpc::Client> {
         let url = &self.bitcoind.rpc_url();
         let auth: Auth = Auth::CookieFile(self.bitcoind.params.cookie_file.clone());
@@ -371,8 +358,8 @@ impl TestEnv {
     pub fn fund_from_prv_key(&self, key: &Scalar, amount: Amount) -> Result<Txid> {
         let xonly_pubkey = key.base_point_mul().serialize_xonly();
         let pbk = XOnlyPublicKey::from_slice(&xonly_pubkey)?;
-        let addrress = Address::p2tr(&self.ctx, pbk, None, KnownHrp::Regtest);
-        self.fund_address(&addrress, amount)
+        let address = Address::p2tr(&self.ctx, pbk, None, KnownHrp::Regtest);
+        self.fund_address(&address, amount)
     }
 
     /// Fund an address using bitcoind RPC
@@ -449,8 +436,7 @@ impl TestEnv {
         }
 
         Err(anyhow::anyhow!(
-            "Timeout waiting for electrum to see transaction {} after {:?}",
-            txid,
+            "Timeout waiting for electrum to see transaction {txid} after {:?}",
             self.timeout
         ))
     }
@@ -495,11 +481,11 @@ impl TestEnv {
 impl Drop for TestEnv {
     fn drop(&mut self) {
         if let Some(name) = self.container_name.take() {
-            eprintln!("Stopping explorer container {}...", name);
+            eprintln!("Stopping explorer container {name}...");
             let output = std::process::Command::new("podman")
                     .args(["stop", &name])
                     .output();
-            eprintln!("explorer container returned {:?}...", output);
+            eprintln!("explorer container returned {output:?}...");
         }
 
         // Try graceful shutdown first (SIGTERM)
@@ -537,7 +523,7 @@ mod tests {
         let rpc = env.bitcoin_core_rpc_client()?;
         // check if the connection works
         rpc.ping()?;
-        assert!(rpc.get_block_count()? == 1);
+        assert_eq!(rpc.get_block_count()?, 1);
 
         Ok(())
     }
@@ -561,18 +547,18 @@ mod tests {
 
         // Create new address
         let address = env.new_address()?;
-        println!("Created address: {}", address);
+        println!("Created address: {address}");
 
         // Address is already verified to be on regtest network when created via new_address()
 
         // Get initial balance
         let initial_balance = env.bitcoind.client.get_balance()?;
-        println!("Initial balance: {:?} BTC", initial_balance);
+        println!("Initial balance: {initial_balance:?} BTC");
 
         // Fund address with 1000 satoshis
         let amount = Amount::from_sat(1000);
         let txid = env.fund_address(&address, amount)?;
-        println!("Funded address with txid: {}", txid);
+        println!("Funded address with txid: {txid}");
 
         // Verify the transaction was created
         assert_ne!(
@@ -599,17 +585,17 @@ mod tests {
             .details
             .iter()
             .find(|detail| detail.category == TransactionCategory::Receive)
-            .map(|detail| Amount::from_sat((detail.amount * 100_000_000.0) as u64))
-            .unwrap_or_default();
+            .map(|detail| Amount::from_btc(detail.amount).unwrap())
+            .unwrap();
 
         assert_eq!(receive_amount, amount);
-        println!("Transaction amount verified: {} ", receive_amount);
+        println!("Transaction amount verified: {receive_amount}");
 
         Ok(())
     }
 
     #[test]
-    #[ignore]
+    #[ignore = "for debugging only"]
     fn test_container_ui_manual() -> Result<()> {
         let mut env = TestEnv::new()?;
         env.start_explorer_in_container()?;
