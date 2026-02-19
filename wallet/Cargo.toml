@@ -14,8 +14,7 @@ hex = { workspace = true }
 rand = { workspace = true }
 rusqlite = { workspace = true }
 secp = { workspace = true }
-tracing = { workspace = true }
-tracing-subscriber = { workspace = true }
+bmp_tracing = { workspace = true }
 zeroize = { workspace = true }
 
 [dev-dependencies]

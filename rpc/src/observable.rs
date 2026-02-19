@@ -4,10 +4,10 @@ use std::collections::{HashMap, HashSet};
 use std::fmt::Debug;
 use std::hash::Hash;
 
+use bmp_tracing::tracing::trace;
 use futures_util::Stream;
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::UnboundedReceiverStream;
-use tracing::trace;
 
 #[derive(Debug, Default)]
 pub struct Observable<T> {

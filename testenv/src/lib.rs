@@ -1,6 +1,5 @@
 //! Bitcoin regtest environment using electrsd with automatic executable downloads
 
-use std::error::Error as _;
 use std::net::SocketAddrV4;
 use std::sync::{Arc, LazyLock};
 use std::time::Duration;
@@ -24,11 +23,6 @@ use secp::Scalar;
 use sha2::Sha256;
 use simple_semaphore::{Permit, Semaphore};
 use tempfile::{tempdir, TempDir};
-use tracing_subscriber::field::MakeExt;
-use tracing_subscriber::filter::{EnvFilter, ParseError};
-use tracing_subscriber::fmt;
-use tracing_subscriber::layer::SubscriberExt as _;
-use tracing_subscriber::util::SubscriberInitExt as _;
 
 /// Bitcoin regtest environment manager
 pub struct TestEnv {
@@ -190,26 +184,8 @@ impl TestEnv {
             Node::from_downloaded_with_conf(&bitcoin_config)?
         };
 
-        // also enables tracing if wanted
-        //
-        if !tracing::dispatcher::has_been_set() {
-            let filter = EnvFilter::try_from_default_env()
-                    .unwrap_or_else(|e| {
-                        if matches!(e.source(), Some(s) if s.is::<ParseError>()) {
-                            eprintln!("Could not parse `RUST_LOG` environment variable: {e}");
-                        }
-                        EnvFilter::new("info")//,rpc=debug")
-                    });
-
-            if !tracing::dispatcher::has_been_set() {
-                tracing_subscriber::registry()
-                        .with(filter)
-                        .with(fmt::layer()
-                                .map_fmt_fields(MakeExt::debug_alt)
-                                .with_writer(std::io::stderr))
-                        .init();
-            }
-        }
+        // initialize global tracing subscriber, defaulting to `info`.
+        bmp_tracing::init("info");
 
         // Try to get electrs executable (from environment or downloads)
         let electrs_exe = if let Ok(path) = std::env::var("ELECTRS_EXEC") {
