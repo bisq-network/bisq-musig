@@ -64,7 +64,6 @@ async fn test_wallet_service_mine_single_tx() -> Result<()> {
 }
 
 async fn start_wallet_service(rpc_client: bitcoincore_rpc::Client) -> Arc<impl WalletService> {
-
     let wallet_service = Arc::new(WalletServiceImpl::create_with_rpc_params(
         rpc_client));
     assert_eq!(wallet_service.balance(), Balance::default());

@@ -35,12 +35,12 @@ pub async fn trace_logs(mut info_rx: Receiver<Info>, mut warn_rx: UnboundedRecei
         tokio::select! {
             warn = warn_rx.recv() => {
                 if let Some(warn) = warn {
-                    tracing::warn!("{warn}")
+                    tracing::warn!("{warn}");
                 }
             }
             infos = info_rx.recv() => {
                 if let Some(info) = infos {
-                    tracing::info!("{info}")
+                    tracing::info!("{info}");
                 }
             }
         }

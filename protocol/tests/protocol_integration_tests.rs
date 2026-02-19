@@ -17,7 +17,6 @@ fn test_initial_tx_creation() -> anyhow::Result<()> {
     Ok(())
 }
 
-
 fn initial_tx_creation(env: &TestEnv) -> anyhow::Result<(BMPProtocol, BMPProtocol)> {
     println!("running...");
     let alice_funds = MemWallet::funded_wallet(env);
@@ -65,8 +64,8 @@ fn initial_tx_creation(env: &TestEnv) -> anyhow::Result<(BMPProtocol, BMPProtoco
 
 #[test]
 fn test_swap() -> anyhow::Result<()> {
-    let mut env = TestEnv::new()?;
-    env.start_explorer_in_container()?;
+    let env = TestEnv::new()?;
+    // env.start_explorer_in_container()?;
 
     // create all transaction and Broadcast DepositTx already
     let (mut alice, mut bob) = initial_tx_creation(&env)?;

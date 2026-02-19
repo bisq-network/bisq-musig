@@ -54,7 +54,7 @@ pub trait BMPWalletPersister: WalletPersister {
         keys: &[Scalar],
     ) -> anyhow::Result<()>;
 
-    fn get_seed_phrase(db: &Self::DB, keys_table_name: &str) -> anyhow::Result<String>;
+    fn get_seed_phrase(db: &Self::DB, seeds_table_name: &str) -> anyhow::Result<String>;
 
     fn persist_staged_changes(
         db: &mut Self::DB,
@@ -63,10 +63,10 @@ pub trait BMPWalletPersister: WalletPersister {
 }
 
 impl BMPWalletPersister for Connection {
-    type DB = Connection;
+    type DB = Self;
 
     fn new(db_path: &str) -> Result<Self::DB, rusqlite::Error> {
-        let db = Connection::open(db_path)?;
+        let db = Self::open(db_path)?;
         Ok(db)
     }
 
@@ -74,7 +74,7 @@ impl BMPWalletPersister for Connection {
         db: &mut Self::DB,
         cs: &ChangeSet,
     ) -> anyhow::Result<(), rusqlite::Error> {
-        Connection::persist(db, cs)
+        Self::persist(db, cs)
     }
 
     fn init(
@@ -388,7 +388,7 @@ impl WalletApi for BMPWallet<Connection> {
         psbt: &mut Psbt,
         sign_options: SignOptions,
     ) -> anyhow::Result<(), SignerError> {
-        //// @TODO perfomance: cache the public keys derivation
+        //// @TODO performance: cache the public keys derivation
         let secp = self.secp_ctx();
         let is_mine = |input_script: &ScriptBuf| {
             for key in &self.imported_keys {
@@ -686,7 +686,7 @@ impl WalletApi for BMPWallet<Connection> {
         let encrypted_conn = Connection::open(Self::DB_PATH)?;
         encrypted_conn.pragma_update(None, "key", decrypt_key)?;
 
-        Ok(BMPWallet {
+        Ok(Self {
             wallet: self.wallet,
             imported_keys: self.imported_keys,
             imported_balance: self.imported_balance,
@@ -720,7 +720,7 @@ impl WalletApi for BMPWallet<Connection> {
         fs::remove_file(Self::DB_PATH)?;
         fs::rename("bmp_encrypted.db3", Self::DB_PATH)?;
 
-        Ok(BMPWallet {
+        Ok(Self {
             wallet: self.wallet,
             imported_keys: self.imported_keys,
             imported_balance: self.imported_balance,

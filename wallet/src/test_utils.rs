@@ -111,7 +111,7 @@ pub fn foreign_utxo(value: Amount, index: u32) -> WeightedUtxo {
     WeightedUtxo {
         utxo: Utxo::Foreign {
             outpoint,
-            sequence: Sequence(0xFFFFFFFD),
+            sequence: Sequence::ENABLE_RBF_NO_LOCKTIME,
             psbt_input: Box::new(psbt::Input {
                 witness_utxo: Some(TxOut {
                     value,
