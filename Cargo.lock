@@ -1043,7 +1043,7 @@ dependencies = [
  "slab",
  "tokio",
  "tokio-util",
- "tracing",
+ "tracing 0.1.44",
 ]
 
 [[package]]
@@ -1245,7 +1245,7 @@ dependencies = [
  "socket2",
  "tokio",
  "tower-service",
- "tracing",
+ "tracing 0.1.44",
 ]
 
 [[package]]
@@ -1993,7 +1993,7 @@ dependencies = [
  "tonic",
  "tonic-prost",
  "tonic-prost-build",
- "tracing",
+ "tracing 0.1.44",
  "tracing-subscriber",
  "unimock",
 ]
@@ -2397,7 +2397,7 @@ dependencies = [
  "sha2",
  "simple-semaphore",
  "tempfile",
- "tracing",
+ "tracing 0.1.44",
  "tracing-subscriber",
 ]
 
@@ -2552,7 +2552,7 @@ dependencies = [
  "tower",
  "tower-layer",
  "tower-service",
- "tracing",
+ "tracing 0.1.44",
 ]
 
 [[package]]
@@ -2610,7 +2610,7 @@ dependencies = [
  "tokio-util",
  "tower-layer",
  "tower-service",
- "tracing",
+ "tracing 0.1.44",
 ]
 
 [[package]]
@@ -2624,6 +2624,14 @@ name = "tower-service"
 version = "0.3.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8df9b6e13f2d32c91b9bd719c00d1958837bc7dec474d94952798cc8e69eeec3"
+
+[[package]]
+name = "tracing"
+version = "0.1.0"
+dependencies = [
+ "tracing 0.1.44",
+ "tracing-subscriber",
+]
 
 [[package]]
 name = "tracing"
@@ -2681,7 +2689,7 @@ dependencies = [
  "sharded-slab",
  "smallvec",
  "thread_local",
- "tracing",
+ "tracing 0.1.44",
  "tracing-core",
  "tracing-log",
 ]
@@ -2806,7 +2814,7 @@ dependencies = [
  "simple-semaphore",
  "tempfile",
  "testenv",
- "tracing",
+ "tracing 0.1.44",
  "tracing-subscriber",
  "zeroize",
 ]
