@@ -54,10 +54,9 @@ impl CoinSelectionAlgorithm for AlwaysSpendImportedFirst {
 
 #[cfg(test)]
 mod tests {
-
     use bdk_wallet::bitcoin::key::rand::thread_rng;
     use bdk_wallet::bitcoin::{Amount, FeeRate, ScriptBuf};
-    use bdk_wallet::coin_selection::{CoinSelectionAlgorithm, Excess};
+    use bdk_wallet::coin_selection::{CoinSelectionAlgorithm as _, Excess};
 
     use crate::coin_selection::AlwaysSpendImportedFirst;
     use crate::test_utils::{confirmed_utxo, foreign_utxo};
@@ -71,7 +70,7 @@ mod tests {
         imported_utxos.push(foreign_utxo(Amount::from_btc(0.3).unwrap(), 0));
 
         let local_utxos = (0..3)
-            .map(|i| confirmed_utxo(Amount::from_int_btc(1), i, 1, 1231006505))
+            .map(|i| confirmed_utxo(Amount::from_int_btc(1), i, 1, 1_231_006_505))
             .collect::<Vec<_>>();
 
         let selection_strategy = AlwaysSpendImportedFirst(imported_utxos.clone());
@@ -82,7 +81,7 @@ mod tests {
             .coin_select(
                 imported_utxos.clone(),
                 local_utxos.clone(),
-                FeeRate::from_sat_per_kwu(50000),
+                FeeRate::from_sat_per_kwu(50_000),
                 target_amount,
                 &drain_script,
                 &mut thread_rng(),
@@ -103,7 +102,7 @@ mod tests {
             .coin_select(
                 imported_utxos.clone(),
                 local_utxos.clone(),
-                FeeRate::from_sat_per_kwu(50000),
+                FeeRate::from_sat_per_kwu(50_000),
                 target_amount,
                 &drain_script,
                 &mut thread_rng(),
@@ -121,7 +120,7 @@ mod tests {
             .coin_select(
                 imported_utxos.clone(),
                 local_utxos.clone(),
-                FeeRate::from_sat_per_kwu(50000),
+                FeeRate::from_sat_per_kwu(50_000),
                 target_amount,
                 &drain_script,
                 &mut thread_rng(),

@@ -1,4 +1,4 @@
-use std::str::FromStr;
+use std::str::FromStr as _;
 
 use anyhow::Ok;
 use bdk_electrum::electrum_client::{Client, Config};
@@ -6,9 +6,9 @@ use bdk_electrum::BdkElectrumClient;
 use bdk_kyoto::bip157::tokio;
 use bdk_kyoto::TrustedPeer;
 use bdk_wallet::bitcoin::{Address, Amount, Network};
-use bdk_wallet::psbt::PsbtUtils;
+use bdk_wallet::psbt::PsbtUtils as _;
 use bdk_wallet::{KeychainKind, SignOptions};
-use rand::RngCore;
+use rand::RngCore as _;
 use secp::Scalar;
 use testenv::TestEnv;
 use wallet::bmp_wallet::*;
@@ -24,7 +24,7 @@ fn init_test() -> anyhow::Result<()> {
     let env = TestEnv::new()?;
 
     let mut wallet = BMPWallet::new(Network::Regtest)?;
-    let receive_amount = Amount::from_sat(100000);
+    let receive_amount = Amount::from_sat(100_000);
 
     let client = Client::from_config(&env.electrum_url(), Config::default())?;
     let data_source = BdkElectrumClient::new(client);
@@ -46,7 +46,7 @@ fn test_sync_with_imported_keys() -> anyhow::Result<()> {
 
     let prv_key = new_private_key();
 
-    let receive_amount = Amount::from_sat(100000);
+    let receive_amount = Amount::from_sat(100_000);
 
     let mut wallet = BMPWallet::new(Network::Regtest)?;
     wallet.import_private_key(prv_key);
@@ -75,7 +75,7 @@ fn test_broadcast_transaction() -> anyhow::Result<()> {
     let mut wallet = BMPWallet::new(Network::Regtest)?;
     wallet.import_private_key(prv_key);
 
-    let receive_amount = Amount::from_sat(100000);
+    let receive_amount = Amount::from_sat(100_000);
     let to_address =
         Address::from_str("tb1pyfv094rr0vk28lf8v9yx3veaacdzg26ztqk4ga84zucqqhafnn5q9my9rz")?;
 
@@ -87,7 +87,7 @@ fn test_broadcast_transaction() -> anyhow::Result<()> {
     wallet.sync_all(data_source)?;
 
     let mut tx_builder = wallet.build_tx();
-    let send_amount = Amount::from_sat(1000);
+    let send_amount = Amount::from_sat(1_000);
     tx_builder.add_recipient(to_address.assume_checked(), send_amount);
 
     let mut psbt = tx_builder.finish()?;
@@ -125,7 +125,7 @@ fn test_broadcast_transaction_two() -> anyhow::Result<()> {
     let mut wallet = BMPWallet::new(Network::Regtest)?;
     wallet.import_private_key(prv_key);
 
-    let receive_amount = Amount::from_sat(100000);
+    let receive_amount = Amount::from_sat(100_000);
     let to_address =
         Address::from_str("tb1pyfv094rr0vk28lf8v9yx3veaacdzg26ztqk4ga84zucqqhafnn5q9my9rz")?;
 
@@ -135,7 +135,7 @@ fn test_broadcast_transaction_two() -> anyhow::Result<()> {
     wallet.sync_all(&data_source)?;
 
     let mut tx_builder = wallet.build_tx();
-    let send_amount = Amount::from_sat(1000);
+    let send_amount = Amount::from_sat(1_000);
     tx_builder.add_recipient(to_address.assume_checked(), send_amount);
 
     let mut psbt = tx_builder.finish()?;
@@ -176,7 +176,7 @@ fn test_broadcast_transaction_three() -> anyhow::Result<()> {
 
     let main_wallet_addr = wallet.next_unused_address(KeychainKind::External);
 
-    let receive_amount = Amount::from_sat(100000);
+    let receive_amount = Amount::from_sat(100_000);
     let to_address =
         Address::from_str("tb1pyfv094rr0vk28lf8v9yx3veaacdzg26ztqk4ga84zucqqhafnn5q9my9rz")?;
 
@@ -188,7 +188,7 @@ fn test_broadcast_transaction_three() -> anyhow::Result<()> {
     wallet.sync_all(&data_source)?;
 
     let mut tx_builder = wallet.build_tx();
-    let send_amount = Amount::from_sat(100000);
+    let send_amount = Amount::from_sat(100_000);
     tx_builder.add_recipient(to_address.assume_checked(), send_amount);
 
     let mut psbt = tx_builder.finish()?;
@@ -210,10 +210,10 @@ fn test_broadcast_transaction_three() -> anyhow::Result<()> {
     // Reload the wallet by encrypting it to make sure the state changes are persisted
     let enc_wallet = wallet.encrypt("hello")?;
     let mut enc_wallet = enc_wallet.decrypt("hello")?;
-    env.fund_address(&main_wallet_addr, Amount::from_sat(10000))?;
+    env.fund_address(&main_wallet_addr, Amount::from_sat(10_000))?;
     env.mine_block()?;
     enc_wallet.sync_all(&data_source)?;
-    assert_eq!(enc_wallet.balance(), new_balance + Amount::from_sat(10000));
+    assert_eq!(enc_wallet.balance(), new_balance + Amount::from_sat(10_000));
 
     Ok(())
 }
@@ -224,7 +224,7 @@ async fn test_cbf_main_wallet() -> anyhow::Result<()> {
     env.mine_blocks(2)?;
     let mut wallet = BMPWallet::new(Network::Regtest)?;
     let addr = wallet.next_unused_address(KeychainKind::External);
-    env.fund_address(&addr, Amount::from_sat(100000))?;
+    env.fund_address(&addr, Amount::from_sat(100_000))?;
 
     assert_eq!(wallet.balance(), Amount::from_sat(0));
 
@@ -235,7 +235,7 @@ async fn test_cbf_main_wallet() -> anyhow::Result<()> {
         env.p2p_socket_addr().unwrap(),
     )];
     wallet.sync_cbf(scan_type, peers).await?;
-    assert_eq!(wallet.balance(), Amount::from_sat(100000));
+    assert_eq!(wallet.balance(), Amount::from_sat(100_000));
     Ok(())
 }
 
@@ -250,7 +250,7 @@ async fn test_cbf_imported() -> anyhow::Result<()> {
     let prv_keys = [new_private_key(), new_private_key(), new_private_key()];
     prv_keys.iter().for_each(|e| wallet.import_private_key(*e));
     prv_keys.iter().for_each(|e| {
-        env.fund_from_prv_key(e, Amount::from_sat(10000)).unwrap();
+        env.fund_from_prv_key(e, Amount::from_sat(10_000)).unwrap();
     });
 
     assert_eq!(wallet.balance(), Amount::from_sat(0));
@@ -262,7 +262,7 @@ async fn test_cbf_imported() -> anyhow::Result<()> {
         env.p2p_socket_addr().unwrap(),
     )];
     wallet.sync_cbf_imported(scan_type, peers).await?;
-    assert_eq!(wallet.balance(), Amount::from_sat(30000));
+    assert_eq!(wallet.balance(), Amount::from_sat(30_000));
     Ok(())
 }
 
@@ -273,12 +273,12 @@ async fn test_cbf_imported_and_main() -> anyhow::Result<()> {
     env.wait_for_block()?;
     let mut wallet = BMPWallet::new(Network::Regtest)?;
     let addr = wallet.next_unused_address(KeychainKind::External);
-    env.fund_address(&addr, Amount::from_sat(100000))?;
+    env.fund_address(&addr, Amount::from_sat(100_000))?;
 
     let prv_keys = [new_private_key(), new_private_key(), new_private_key()];
     prv_keys.iter().for_each(|e| wallet.import_private_key(*e));
     prv_keys.iter().for_each(|e| {
-        env.fund_from_prv_key(e, Amount::from_sat(10000)).unwrap();
+        env.fund_from_prv_key(e, Amount::from_sat(10_000)).unwrap();
     });
 
     assert_eq!(wallet.balance(), Amount::from_sat(0));
@@ -293,19 +293,19 @@ async fn test_cbf_imported_and_main() -> anyhow::Result<()> {
     wallet.sync_cbf_imported(scan_type, peers.clone()).await?;
     wallet.sync_cbf(scan_type, peers).await?;
 
-    assert_eq!(wallet.balance(), Amount::from_sat(130000));
+    assert_eq!(wallet.balance(), Amount::from_sat(130_000));
 
     Ok(())
 }
 
 #[tokio::test]
-async fn test_cbf_persitence() -> anyhow::Result<()> {
+async fn test_cbf_persistence() -> anyhow::Result<()> {
     let env = TestEnv::new()?;
     env.mine_block()?;
 
     let mut wallet = BMPWallet::new(Network::Regtest)?;
     let addr = wallet.next_unused_address(KeychainKind::External);
-    env.fund_address(&addr, Amount::from_sat(230000))?;
+    env.fund_address(&addr, Amount::from_sat(230_000))?;
 
     let scan_type = bdk_kyoto::ScanType::Sync;
     let peers = vec![TrustedPeer::from_socket_addr(
@@ -313,26 +313,26 @@ async fn test_cbf_persitence() -> anyhow::Result<()> {
     )];
     env.mine_block()?;
     wallet.sync_cbf(scan_type, peers.clone()).await?;
-    assert_eq!(wallet.balance(), Amount::from_sat(230000));
+    assert_eq!(wallet.balance(), Amount::from_sat(230_000));
 
     // Reload the wallet from persisted state
     let loaded_wallet = BMPWallet::load_wallet(Network::Regtest, None)?;
-    assert_eq!(loaded_wallet.balance(), Amount::from_sat(230000));
+    assert_eq!(loaded_wallet.balance(), Amount::from_sat(230_000));
 
     // Encrypt the wallet then reload it and check for balance state
     let encrypted_wallet = loaded_wallet.encrypt("secret123")?;
     let mut encrypted_wallet = encrypted_wallet.decrypt("secret123")?;
 
-    env.fund_address(&addr, Amount::from_sat(70000))?;
+    env.fund_address(&addr, Amount::from_sat(70_000))?;
     env.mine_block()?;
     encrypted_wallet.sync_cbf(scan_type, peers.clone()).await?;
-    assert_eq!(encrypted_wallet.balance(), Amount::from_sat(300000));
+    assert_eq!(encrypted_wallet.balance(), Amount::from_sat(300_000));
 
     // Create a transaction and broadcast it to the connected peer
     let receiving_addr =
         Address::from_str("tb1pyfv094rr0vk28lf8v9yx3veaacdzg26ztqk4ga84zucqqhafnn5q9my9rz")?;
     let mut tx_builder = encrypted_wallet.build_tx();
-    tx_builder.add_recipient(receiving_addr.assume_checked(), Amount::from_sat(70000));
+    tx_builder.add_recipient(receiving_addr.assume_checked(), Amount::from_sat(70_000));
 
     let mut psbt = tx_builder.finish()?;
 
@@ -344,7 +344,7 @@ async fn test_cbf_persitence() -> anyhow::Result<()> {
     env.mine_block()?;
 
     encrypted_wallet.sync_cbf(scan_type, peers).await?;
-    assert_eq!(encrypted_wallet.balance(), Amount::from_sat(230000) - fee);
+    assert_eq!(encrypted_wallet.balance(), Amount::from_sat(230_000) - fee);
 
     Ok(())
 }

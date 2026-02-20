@@ -2,10 +2,10 @@ use std::fs;
 
 use argon2::{Argon2, Block, Params};
 use base64::engine::general_purpose;
-use base64::Engine;
+use base64::Engine as _;
 use bdk_kyoto::bip157::tokio;
 use bdk_kyoto::{Info, Receiver, UnboundedReceiver, Warning};
-use zeroize::Zeroize;
+use zeroize::Zeroize as _;
 
 /// Derives a 256-bit key from a password and salt using Argon2.
 pub fn derive_key_from_password(password: &str, salt: &[u8]) -> anyhow::Result<String> {
@@ -35,12 +35,12 @@ pub async fn trace_logs(mut info_rx: Receiver<Info>, mut warn_rx: UnboundedRecei
         tokio::select! {
             warn = warn_rx.recv() => {
                 if let Some(warn) = warn {
-                    tracing::warn!("{warn}")
+                    tracing::warn!("{warn}");
                 }
             }
             infos = info_rx.recv() => {
                 if let Some(info) = infos {
-                    tracing::info!("{info}")
+                    tracing::info!("{info}");
                 }
             }
         }

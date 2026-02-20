@@ -1,18 +1,12 @@
 use std::io::Write as _;
 use std::str::FromStr as _;
 
-use crate::multisig::{KeyCtx, SigCtx};
-use crate::receiver::{Receiver, ReceiverList};
-use crate::transaction::{
-    DepositTxBuilder, ForwardingTxBuilder, RedirectTxBuilder, WarningTxBuilder, WithWitnesses as _,
-};
-use crate::wallet_service::WalletService;
+use bdk_electrum::BdkElectrumClient;
 use bdk_electrum::electrum_client::Client;
-use bdk_electrum::{electrum_client, BdkElectrumClient};
 use bdk_wallet::bitcoin::bip32::Xpriv;
 use bdk_wallet::bitcoin::{
-    relative, Address, Amount, FeeRate, Network, OutPoint, Psbt, ScriptBuf, Transaction, TxOut,
-    Txid,
+    Address, Amount, FeeRate, Network, OutPoint, Psbt, ScriptBuf, Transaction, TxOut, Txid,
+    relative,
 };
 use bdk_wallet::template::{Bip86, DescriptorTemplate as _};
 use bdk_wallet::{AddressInfo, KeychainKind, SignOptions, Wallet};
@@ -21,9 +15,16 @@ use musig2::{PartialSignature, PubNonce};
 use rand::RngCore as _;
 use testenv::TestEnv;
 
+use crate::multisig::{KeyCtx, SigCtx};
+use crate::receiver::{Receiver, ReceiverList};
+use crate::transaction::{
+    DepositTxBuilder, ForwardingTxBuilder, RedirectTxBuilder, WarningTxBuilder, WithWitnesses as _,
+};
+use crate::wallet_service::WalletService;
+
 pub struct MemWallet {
     wallet: Wallet,
-    client: BdkElectrumClient<electrum_client::Client>,
+    client: BdkElectrumClient<Client>,
 }
 
 impl MemWallet {
@@ -43,7 +44,7 @@ impl MemWallet {
     pub fn funded_wallet(env: &TestEnv) -> Self {
         // TODO move this line to TestEnv
         let client =
-            BdkElectrumClient::new(electrum_client::Client::new(&env.electrum_url()).unwrap());
+            BdkElectrumClient::new(Client::new(&env.electrum_url()).unwrap());
         let mut wallet = Self::new(client).unwrap();
         let address = wallet.next_unused_address();
         let txid = env
@@ -207,9 +208,7 @@ pub struct Round4Parameter {
     pub deposit_tx_signed: Psbt,
 }
 
-/**
-this context is for the whole process and need to be persisted by the caller
-*/
+/// this context is for the whole process and need to be persisted by the caller
 pub struct BMPContext {
     // first of all, everything which is general to the protocol itself
     pub funds: MemWallet,
@@ -428,18 +427,16 @@ impl BMPProtocol {
     }
 }
 
-/**
-`RedirectTx` -- this redirects the funds from the `WarningTx` to the DAO.
-This is expected if the traders have some sor of conflict, which they cannot resolve themselves.
-One trader sends the `WarningTx`, the other trader answers by sending the `RedirectTx`.
-If a redirectTx is not send within `t_2`, then the trader which sent the `WarningTx` can
-send the `ClaimTx` and gets the hole funds for himself.
-Since `RedirectTx` sends the funds to the DAO, it needs an anchors for the trader, so he
-can raise the fees with CPFP to get it mined before `ClaimTx` can be broadcast.
-
-`RedirectTx` Bob spends from `WarningTx` Alice, that's important.
-Sending funds to the DAO is done by having a list of addresses (from contributors) and percentages. (must add up to 100%)
-*/
+/// `RedirectTx` -- this redirects the funds from the `WarningTx` to the DAO.
+/// This is expected if the traders have some sor of conflict, which they cannot resolve themselves.
+/// One trader sends the `WarningTx`, the other trader answers by sending the `RedirectTx`.
+/// If a redirectTx is not send within `t_2`, then the trader which sent the `WarningTx` can
+/// send the `ClaimTx` and gets the hole funds for himself.
+/// Since `RedirectTx` sends the funds to the DAO, it needs an anchors for the trader, so he
+/// can raise the fees with CPFP to get it mined before `ClaimTx` can be broadcast.
+///
+/// `RedirectTx` Bob spends from `WarningTx` Alice, that's important.
+/// Sending funds to the DAO is done by having a list of addresses (from contributors) and percentages. (must add up to 100%)
 #[derive(Default)]
 pub struct RedirectTx {
     pub sig: SigCtx,
@@ -496,9 +493,7 @@ impl RedirectTx {
         Ok(me.funds.client.transaction_broadcast(self.builder.signed_tx()?)?)
     }
 
-    /**
-    sum of all f64 must be 1
-     */
+    /// sum of all f64 must be 1
     //noinspection SpellCheckingInspection
     fn get_dao_bm() -> Vec<(Address, f64)> {
         // TODO this needs a real implementation, and check that sum of ratios is 1
@@ -509,11 +504,9 @@ impl RedirectTx {
     }
 }
 
-/**
-`ClaimTx` -- One version for Alice and one for Bob.
-If the other side will not react on the `WarningTx` (by sending the `RedirectTx`)
-then Alice can claim the total amounts for herself.
-*/
+/// `ClaimTx` -- One version for Alice and one for Bob.
+/// If the other side will not react on the `WarningTx` (by sending the `RedirectTx`)
+/// then Alice can claim the total amounts for herself.
 #[derive(Default)]
 pub struct ClaimTx {
     pub sig: SigCtx,
@@ -563,10 +556,8 @@ impl ClaimTx {
     }
 }
 
-/**
-`WarningTx` -- there is one version for Alice and one for Bob.
-That means each party generates both transaction and sign them.
-*/
+/// `WarningTx` -- there is one version for Alice and one for Bob.
+/// That means each party generates both transaction and sign them.
 pub struct WarningTx {
     // is that my WarningTx? (mainly for safety checking):
     role: ProtocolRole,
@@ -663,9 +654,7 @@ impl WarningTx {
     }
 }
 
-/**
-Only the seller gets a `SwapTx`, this is the only asymmetric part of the p3
-*/
+/// Only the seller gets a `SwapTx`, this is the only asymmetric part of the p3
 pub struct SwapTx {
     // this transaction is only for Alice, however even Bob will construct it for signing:
     pub role: ProtocolRole,
@@ -684,10 +673,8 @@ impl SwapTx {
         self.swap_spend.clone()
     }
 
-    /**
-    even though only the seller gets a `SwapTx` transaction, both parties are constructing the transaction
-    and only the buyer will send the seller the signature.
-     */
+    /// even though only the seller gets a `SwapTx` transaction, both parties are constructing the transaction
+    /// and only the buyer will send the seller the signature.
     fn new(role: ProtocolRole) -> Self {
         Self {
             role,
@@ -753,10 +740,8 @@ impl SwapTx {
         }
     }
 
-    /**
-    if Bob finds a `SwapTx` on chain (or in mempool), we can (and should) extract Alice key for
-    unlocking the seller's deposit and fund, which is as adaptive secret in the signature
-     */
+    /// if Bob finds a `SwapTx` on chain (or in mempool), we can (and should) extract Alice key for
+    /// unlocking the seller's deposit and fund, which is as adaptive secret in the signature
     pub fn reveal(&self, swap_tx: &Transaction, p_tik: &mut KeyCtx) -> anyhow::Result<()> {
         let signature = swap_tx.key_spend_signature(0)?;
         // calculate the aggregated secret key as well.

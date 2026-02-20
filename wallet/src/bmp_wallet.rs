@@ -2,26 +2,26 @@ use std::ops::{Deref, DerefMut};
 use std::{fs, vec};
 
 use base64::engine::general_purpose;
-use base64::Engine;
+use base64::Engine as _;
 use bdk_electrum::bdk_core::bitcoin::{absolute, Address, FeeRate, OutPoint};
 use bdk_kyoto::bip157::{tokio, Builder};
-use bdk_kyoto::{BuilderExt, LightClient, Requester, ScanType, TrustedPeer, UpdateSubscriber};
+use bdk_kyoto::{BuilderExt as _, LightClient, Requester, ScanType, TrustedPeer, UpdateSubscriber};
 use bdk_wallet::bitcoin::bip32::Xpriv;
-use bdk_wallet::bitcoin::hex::DisplayHex;
+use bdk_wallet::bitcoin::hex::DisplayHex as _;
 use bdk_wallet::bitcoin::{
     psbt, Amount, Network, PrivateKey, Psbt, ScriptBuf, Sequence, Weight, XOnlyPublicKey,
 };
-use bdk_wallet::chain::Merge;
+use bdk_wallet::chain::Merge as _;
 use bdk_wallet::keys::bip39::Mnemonic;
-use bdk_wallet::miniscript::psbt::PsbtExt;
+use bdk_wallet::miniscript::psbt::PsbtExt as _;
 use bdk_wallet::rusqlite::{self, named_params, Connection};
-use bdk_wallet::signer::{InputSigner, SignerContext, SignerError, SignerWrapper};
-use bdk_wallet::template::{Bip86, DescriptorTemplate};
+use bdk_wallet::signer::{InputSigner as _, SignerContext, SignerError, SignerWrapper};
+use bdk_wallet::template::{Bip86, DescriptorTemplate as _};
 use bdk_wallet::{
     AddressInfo, Balance, ChangeSet, KeychainKind, PersistedWallet, SignOptions, TxBuilder,
     TxOrdering, Utxo, Wallet, WalletPersister, WeightedUtxo,
 };
-use rand::RngCore;
+use rand::RngCore as _;
 use secp::Scalar;
 
 use crate::chain_data_source::ChainDataSource;
@@ -54,7 +54,7 @@ pub trait BMPWalletPersister: WalletPersister {
         keys: &[Scalar],
     ) -> anyhow::Result<()>;
 
-    fn get_seed_phrase(db: &Self::DB, keys_table_name: &str) -> anyhow::Result<String>;
+    fn get_seed_phrase(db: &Self::DB, seeds_table_name: &str) -> anyhow::Result<String>;
 
     fn persist_staged_changes(
         db: &mut Self::DB,
@@ -63,10 +63,10 @@ pub trait BMPWalletPersister: WalletPersister {
 }
 
 impl BMPWalletPersister for Connection {
-    type DB = Connection;
+    type DB = Self;
 
     fn new(db_path: &str) -> Result<Self::DB, rusqlite::Error> {
-        let db = Connection::open(db_path)?;
+        let db = Self::open(db_path)?;
         Ok(db)
     }
 
@@ -74,7 +74,7 @@ impl BMPWalletPersister for Connection {
         db: &mut Self::DB,
         cs: &ChangeSet,
     ) -> anyhow::Result<(), rusqlite::Error> {
-        Connection::persist(db, cs)
+        Self::persist(db, cs)
     }
 
     fn init(
@@ -209,7 +209,7 @@ impl BMPWallet<Connection> {
     /// Note: The caller is responsible for shutting down the requester at will.
     pub async fn run_node(
         wallet: &Wallet,
-        scan_type: bdk_kyoto::ScanType,
+        scan_type: ScanType,
         peers: Vec<TrustedPeer>,
     ) -> anyhow::Result<(Requester, UpdateSubscriber)> {
         let LightClient {
@@ -297,7 +297,7 @@ impl ProtocolWalletApi for BMPWallet<Connection> {
         is_selected: &dyn Fn(&OutPoint) -> bool,
     ) -> anyhow::Result<()> {
         let mut psbt_copy = psbt.clone();
-        self.sign(&mut psbt_copy, bdk_wallet::SignOptions::default())?;
+        self.sign(&mut psbt_copy, SignOptions::default())?;
         for i in 0..psbt.inputs.len() {
             if is_selected(&psbt.unsigned_tx.input[i].previous_output) {
                 psbt.inputs[i].final_script_sig = psbt_copy.inputs[i].final_script_sig.take();
@@ -350,14 +350,14 @@ pub trait WalletApi {
     fn sync_all(&mut self, data_source: &impl ChainDataSource) -> anyhow::Result<bool>;
     fn sync_cbf(
         &mut self,
-        scan_type: bdk_kyoto::ScanType,
+        scan_type: ScanType,
         peers: Vec<TrustedPeer>,
-    ) -> impl std::future::Future<Output = anyhow::Result<()>> + Send;
+    ) -> impl Future<Output = anyhow::Result<()>> + Send;
     fn sync_cbf_imported(
         &mut self,
-        scan_type: bdk_kyoto::ScanType,
+        scan_type: ScanType,
         peers: Vec<TrustedPeer>,
-    ) -> impl std::future::Future<Output = anyhow::Result<()>> + Send;
+    ) -> impl Future<Output = anyhow::Result<()>> + Send;
 }
 
 impl WalletApi for BMPWallet<Connection> {
@@ -388,7 +388,7 @@ impl WalletApi for BMPWallet<Connection> {
         psbt: &mut Psbt,
         sign_options: SignOptions,
     ) -> anyhow::Result<(), SignerError> {
-        //// @TODO perfomance: cache the public keys derivation
+        //// @TODO performance: cache the public keys derivation
         let secp = self.secp_ctx();
         let is_mine = |input_script: &ScriptBuf| {
             for key in &self.imported_keys {
@@ -686,7 +686,7 @@ impl WalletApi for BMPWallet<Connection> {
         let encrypted_conn = Connection::open(Self::DB_PATH)?;
         encrypted_conn.pragma_update(None, "key", decrypt_key)?;
 
-        Ok(BMPWallet {
+        Ok(Self {
             wallet: self.wallet,
             imported_keys: self.imported_keys,
             imported_balance: self.imported_balance,
@@ -720,7 +720,7 @@ impl WalletApi for BMPWallet<Connection> {
         fs::remove_file(Self::DB_PATH)?;
         fs::rename("bmp_encrypted.db3", Self::DB_PATH)?;
 
-        Ok(BMPWallet {
+        Ok(Self {
             wallet: self.wallet,
             imported_keys: self.imported_keys,
             imported_balance: self.imported_balance,
@@ -745,23 +745,22 @@ impl DerefMut for BMPWallet<Connection> {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
+    use std::sync::{Arc, LazyLock};
 
-    use bdk_wallet::bitcoin::hashes::Hash;
+    use bdk_wallet::bitcoin::hashes::Hash as _;
     use bdk_wallet::bitcoin::{psbt, Address, AddressType, Amount, BlockHash, Network, Weight};
     use bdk_wallet::chain::{self, BlockId};
     use bdk_wallet::test_utils::{receive_output_to_address, ReceiveTo};
     use bdk_wallet::{AddressInfo, KeychainKind, SignOptions};
-    use rand::RngCore;
+    use rand::RngCore as _;
     use secp::Scalar;
     use simple_semaphore::{self, Semaphore};
     use tempfile::{tempdir, TempDir};
 
-    use crate::bmp_wallet::{BMPWallet, WalletApi};
+    use crate::bmp_wallet::{BMPWallet, WalletApi as _};
     use crate::test_utils::{derive_public_key, load_imported_wallet, MockedBDKElectrum};
 
-    static SEMAPHORE: once_cell::sync::Lazy<Arc<Semaphore>> =
-        once_cell::sync::Lazy::new(|| Semaphore::new(1));
+    static SEMAPHORE: LazyLock<Arc<Semaphore>> = LazyLock::new(|| Semaphore::new(1));
 
     fn tear_up() -> TempDir {
         let tmp_dir = tempdir().unwrap();

@@ -1,10 +1,9 @@
-use bdk_electrum::bdk_core::bitcoin;
-use bdk_electrum::bdk_core::bitcoin::key::{Keypair, Secp256k1, TweakedKeypair, TweakedPublicKey};
-use bdk_electrum::bdk_core::bitcoin::secp256k1::Message;
-use bdk_electrum::bdk_core::bitcoin::{Amount, TapSighashType};
-use bdk_wallet::bitcoin::key::TapTweak as _;
-use musig2::secp::Point;
+use bdk_wallet::bitcoin;
+use bitcoin::key::{Keypair, Secp256k1, TapTweak as _, TweakedKeypair, TweakedPublicKey};
+use bitcoin::secp256k1::Message;
+use bitcoin::{Amount, TapSighashType};
 use musig2::KeyAggContext;
+use musig2::secp::Point;
 use protocol::protocol_musig_adaptor::{BMPContext, BMPProtocol, MemWallet, ProtocolRole};
 use protocol::transaction::WithWitnesses as _;
 use protocol::wallet_service::WalletService;
@@ -17,7 +16,6 @@ fn test_initial_tx_creation() -> anyhow::Result<()> {
     let (_, _) = initial_tx_creation(&env)?;
     Ok(())
 }
-
 
 fn initial_tx_creation(env: &TestEnv) -> anyhow::Result<(BMPProtocol, BMPProtocol)> {
     println!("running...");
@@ -66,8 +64,8 @@ fn initial_tx_creation(env: &TestEnv) -> anyhow::Result<(BMPProtocol, BMPProtoco
 
 #[test]
 fn test_swap() -> anyhow::Result<()> {
-    let mut env = TestEnv::new()?;
-    env.start_explorer_in_container()?;
+    let env = TestEnv::new()?;
+    // env.start_explorer_in_container()?;
 
     // create all transaction and Broadcast DepositTx already
     let (mut alice, mut bob) = initial_tx_creation(&env)?;

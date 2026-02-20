@@ -9,38 +9,37 @@ default-run = "musig-cli"
 bdk_bitcoind_rpc = { workspace = true }
 bdk_wallet = { workspace = true }
 drop-stream = "0.3.2"
-futures-util = { version = "0.3.31", default-features = false, features = ["alloc"] }
+futures-util = { version = "0.3.32", default-features = false, features = ["alloc"] }
 guardian = "1.3.0"
 musig2 = { workspace = true }
-prost = "0.14.1"
+prost = "0.14.3"
 protocol = { path = "../protocol" }
 rand = { workspace = true }
 serde = { version = "1.0.228", features = ["derive"] }
-serde_with = { version = "3.15.1", features = ["base64", "hex"] }
+serde_with = { version = "3.16.1", features = ["base64", "hex"] }
 thiserror = { workspace = true }
-rustls = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time"] }
-tokio-stream = "0.1.17"
-tonic = "0.14.2"
-tonic-prost = "0.14.2"
-tracing = "0.1.41"
+tokio-stream = "0.1.18"
+tonic = "0.14.4"
+tonic-prost = "0.14.4"
+tracing = { workspace = true }
 unimock = { version = "0.6.8", optional = true }
 # Dependencies used only by the binary target(s):
 # TODO: Consider making a workspace of separate packages to avoid pulling these into the library:
-clap = { version = "4.5.51", features = ["derive"] }
-tracing-subscriber = { version = "0.3.20", features = ["env-filter"] }
-# TODO move this to dev-dependencies
+clap = { version = "4.5.59", features = ["derive"] }
+tracing-subscriber = { workspace = true, features = ["env-filter"] }
+# TODO move this to dev-dependencies:
 testenv = { path ="../testenv"}
 
 [build-dependencies]
-tonic-prost-build = "0.14.2"
+tonic-prost-build = "0.14.4"
 
 [dev-dependencies]
 rpc = { path = ".", features = ["unimock"] }
 anyhow = { workspace = true }
-assert_cmd = "2.1.1"
+assert_cmd = "2.1.2"
 const_format = { workspace = true }
-predicates = "3.1.3"
+predicates = "3.1.4"
 
 [lints]
 workspace = true

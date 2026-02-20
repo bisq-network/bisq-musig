@@ -64,6 +64,7 @@ fn shrink_amortized<T>(vec: &mut Vec<T>) {
         vec.shrink_to(vec.len() * 2);
     }
 }
+
 #[derive(Debug)]
 pub struct ObservableHashMap<K, V> {
     map: HashMap<K, Observable<Option<V>>>,
@@ -121,7 +122,7 @@ impl<K, V> ObservableHashMap<K, V>
 }
 
 impl<K, V> ObservableHashMap<K, V>
-where
+    where
         K: Clone + Eq + Hash + Debug,
         V: Clone + PartialEq + Debug,
 {
@@ -134,7 +135,7 @@ where
         for key in remaining_keys {
             self.remove(&key);
         }
-        trace!("ObservableHashMap.len {}",self.map.len());
+        trace!("ObservableHashMap.len {}", self.map.len());
         // dbg!(&self.map);
     }
 }
