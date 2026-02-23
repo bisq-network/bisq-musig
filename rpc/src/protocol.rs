@@ -48,12 +48,8 @@ pub struct TradeModel {
     seller_output_key_ctx: KeyCtx,
     deposit_tx: DepositTx,
     swap_tx: SwapTx,
-    buyers_warning_tx: WarningTx,
-    sellers_warning_tx: WarningTx,
-    buyers_redirect_tx: RedirectTx,
-    sellers_redirect_tx: RedirectTx,
-    buyers_claim_tx: ClaimTx,
-    sellers_claim_tx: ClaimTx,
+    buyer_txs: ArbitrationTxs,
+    seller_txs: ArbitrationTxs,
 }
 
 #[derive(Default, Eq, PartialEq)]
@@ -62,6 +58,13 @@ pub enum Role {
     SellerAsTaker,
     BuyerAsMaker,
     BuyerAsTaker,
+}
+
+#[derive(Default)]
+struct ArbitrationTxs {
+    warning: WarningTx,
+    redirect: RedirectTx,
+    claim: ClaimTx,
 }
 
 #[derive(Default)]
@@ -95,36 +98,34 @@ struct ClaimTx {
     input_sig_ctx: SigCtx,
 }
 
-#[expect(clippy::struct_field_names,
-reason = "not sure removing common postfix would make things clearer")] // TODO: Consider further.
 pub struct ExchangedAddresses<'a, S: Storage, V: NetworkValidation + 'a = NetworkChecked> {
-    pub warning_tx_fee_bump_address: S::Store<'a, Address<V>>,
-    pub redirect_tx_fee_bump_address: S::Store<'a, Address<V>>,
-    pub claim_tx_payout_address: S::Store<'a, Address<V>>,
+    pub warning_tx_fee_bump: S::Store<'a, Address<V>>,
+    pub redirect_tx_fee_bump: S::Store<'a, Address<V>>,
+    pub claim_tx_payout: S::Store<'a, Address<V>>,
 }
 
 impl<'a> ExchangedAddresses<'a, ByVal, NetworkUnchecked> {
     fn require_network(self, required: Network) -> Result<ExchangedAddresses<'a, ByVal>> {
         Ok(ExchangedAddresses {
-            warning_tx_fee_bump_address: self.warning_tx_fee_bump_address.require_network(required)?,
-            redirect_tx_fee_bump_address: self.redirect_tx_fee_bump_address.require_network(required)?,
-            claim_tx_payout_address: self.claim_tx_payout_address.require_network(required)?,
+            warning_tx_fee_bump: self.warning_tx_fee_bump.require_network(required)?,
+            redirect_tx_fee_bump: self.redirect_tx_fee_bump.require_network(required)?,
+            claim_tx_payout: self.claim_tx_payout.require_network(required)?,
         })
     }
 }
 
 #[expect(clippy::struct_field_names,
-reason = "not sure removing common postfix would make things clearer")] // TODO: Consider further.
+reason = "removing common suffix probably wouldn't make things clearer")]
 pub struct ExchangedNonces<'a, S: Storage> {
-    pub swap_tx_input_nonce_share: S::Store<'a, PubNonce>,
-    pub buyers_warning_tx_buyer_input_nonce_share: S::Store<'a, PubNonce>,
-    pub buyers_warning_tx_seller_input_nonce_share: S::Store<'a, PubNonce>,
-    pub sellers_warning_tx_buyer_input_nonce_share: S::Store<'a, PubNonce>,
-    pub sellers_warning_tx_seller_input_nonce_share: S::Store<'a, PubNonce>,
-    pub buyers_redirect_tx_input_nonce_share: S::Store<'a, PubNonce>,
-    pub sellers_redirect_tx_input_nonce_share: S::Store<'a, PubNonce>,
-    pub buyers_claim_tx_input_nonce_share: S::Store<'a, PubNonce>,
-    pub sellers_claim_tx_input_nonce_share: S::Store<'a, PubNonce>,
+    pub swap_tx_input: S::Store<'a, PubNonce>,
+    pub buyers_warning_tx_buyer_input: S::Store<'a, PubNonce>,
+    pub buyers_warning_tx_seller_input: S::Store<'a, PubNonce>,
+    pub sellers_warning_tx_buyer_input: S::Store<'a, PubNonce>,
+    pub sellers_warning_tx_seller_input: S::Store<'a, PubNonce>,
+    pub buyers_redirect_tx_input: S::Store<'a, PubNonce>,
+    pub sellers_redirect_tx_input: S::Store<'a, PubNonce>,
+    pub buyers_claim_tx_input: S::Store<'a, PubNonce>,
+    pub sellers_claim_tx_input: S::Store<'a, PubNonce>,
 }
 
 pub struct ExchangedSigs<'a, S: Storage> {
@@ -144,13 +145,12 @@ impl TradeModel {
         } else {
             Arc::new(Mutex::new(mock_seller_trade_wallet()))
         }).lock().unwrap().network();
+        for txs in [&mut trade_model.buyer_txs, &mut trade_model.seller_txs] {
+            txs.warning.builder.set_lock_time(network.warning_lock_time());
+            txs.redirect.builder.set_lock_time(network.redirect_lock_time());
+            txs.claim.builder.set_lock_time(network.claim_lock_time());
+        }
         trade_model.swap_tx.builder.disable_lock_time();
-        trade_model.buyers_warning_tx.builder.set_lock_time(network.warning_lock_time());
-        trade_model.sellers_warning_tx.builder.set_lock_time(network.warning_lock_time());
-        trade_model.buyers_redirect_tx.builder.set_lock_time(network.redirect_lock_time());
-        trade_model.sellers_redirect_tx.builder.set_lock_time(network.redirect_lock_time());
-        trade_model.buyers_claim_tx.builder.set_lock_time(network.claim_lock_time());
-        trade_model.sellers_claim_tx.builder.set_lock_time(network.claim_lock_time());
         trade_model
     }
 
@@ -180,12 +180,12 @@ impl TradeModel {
     }
 
     pub fn set_prepared_tx_fee_rate(&mut self, fee_rate: FeeRate) {
+        for txs in [&mut self.buyer_txs, &mut self.seller_txs] {
+            txs.warning.builder.set_fee_rate(fee_rate);
+            txs.claim.builder.set_fee_rate(fee_rate);
+        }
         self.prepared_tx_fee_rate.get_or_insert(fee_rate);
         self.swap_tx.builder.set_fee_rate(fee_rate);
-        self.buyers_warning_tx.builder.set_fee_rate(fee_rate);
-        self.sellers_warning_tx.builder.set_fee_rate(fee_rate);
-        self.buyers_claim_tx.builder.set_fee_rate(fee_rate);
-        self.sellers_claim_tx.builder.set_fee_rate(fee_rate);
     }
 
     pub fn set_trade_fee_receiver(&mut self, receiver: Option<Receiver<NetworkUnchecked>>) -> Result<()> {
@@ -238,12 +238,12 @@ impl TradeModel {
         self.deposit_tx.builder.set_buyer_payout_address(buyer_payout_address);
         self.deposit_tx.builder.set_seller_payout_address(seller_payout_address);
 
-        self.buyers_warning_tx.buyer_input_sig_ctx.set_tweaked_key_ctx(buyer_output_tweaked_key_ctx.clone());
-        self.sellers_warning_tx.buyer_input_sig_ctx.set_tweaked_key_ctx(buyer_output_tweaked_key_ctx);
+        self.buyer_txs.warning.buyer_input_sig_ctx.set_tweaked_key_ctx(buyer_output_tweaked_key_ctx.clone());
+        self.seller_txs.warning.buyer_input_sig_ctx.set_tweaked_key_ctx(buyer_output_tweaked_key_ctx);
         self.swap_tx.input_sig_ctx.set_adaptor_point(*self.adaptor_key_share()?.pub_key())?;
         self.swap_tx.input_sig_ctx.set_tweaked_key_ctx(seller_output_tweaked_key_ctx.clone());
-        self.buyers_warning_tx.seller_input_sig_ctx.set_tweaked_key_ctx(seller_output_tweaked_key_ctx.clone());
-        self.sellers_warning_tx.seller_input_sig_ctx.set_tweaked_key_ctx(seller_output_tweaked_key_ctx);
+        self.buyer_txs.warning.seller_input_sig_ctx.set_tweaked_key_ctx(seller_output_tweaked_key_ctx.clone());
+        self.seller_txs.warning.seller_input_sig_ctx.set_tweaked_key_ctx(seller_output_tweaked_key_ctx);
 
         let [buyer_claim_merkle_root, seller_claim_merkle_root] = self.claim_key_shares()?
             .map(|p| network.warning_output_merkle_root(&p.pub_key().to_public_key().into()));
@@ -254,13 +254,13 @@ impl TradeModel {
 
         let buyers_warning_escrow_address = buyers_warning_output_tweaked_key_ctx.p2tr_address(network);
         let sellers_warning_escrow_address = sellers_warning_output_tweaked_key_ctx.p2tr_address(network);
-        self.buyers_warning_tx.builder.set_escrow_address(buyers_warning_escrow_address);
-        self.sellers_warning_tx.builder.set_escrow_address(sellers_warning_escrow_address);
+        self.buyer_txs.warning.builder.set_escrow_address(buyers_warning_escrow_address);
+        self.seller_txs.warning.builder.set_escrow_address(sellers_warning_escrow_address);
 
-        self.buyers_claim_tx.input_sig_ctx.set_tweaked_key_ctx(buyers_warning_output_tweaked_key_ctx.clone());
-        self.sellers_redirect_tx.input_sig_ctx.set_tweaked_key_ctx(buyers_warning_output_tweaked_key_ctx);
-        self.sellers_claim_tx.input_sig_ctx.set_tweaked_key_ctx(sellers_warning_output_tweaked_key_ctx.clone());
-        self.buyers_redirect_tx.input_sig_ctx.set_tweaked_key_ctx(sellers_warning_output_tweaked_key_ctx);
+        self.buyer_txs.claim.input_sig_ctx.set_tweaked_key_ctx(buyers_warning_output_tweaked_key_ctx.clone());
+        self.seller_txs.redirect.input_sig_ctx.set_tweaked_key_ctx(buyers_warning_output_tweaked_key_ctx);
+        self.seller_txs.claim.input_sig_ctx.set_tweaked_key_ctx(sellers_warning_output_tweaked_key_ctx.clone());
+        self.buyer_txs.redirect.input_sig_ctx.set_tweaked_key_ctx(sellers_warning_output_tweaked_key_ctx);
         Ok(())
     }
 
@@ -283,14 +283,11 @@ impl TradeModel {
 
     pub fn init_my_addresses(&mut self) -> Result<()> {
         let mut wallet = self.trade_wallet()?;
-        if self.am_buyer() {
-            self.buyers_warning_tx.builder.set_anchor_address(wallet.new_address()?);
-            self.buyers_redirect_tx.builder.set_anchor_address(wallet.new_address()?);
-            self.buyers_claim_tx.builder.set_payout_address(wallet.new_address()?);
-        } else {
-            self.sellers_warning_tx.builder.set_anchor_address(wallet.new_address()?);
-            self.sellers_redirect_tx.builder.set_anchor_address(wallet.new_address()?);
-            self.sellers_claim_tx.builder.set_payout_address(wallet.new_address()?);
+        let my_txs = if self.am_buyer() { &mut self.buyer_txs } else { &mut self.seller_txs };
+        my_txs.warning.builder.set_anchor_address(wallet.new_address()?);
+        my_txs.redirect.builder.set_anchor_address(wallet.new_address()?);
+        my_txs.claim.builder.set_payout_address(wallet.new_address()?);
+        if !self.am_buyer() {
             self.swap_tx.builder.set_payout_address(wallet.new_address()?);
         }
         drop(wallet);
@@ -298,32 +295,20 @@ impl TradeModel {
     }
 
     pub fn get_my_addresses(&self) -> Option<ExchangedAddresses<'_, ByRef>> {
-        Some(if self.am_buyer() {
-            ExchangedAddresses {
-                warning_tx_fee_bump_address: self.buyers_warning_tx.builder.anchor_address().ok()?,
-                redirect_tx_fee_bump_address: self.buyers_redirect_tx.builder.anchor_address().ok()?,
-                claim_tx_payout_address: self.buyers_claim_tx.builder.payout_address().ok()?,
-            }
-        } else {
-            ExchangedAddresses {
-                warning_tx_fee_bump_address: self.sellers_warning_tx.builder.anchor_address().ok()?,
-                redirect_tx_fee_bump_address: self.sellers_redirect_tx.builder.anchor_address().ok()?,
-                claim_tx_payout_address: self.sellers_claim_tx.builder.payout_address().ok()?,
-            }
+        let my_txs = if self.am_buyer() { &self.buyer_txs } else { &self.seller_txs };
+        Some(ExchangedAddresses {
+            warning_tx_fee_bump: my_txs.warning.builder.anchor_address().ok()?,
+            redirect_tx_fee_bump: my_txs.redirect.builder.anchor_address().ok()?,
+            claim_tx_payout: my_txs.claim.builder.payout_address().ok()?,
         })
     }
 
     pub fn set_peer_addresses(&mut self, addresses: ExchangedAddresses<ByVal, NetworkUnchecked>) -> Result<()> {
         let addresses = addresses.require_network(self.trade_wallet()?.network())?;
-        if self.am_buyer() {
-            self.sellers_warning_tx.builder.set_anchor_address(addresses.warning_tx_fee_bump_address);
-            self.sellers_redirect_tx.builder.set_anchor_address(addresses.redirect_tx_fee_bump_address);
-            self.sellers_claim_tx.builder.set_payout_address(addresses.claim_tx_payout_address);
-        } else {
-            self.buyers_warning_tx.builder.set_anchor_address(addresses.warning_tx_fee_bump_address);
-            self.buyers_redirect_tx.builder.set_anchor_address(addresses.redirect_tx_fee_bump_address);
-            self.buyers_claim_tx.builder.set_payout_address(addresses.claim_tx_payout_address);
-        }
+        let peer_txs = if self.am_buyer() { &mut self.seller_txs } else { &mut self.buyer_txs };
+        peer_txs.warning.builder.set_anchor_address(addresses.warning_tx_fee_bump);
+        peer_txs.redirect.builder.set_anchor_address(addresses.redirect_tx_fee_bump);
+        peer_txs.claim.builder.set_payout_address(addresses.claim_tx_payout);
         Ok(())
     }
 
@@ -357,11 +342,11 @@ impl TradeModel {
         let buyer_payout = self.deposit_tx.builder.buyer_payout()?;
         let seller_payout = self.deposit_tx.builder.seller_payout()?;
 
+        for txs in [&mut self.buyer_txs, &mut self.seller_txs] {
+            txs.warning.builder.set_buyer_input(buyer_payout.clone());
+            txs.warning.builder.set_seller_input(seller_payout.clone());
+        }
         self.swap_tx.builder.set_input(seller_payout.clone());
-        self.buyers_warning_tx.builder.set_buyer_input(buyer_payout.clone());
-        self.buyers_warning_tx.builder.set_seller_input(seller_payout.clone());
-        self.sellers_warning_tx.builder.set_buyer_input(buyer_payout.clone());
-        self.sellers_warning_tx.builder.set_seller_input(seller_payout.clone());
         Ok(())
     }
 
@@ -370,20 +355,16 @@ impl TradeModel {
             // Only the seller has all the params necessary to compute the unsigned swap tx.
             self.swap_tx.builder.compute_unsigned_tx()?;
         }
-        self.buyers_warning_tx.builder.compute_unsigned_tx()?;
-        self.sellers_warning_tx.builder.compute_unsigned_tx()?;
-        let buyers_warning_escrow = self.buyers_warning_tx.builder.escrow()?;
-        let sellers_warning_escrow = self.sellers_warning_tx.builder.escrow()?;
-
-        self.buyers_redirect_tx.builder.set_input(sellers_warning_escrow.clone());
-        self.sellers_redirect_tx.builder.set_input(buyers_warning_escrow.clone());
-        self.buyers_claim_tx.builder.set_input(buyers_warning_escrow);
-        self.sellers_claim_tx.builder.set_input(sellers_warning_escrow);
-
-        self.buyers_redirect_tx.builder.compute_unsigned_tx()?;
-        self.sellers_redirect_tx.builder.compute_unsigned_tx()?;
-        self.buyers_claim_tx.builder.compute_unsigned_tx()?;
-        self.sellers_claim_tx.builder.compute_unsigned_tx()?;
+        let [mut txs, mut peer_txs] = [&mut self.buyer_txs, &mut self.seller_txs];
+        txs.warning.builder.compute_unsigned_tx()?;
+        peer_txs.warning.builder.compute_unsigned_tx()?;
+        for _ in 0..2 {
+            txs.redirect.builder.set_input(peer_txs.warning.builder.escrow()?.clone());
+            txs.redirect.builder.compute_unsigned_tx()?;
+            txs.claim.builder.set_input(txs.warning.builder.escrow()?.clone());
+            txs.claim.builder.compute_unsigned_tx()?;
+            std::mem::swap(&mut txs, &mut peer_txs);
+        }
         Ok(())
     }
 
@@ -398,8 +379,8 @@ impl TradeModel {
         }
         let receivers: ReceiverList = vec.into();
         self.redirection_receivers = Some(receivers.clone());
-        self.buyers_redirect_tx.builder.set_receivers(receivers.clone());
-        self.sellers_redirect_tx.builder.set_receivers(receivers);
+        self.buyer_txs.redirect.builder.set_receivers(receivers.clone());
+        self.seller_txs.redirect.builder.set_receivers(receivers);
         Ok(())
     }
 
@@ -424,17 +405,7 @@ impl TradeModel {
     }
 
     pub fn init_my_nonce_shares(&mut self) -> Result<()> {
-        for ctx in [
-            &mut self.buyers_warning_tx.buyer_input_sig_ctx,
-            &mut self.sellers_warning_tx.buyer_input_sig_ctx,
-            &mut self.buyers_redirect_tx.input_sig_ctx,
-            &mut self.sellers_claim_tx.input_sig_ctx,
-            &mut self.swap_tx.input_sig_ctx,
-            &mut self.buyers_warning_tx.seller_input_sig_ctx,
-            &mut self.sellers_warning_tx.seller_input_sig_ctx,
-            &mut self.sellers_redirect_tx.input_sig_ctx,
-            &mut self.buyers_claim_tx.input_sig_ctx
-        ] {
+        for ctx in self.all_sig_ctxs_mut() {
             ctx.init_my_nonce_share()?;
         }
         Ok(())
@@ -442,79 +413,72 @@ impl TradeModel {
 
     pub fn get_my_nonce_shares(&self) -> Option<ExchangedNonces<'_, ByRef>> {
         Some(ExchangedNonces {
-            swap_tx_input_nonce_share:
+            swap_tx_input:
             self.swap_tx.input_sig_ctx.my_nonce_share().ok()?,
-            buyers_warning_tx_buyer_input_nonce_share:
-            self.buyers_warning_tx.buyer_input_sig_ctx.my_nonce_share().ok()?,
-            buyers_warning_tx_seller_input_nonce_share:
-            self.buyers_warning_tx.seller_input_sig_ctx.my_nonce_share().ok()?,
-            sellers_warning_tx_buyer_input_nonce_share:
-            self.sellers_warning_tx.buyer_input_sig_ctx.my_nonce_share().ok()?,
-            sellers_warning_tx_seller_input_nonce_share:
-            self.sellers_warning_tx.seller_input_sig_ctx.my_nonce_share().ok()?,
-            buyers_redirect_tx_input_nonce_share:
-            self.buyers_redirect_tx.input_sig_ctx.my_nonce_share().ok()?,
-            sellers_redirect_tx_input_nonce_share:
-            self.sellers_redirect_tx.input_sig_ctx.my_nonce_share().ok()?,
-            buyers_claim_tx_input_nonce_share:
-            self.buyers_claim_tx.input_sig_ctx.my_nonce_share().ok()?,
-            sellers_claim_tx_input_nonce_share:
-            self.sellers_claim_tx.input_sig_ctx.my_nonce_share().ok()?,
+            buyers_warning_tx_buyer_input:
+            self.buyer_txs.warning.buyer_input_sig_ctx.my_nonce_share().ok()?,
+            buyers_warning_tx_seller_input:
+            self.buyer_txs.warning.seller_input_sig_ctx.my_nonce_share().ok()?,
+            sellers_warning_tx_buyer_input:
+            self.seller_txs.warning.buyer_input_sig_ctx.my_nonce_share().ok()?,
+            sellers_warning_tx_seller_input:
+            self.seller_txs.warning.seller_input_sig_ctx.my_nonce_share().ok()?,
+            buyers_redirect_tx_input:
+            self.buyer_txs.redirect.input_sig_ctx.my_nonce_share().ok()?,
+            sellers_redirect_tx_input:
+            self.seller_txs.redirect.input_sig_ctx.my_nonce_share().ok()?,
+            buyers_claim_tx_input:
+            self.buyer_txs.claim.input_sig_ctx.my_nonce_share().ok()?,
+            sellers_claim_tx_input:
+            self.seller_txs.claim.input_sig_ctx.my_nonce_share().ok()?,
         })
     }
 
+    const fn all_sig_ctxs_mut(&mut self) -> [&mut SigCtx; 9] {
+        [
+            &mut self.swap_tx.input_sig_ctx,
+            &mut self.buyer_txs.warning.buyer_input_sig_ctx,
+            &mut self.buyer_txs.warning.seller_input_sig_ctx,
+            &mut self.seller_txs.warning.buyer_input_sig_ctx,
+            &mut self.seller_txs.warning.seller_input_sig_ctx,
+            &mut self.buyer_txs.redirect.input_sig_ctx,
+            &mut self.seller_txs.redirect.input_sig_ctx,
+            &mut self.buyer_txs.claim.input_sig_ctx,
+            &mut self.seller_txs.claim.input_sig_ctx
+        ]
+    }
+
     pub fn set_peer_nonce_shares(&mut self, nonce_shares: ExchangedNonces<ByVal>) {
-        self.swap_tx.input_sig_ctx.set_peers_nonce_share(
-            nonce_shares.swap_tx_input_nonce_share);
-        self.buyers_warning_tx.buyer_input_sig_ctx.set_peers_nonce_share(
-            nonce_shares.buyers_warning_tx_buyer_input_nonce_share);
-        self.buyers_warning_tx.seller_input_sig_ctx.set_peers_nonce_share(
-            nonce_shares.buyers_warning_tx_seller_input_nonce_share);
-        self.sellers_warning_tx.buyer_input_sig_ctx.set_peers_nonce_share(
-            nonce_shares.sellers_warning_tx_buyer_input_nonce_share);
-        self.sellers_warning_tx.seller_input_sig_ctx.set_peers_nonce_share(
-            nonce_shares.sellers_warning_tx_seller_input_nonce_share);
-        self.buyers_redirect_tx.input_sig_ctx.set_peers_nonce_share(
-            nonce_shares.buyers_redirect_tx_input_nonce_share);
-        self.sellers_redirect_tx.input_sig_ctx.set_peers_nonce_share(
-            nonce_shares.sellers_redirect_tx_input_nonce_share);
-        self.buyers_claim_tx.input_sig_ctx.set_peers_nonce_share(
-            nonce_shares.buyers_claim_tx_input_nonce_share);
-        self.sellers_claim_tx.input_sig_ctx.set_peers_nonce_share(
-            nonce_shares.sellers_claim_tx_input_nonce_share);
+        let sig_ctxs = self.all_sig_ctxs_mut();
+        sig_ctxs[0].set_peers_nonce_share(nonce_shares.swap_tx_input);
+        sig_ctxs[1].set_peers_nonce_share(nonce_shares.buyers_warning_tx_buyer_input);
+        sig_ctxs[2].set_peers_nonce_share(nonce_shares.buyers_warning_tx_seller_input);
+        sig_ctxs[3].set_peers_nonce_share(nonce_shares.sellers_warning_tx_buyer_input);
+        sig_ctxs[4].set_peers_nonce_share(nonce_shares.sellers_warning_tx_seller_input);
+        sig_ctxs[5].set_peers_nonce_share(nonce_shares.buyers_redirect_tx_input);
+        sig_ctxs[6].set_peers_nonce_share(nonce_shares.sellers_redirect_tx_input);
+        sig_ctxs[7].set_peers_nonce_share(nonce_shares.buyers_claim_tx_input);
+        sig_ctxs[8].set_peers_nonce_share(nonce_shares.sellers_claim_tx_input);
     }
 
     pub fn aggregate_nonce_shares(&mut self) -> Result<()> {
-        self.swap_tx.input_sig_ctx.aggregate_nonce_shares()?;
-        self.buyers_warning_tx.buyer_input_sig_ctx.aggregate_nonce_shares()?;
-        self.buyers_warning_tx.seller_input_sig_ctx.aggregate_nonce_shares()?;
-        self.sellers_warning_tx.buyer_input_sig_ctx.aggregate_nonce_shares()?;
-        self.sellers_warning_tx.seller_input_sig_ctx.aggregate_nonce_shares()?;
-        self.buyers_redirect_tx.input_sig_ctx.aggregate_nonce_shares()?;
-        self.sellers_redirect_tx.input_sig_ctx.aggregate_nonce_shares()?;
-        self.buyers_claim_tx.input_sig_ctx.aggregate_nonce_shares()?;
-        self.sellers_claim_tx.input_sig_ctx.aggregate_nonce_shares()?;
+        for ctx in self.all_sig_ctxs_mut() {
+            ctx.aggregate_nonce_shares()?;
+        }
         Ok(())
     }
 
     pub fn sign_partial(&mut self) -> Result<()> {
-        self.buyers_warning_tx.buyer_input_sig_ctx
-            .sign_partial(self.buyers_warning_tx.builder.buyer_input_sighash()?)?;
-        self.sellers_warning_tx.buyer_input_sig_ctx
-            .sign_partial(self.sellers_warning_tx.builder.buyer_input_sighash()?)?;
-        self.buyers_redirect_tx.input_sig_ctx
-            .sign_partial(self.buyers_redirect_tx.builder.input_sighash()?)?;
-        self.sellers_claim_tx.input_sig_ctx
-            .sign_partial(self.sellers_claim_tx.builder.input_sighash()?)?;
-        self.buyers_warning_tx.seller_input_sig_ctx
-            .sign_partial(self.buyers_warning_tx.builder.seller_input_sighash()?)?;
-        self.sellers_warning_tx.seller_input_sig_ctx
-            .sign_partial(self.sellers_warning_tx.builder.seller_input_sighash()?)?;
-        self.sellers_redirect_tx.input_sig_ctx
-            .sign_partial(self.sellers_redirect_tx.builder.input_sighash()?)?;
-        self.buyers_claim_tx.input_sig_ctx
-            .sign_partial(self.buyers_claim_tx.builder.input_sighash()?)?;
-
+        for txs in [&mut self.buyer_txs, &mut self.seller_txs] {
+            txs.warning.buyer_input_sig_ctx
+                .sign_partial(txs.warning.builder.buyer_input_sighash()?)?;
+            txs.warning.seller_input_sig_ctx
+                .sign_partial(txs.warning.builder.seller_input_sighash()?)?;
+            txs.redirect.input_sig_ctx
+                .sign_partial(txs.redirect.builder.input_sighash()?)?;
+            txs.claim.input_sig_ctx
+                .sign_partial(txs.claim.builder.input_sighash()?)?;
+        }
         if !self.am_buyer() {
             // Unlike the other multisig sighashes, only the seller is able to independently compute
             // the swap-tx-input sighash. The buyer must wait for the next round, when the deposit
@@ -531,103 +495,80 @@ impl TradeModel {
     }
 
     pub fn get_my_partial_signatures_on_peer_txs(&self, buyer_ready_to_release: bool) -> Option<ExchangedSigs<'_, ByRef>> {
-        Some(if self.am_buyer() {
-            ExchangedSigs {
-                peers_warning_tx_buyer_input_partial_signature: self.sellers_warning_tx.buyer_input_sig_ctx.my_partial_sig().ok()?,
-                peers_warning_tx_seller_input_partial_signature: self.sellers_warning_tx.seller_input_sig_ctx.my_partial_sig().ok()?,
-                peers_redirect_tx_input_partial_signature: self.sellers_redirect_tx.input_sig_ctx.my_partial_sig().ok()?,
-                peers_claim_tx_input_partial_signature: self.sellers_claim_tx.input_sig_ctx.my_partial_sig().ok()?,
-                swap_tx_input_partial_signature: self.swap_tx.input_sig_ctx.my_partial_sig().ok().filter(|_| buyer_ready_to_release),
-                swap_tx_input_sighash: self.swap_tx.input_sighash.as_ref(),
-            }
-        } else {
-            ExchangedSigs {
-                peers_warning_tx_buyer_input_partial_signature: self.buyers_warning_tx.buyer_input_sig_ctx.my_partial_sig().ok()?,
-                peers_warning_tx_seller_input_partial_signature: self.buyers_warning_tx.seller_input_sig_ctx.my_partial_sig().ok()?,
-                peers_redirect_tx_input_partial_signature: self.buyers_redirect_tx.input_sig_ctx.my_partial_sig().ok()?,
-                peers_claim_tx_input_partial_signature: self.buyers_claim_tx.input_sig_ctx.my_partial_sig().ok()?,
-                swap_tx_input_partial_signature: self.swap_tx.input_sig_ctx.my_partial_sig().ok(),
-                swap_tx_input_sighash: self.swap_tx.input_sighash.as_ref(),
-            }
+        let peer_txs = if self.am_buyer() { &self.seller_txs } else { &self.buyer_txs };
+        let ready_to_release = buyer_ready_to_release || !self.am_buyer();
+
+        Some(ExchangedSigs {
+            peers_warning_tx_buyer_input_partial_signature:
+            peer_txs.warning.buyer_input_sig_ctx.my_partial_sig().ok()?,
+            peers_warning_tx_seller_input_partial_signature:
+            peer_txs.warning.seller_input_sig_ctx.my_partial_sig().ok()?,
+            peers_redirect_tx_input_partial_signature:
+            peer_txs.redirect.input_sig_ctx.my_partial_sig().ok()?,
+            peers_claim_tx_input_partial_signature:
+            peer_txs.claim.input_sig_ctx.my_partial_sig().ok()?,
+            swap_tx_input_partial_signature:
+            self.swap_tx.input_sig_ctx.my_partial_sig().ok().filter(|_| ready_to_release),
+            swap_tx_input_sighash:
+            self.swap_tx.input_sighash.as_ref(),
         })
     }
 
     pub fn set_peer_partial_signatures_on_my_txs(&mut self, sigs: &ExchangedSigs<ByVal>) {
-        if self.am_buyer() {
-            self.buyers_warning_tx.buyer_input_sig_ctx.set_peers_partial_sig(sigs.peers_warning_tx_buyer_input_partial_signature);
-            self.buyers_warning_tx.seller_input_sig_ctx.set_peers_partial_sig(sigs.peers_warning_tx_seller_input_partial_signature);
-            self.buyers_redirect_tx.input_sig_ctx.set_peers_partial_sig(sigs.peers_redirect_tx_input_partial_signature);
-            self.buyers_claim_tx.input_sig_ctx.set_peers_partial_sig(sigs.peers_claim_tx_input_partial_signature);
-        } else {
-            self.sellers_warning_tx.buyer_input_sig_ctx.set_peers_partial_sig(sigs.peers_warning_tx_buyer_input_partial_signature);
-            self.sellers_warning_tx.seller_input_sig_ctx.set_peers_partial_sig(sigs.peers_warning_tx_seller_input_partial_signature);
-            self.sellers_redirect_tx.input_sig_ctx.set_peers_partial_sig(sigs.peers_redirect_tx_input_partial_signature);
-            self.sellers_claim_tx.input_sig_ctx.set_peers_partial_sig(sigs.peers_claim_tx_input_partial_signature);
-        }
+        let my_txs = if self.am_buyer() { &mut self.buyer_txs } else { &mut self.seller_txs };
+        my_txs.warning.buyer_input_sig_ctx
+            .set_peers_partial_sig(sigs.peers_warning_tx_buyer_input_partial_signature);
+        my_txs.warning.seller_input_sig_ctx
+            .set_peers_partial_sig(sigs.peers_warning_tx_seller_input_partial_signature);
+        my_txs.redirect.input_sig_ctx
+            .set_peers_partial_sig(sigs.peers_redirect_tx_input_partial_signature);
+        my_txs.claim.input_sig_ctx
+            .set_peers_partial_sig(sigs.peers_claim_tx_input_partial_signature);
+
         // NOTE: This passed field would normally be 'None' for the seller, as the buyer should redact the field
         // at the trade start and reveal it later, after payment is started, to prevent premature trade closure:
         sigs.swap_tx_input_partial_signature.map(|s| self.swap_tx.input_sig_ctx.set_peers_partial_sig(s));
     }
 
     pub fn aggregate_partial_signatures(&mut self) -> Result<()> {
+        let my_txs = if self.am_buyer() { &mut self.buyer_txs } else { &mut self.seller_txs };
+        my_txs.warning.buyer_input_sig_ctx.aggregate_partial_signatures()?;
+        my_txs.warning.seller_input_sig_ctx.aggregate_partial_signatures()?;
+        my_txs.redirect.input_sig_ctx.aggregate_partial_signatures()?;
+        my_txs.claim.input_sig_ctx.aggregate_partial_signatures()?;
         if self.am_buyer() {
-            self.buyers_warning_tx.buyer_input_sig_ctx.aggregate_partial_signatures()?;
-            self.buyers_warning_tx.seller_input_sig_ctx.aggregate_partial_signatures()?;
-            self.buyers_redirect_tx.input_sig_ctx.aggregate_partial_signatures()?;
-            self.buyers_claim_tx.input_sig_ctx.aggregate_partial_signatures()?;
-
             // This forms a validated adaptor signature on the swap tx for the buyer, ensuring that the seller's
             // private key share is revealed if the swap tx is published. The seller doesn't get the full adaptor
             // signature (or the ordinary signature) until later on in the trade, when the buyer confirms payment:
             self.swap_tx.input_sig_ctx.aggregate_partial_signatures()?;
-        } else {
-            self.sellers_warning_tx.buyer_input_sig_ctx.aggregate_partial_signatures()?;
-            self.sellers_warning_tx.seller_input_sig_ctx.aggregate_partial_signatures()?;
-            self.sellers_redirect_tx.input_sig_ctx.aggregate_partial_signatures()?;
-            self.sellers_claim_tx.input_sig_ctx.aggregate_partial_signatures()?;
         }
         Ok(())
     }
 
     pub fn compute_my_signed_prepared_txs(&mut self) -> Result<()> {
         use MaybeScalar::Zero;
-        if self.am_buyer() {
-            self.buyers_warning_tx.builder
-                .set_buyer_input_signature(self.buyers_warning_tx.buyer_input_sig_ctx.compute_taproot_signature(Zero)?)
-                .set_seller_input_signature(self.buyers_warning_tx.seller_input_sig_ctx.compute_taproot_signature(Zero)?)
-                .compute_signed_tx()?;
-            self.buyers_redirect_tx.builder
-                .set_input_signature(self.buyers_redirect_tx.input_sig_ctx.compute_taproot_signature(Zero)?)
-                .compute_signed_tx()?;
-            self.buyers_claim_tx.builder
-                .set_input_signature(self.buyers_claim_tx.input_sig_ctx.compute_taproot_signature(Zero)?)
-                .compute_signed_tx()?;
-        } else {
-            self.sellers_warning_tx.builder
-                .set_buyer_input_signature(self.sellers_warning_tx.buyer_input_sig_ctx.compute_taproot_signature(Zero)?)
-                .set_seller_input_signature(self.sellers_warning_tx.seller_input_sig_ctx.compute_taproot_signature(Zero)?)
-                .compute_signed_tx()?;
-            self.sellers_redirect_tx.builder
-                .set_input_signature(self.sellers_redirect_tx.input_sig_ctx.compute_taproot_signature(Zero)?)
-                .compute_signed_tx()?;
-            self.sellers_claim_tx.builder
-                .set_input_signature(self.sellers_claim_tx.input_sig_ctx.compute_taproot_signature(Zero)?)
-                .compute_signed_tx()?;
-        }
+        let my_txs = if self.am_buyer() { &mut self.buyer_txs } else { &mut self.seller_txs };
+        my_txs.warning.builder
+            .set_buyer_input_signature(my_txs.warning.buyer_input_sig_ctx.compute_taproot_signature(Zero)?)
+            .set_seller_input_signature(my_txs.warning.seller_input_sig_ctx.compute_taproot_signature(Zero)?)
+            .compute_signed_tx()?;
+        my_txs.redirect.builder
+            .set_input_signature(my_txs.redirect.input_sig_ctx.compute_taproot_signature(Zero)?)
+            .compute_signed_tx()?;
+        my_txs.claim.builder
+            .set_input_signature(my_txs.claim.input_sig_ctx.compute_taproot_signature(Zero)?)
+            .compute_signed_tx()?;
         Ok(())
     }
 
     pub fn sign_deposit_psbt(&mut self) -> Result<()> {
         // Check that we have all the prepared tx data we need:
+        let my_txs = if self.am_buyer() { &self.buyer_txs } else { &self.seller_txs };
+        my_txs.warning.builder.signed_tx()?;
+        my_txs.redirect.builder.signed_tx()?;
+        my_txs.claim.builder.signed_tx()?;
         if self.am_buyer() {
-            self.buyers_warning_tx.builder.signed_tx()?;
-            self.buyers_redirect_tx.builder.signed_tx()?;
-            self.buyers_claim_tx.builder.signed_tx()?;
             self.swap_tx.input_sig_ctx.aggregated_sig()?;
-        } else {
-            self.sellers_warning_tx.builder.signed_tx()?;
-            self.sellers_redirect_tx.builder.signed_tx()?;
-            self.sellers_claim_tx.builder.signed_tx()?;
         }
         // FIXME: This is the first point in the protocol that a real commitment is made.
         //  It is CRITICAL that the trade data is persisted and backed up at this point.
@@ -662,7 +603,7 @@ impl TradeModel {
     }
 
     pub fn get_my_private_key_share_for_peer_output(&self) -> Option<&Scalar> {
-        // TODO: Check that it's actually safe to release the funds at this point.
+        // FIXME: Check that it's actually safe to release the funds at this point.
         let peer_key_ctx = if self.am_buyer() {
             &self.seller_output_key_ctx
         } else {
