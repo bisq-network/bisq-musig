@@ -42,17 +42,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Commands::WalletBalance => {
             let response = client.wallet_balance(Request::new(WalletBalanceRequest {})).await?;
             drop(client);
-            println!("{}", serde_json::to_string_pretty(&response.into_inner())?);
+            tracing::info!("{}", serde_json::to_string_pretty(&response.into_inner())?);
         }
         Commands::NewAddress => {
             let response = client.new_address(Request::new(NewAddressRequest {})).await?;
             drop(client);
-            println!("{}", serde_json::to_string_pretty(&response.into_inner())?);
+            tracing::info!("{}", serde_json::to_string_pretty(&response.into_inner())?);
         }
         Commands::ListUnspent => {
             let response = client.list_unspent(Request::new(ListUnspentRequest {})).await?;
             drop(client);
-            println!("{}", serde_json::to_string_pretty(&response.into_inner())?);
+            tracing::info!("{}", serde_json::to_string_pretty(&response.into_inner())?);
         }
         Commands::NotifyConfidence { tx_id } => {
             let tx_id = tx_id.parse::<sha256d::Hash>()?.to_byte_array().into();
@@ -60,7 +60,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             drop(client);
             let mut stream = response.into_inner();
             while let Some(event_result) = stream.next().await {
-                println!("{}", serde_json::to_string_pretty(&event_result?)?);
+                tracing::info!("{}", serde_json::to_string_pretty(&event_result?)?);
             }
         }
     }

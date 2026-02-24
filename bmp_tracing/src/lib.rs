@@ -30,7 +30,7 @@ impl LogConfig {
             .with_line_number(true)
             .with_file(true)
             .with_thread_ids(false)
-            .with_thread_names(true)
+            .with_thread_names(false)
             .map_fmt_fields(tracing_subscriber::field::MakeExt::debug_alt);
 
         match self {

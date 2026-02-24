@@ -15,6 +15,7 @@ rand_chacha = { workspace = true }
 thiserror = { workspace = true }
 # TODO move this to dev-dependencies:
 testenv = { path = "../testenv" }
+bmp_tracing = { workspace = true }
 
 [dev-dependencies]
 bdk_wallet = { workspace = true, features = ["test-utils"] }

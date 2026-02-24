@@ -7,22 +7,23 @@ use std::time::Duration;
 use anyhow::{Context as _, Result};
 use bdk_bitcoind_rpc::bitcoincore_rpc;
 use bdk_bitcoind_rpc::bitcoincore_rpc::{Auth, RpcApi as _};
-use bdk_electrum::bdk_core::bitcoin::{KnownHrp, XOnlyPublicKey};
 use bdk_electrum::BdkElectrumClient;
+use bdk_electrum::bdk_core::bitcoin::{KnownHrp, XOnlyPublicKey};
 use bdk_wallet::bitcoin::address::NetworkChecked;
 use bdk_wallet::bitcoin::key::Secp256k1;
 use bdk_wallet::bitcoin::secp256k1::All;
 use bdk_wallet::bitcoin::{Address, Amount, BlockHash, Network, Transaction, Txid};
+use bmp_tracing::tracing;
 pub use corepc_node::get_available_port;
 use electrsd::corepc_node::Node;
 use electrsd::electrum_client::{Client, ElectrumApi};
-use electrsd::{corepc_node, ElectrsD};
+use electrsd::{ElectrsD, corepc_node};
 use hmac::{Hmac, Mac as _};
 use rand::{Rng as _, RngCore as _};
 use secp::Scalar;
 use sha2::Sha256;
 use simple_semaphore::{Permit, Semaphore};
-use tempfile::{tempdir, TempDir};
+use tempfile::{TempDir, tempdir};
 
 /// Bitcoin regtest environment manager
 pub struct TestEnv {
@@ -163,7 +164,7 @@ impl TestEnv {
         std::env::set_current_dir(tmp_dir.path()).expect("failed to set current directory");
 
         // Try to start bitcoind (from environment or downloads)
-        println!("Starting bitcoind...");
+        tracing::info!("Starting bitcoind...");
         // rpcauth for each bitcoind and save the pwd
         // let (rpc_auth, bitcoin_rpc_pwd) = generate_rpcauth("bitcoin", Some("bitcoin"));
         let (rpc_auth, bitcoin_rpc_pwd) = generate_rpcauth("bitcoin", None);
@@ -174,10 +175,10 @@ impl TestEnv {
         bitcoin_config.args.push(&*auth_config);
 
         let bitcoind = if let Ok(path) = std::env::var("BITCOIND_EXEC") {
-            println!("Using custom bitcoind executable: {path}");
+            tracing::info!("Using custom bitcoind executable: {path}");
             Node::with_conf(&path, &bitcoin_config)?
         } else {
-            println!(
+            tracing::info!(
                 "BITCOIND_EXEC not set! Falling back to downloaded version at {}",
                 corepc_node::downloaded_exe_path()?
             );
@@ -189,17 +190,17 @@ impl TestEnv {
 
         // Try to get electrs executable (from environment or downloads)
         let electrs_exe = if let Ok(path) = std::env::var("ELECTRS_EXEC") {
-            println!("Using custom electrs executable: {path}");
+            tracing::info!("Using custom electrs executable: {path}");
             path
         } else {
             // Try to use downloaded electrs
             let path = electrsd::downloaded_exe_path()
                 .expect("No downloaded electrs found, trying electrs in PATH...");
-            println!("Using downloaded electrs: {path}");
+            tracing::info!("Using downloaded electrs: {path}");
             path
         };
 
-        println!("Starting electrsd...");
+        tracing::info!("Starting electrsd...");
 
         let electrsd = ElectrsD::with_conf(electrs_exe, &bitcoind, &config.electrsd)
             .with_context(|| "Starting electrsd failed...")?;
@@ -221,7 +222,7 @@ impl TestEnv {
             container_name: None,
             bitcoin_rpc_pwd
         };
-        println!("Bitcoin regtest environment ready!");
+        tracing::info!("Bitcoin regtest environment ready!");
         Ok(test_env)
     }
 
@@ -266,9 +267,14 @@ impl TestEnv {
         self.explorer_process = Some(child);
         self.container_name = Some(container_name);
 
-        eprintln!("Starting explorer in container, access it at http://127.0.0.1:{browser_port}/blocks");
-        eprintln!("you can check the container logs with: ");
-        eprintln!("podman logs -f --timestamps {}", self.container_name.as_ref().unwrap());
+        tracing::info!(
+            "Starting explorer in container, access it at http://127.0.0.1:{browser_port}/blocks"
+        );
+        tracing::info!("you can check the container logs with: ");
+        tracing::info!(
+            "podman logs -f --timestamps {}",
+            self.container_name.as_ref().unwrap()
+        );
         Ok(())
     }
 
@@ -457,16 +463,16 @@ impl TestEnv {
 impl Drop for TestEnv {
     fn drop(&mut self) {
         if let Some(name) = self.container_name.take() {
-            eprintln!("Stopping explorer container {name}...");
+            tracing::info!("Stopping explorer container {name}...");
             let output = std::process::Command::new("podman")
                     .args(["stop", &name])
                     .output();
-            eprintln!("explorer container returned {output:?}...");
+            tracing::info!("explorer container returned {output:?}...");
         }
 
         // Try graceful shutdown first (SIGTERM)
         if let Some(mut child) = self.explorer_process.take() {
-            eprintln!("Shutting down explorer process...");
+            tracing::info!("Shutting down explorer process...");
 
             // Send SIGTERM (graceful)
             let _ = child.kill();
@@ -478,6 +484,7 @@ impl Drop for TestEnv {
 #[cfg(test)]
 mod tests {
     use bdk_bitcoind_rpc::bitcoincore_rpc::RpcApi as _;
+    use bmp_tracing::tracing;
 
     use super::*;
 
@@ -523,18 +530,18 @@ mod tests {
 
         // Create new address
         let address = env.new_address()?;
-        println!("Created address: {address}");
+        tracing::info!("Created address: {address}");
 
         // Address is already verified to be on regtest network when created via new_address()
 
         // Get initial balance
         let initial_balance = env.bitcoind.client.get_balance()?;
-        println!("Initial balance: {initial_balance:?} BTC");
+        tracing::info!("Initial balance: {initial_balance:?} BTC");
 
         // Fund address with 1000 satoshis
         let amount = Amount::from_sat(1000);
         let txid = env.fund_address(&address, amount)?;
-        println!("Funded address with txid: {txid}");
+        tracing::info!("Funded address with txid: {txid}");
 
         // Verify the transaction was created
         assert_ne!(
@@ -550,7 +557,7 @@ mod tests {
 
         // Wait for the transaction to appear in electrum
         env.wait_for_tx(txid)?;
-        println!("Transaction confirmed in electrum");
+        tracing::info!("Transaction confirmed in electrum");
 
         // Verify we can get the transaction from bitcoind
         let tx = env.bitcoind.client.get_transaction(txid)?;
@@ -565,7 +572,7 @@ mod tests {
             .unwrap();
 
         assert_eq!(receive_amount, amount);
-        println!("Transaction amount verified: {receive_amount}");
+        tracing::info!("Transaction amount verified: {receive_amount}");
 
         Ok(())
     }
