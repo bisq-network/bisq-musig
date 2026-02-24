@@ -24,6 +24,7 @@ tempfile = "3.25.0"
 thiserror = "2.0.18"
 tokio = "1.49.0"
 tracing = "0.1.44"
+tracing-core = {version = "0.1.35", default-features = false}
 tracing-subscriber = { version = "0.3.22", features = ["env-filter"] }
 bmp_tracing = { path = "bmp_tracing" }
 zeroize = "1.8.2"

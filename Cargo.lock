@@ -493,6 +493,7 @@ name = "bmp_tracing"
 version = "0.1.0"
 dependencies = [
  "tracing",
+ "tracing-core",
  "tracing-subscriber",
 ]
 
