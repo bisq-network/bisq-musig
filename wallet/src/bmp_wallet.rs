@@ -4,7 +4,7 @@ use std::{fs, vec};
 use base64::engine::general_purpose;
 use base64::Engine as _;
 use bdk_electrum::bdk_core::bitcoin::{absolute, Address, FeeRate, OutPoint};
-use bdk_kyoto::bip157::{tokio, Builder};
+use bdk_kyoto::bip157::{tokio, Builder, Transaction};
 use bdk_kyoto::{BuilderExt as _, LightClient, Requester, ScanType, TrustedPeer, UpdateSubscriber};
 use bdk_wallet::bitcoin::bip32::Xpriv;
 use bdk_wallet::bitcoin::hex::DisplayHex as _;
@@ -358,6 +358,8 @@ pub trait WalletApi {
         scan_type: ScanType,
         peers: Vec<TrustedPeer>,
     ) -> impl Future<Output = anyhow::Result<()>> + Send;
+
+    fn drain(&mut self) -> anyhow::Result<Transaction>;
 }
 
 impl WalletApi for BMPWallet<Connection> {
@@ -728,6 +730,18 @@ impl WalletApi for BMPWallet<Connection> {
             db: encrypted_conn,
         })
     }
+
+    fn drain(&mut self) -> anyhow::Result<Transaction> {
+        let drain_to_address = self.next_address(KeychainKind::External)?;
+        let imported_balance = self.imported_balance.trusted_spendable();
+        let mut tx = self.build_tx();
+        tx.add_recipient(drain_to_address.script_pubkey(), imported_balance);
+
+        let mut psbt = tx.finish()?;
+        self.sign(&mut psbt, SignOptions::default())?;
+
+        Ok(psbt.extract_tx()?)
+    }
 }
 
 impl Deref for BMPWallet<Connection> {
@@ -747,6 +761,7 @@ impl DerefMut for BMPWallet<Connection> {
 mod tests {
     use std::sync::{Arc, LazyLock};
 
+    use anyhow::Ok;
     use bdk_wallet::bitcoin::hashes::Hash as _;
     use bdk_wallet::bitcoin::{psbt, Address, AddressType, Amount, BlockHash, Network, Weight};
     use bdk_wallet::chain::{self, BlockId};
@@ -1123,5 +1138,10 @@ mod tests {
         let lw = BMPWallet::load_wallet(Network::Regtest, Some("secret123")).unwrap();
 
         assert_eq!(lw.get_seed_phrase().unwrap(), seed);
+    }
+
+    #[test]
+    fn drain_wallet() -> anyhow::Result<()> {
+        Ok(())
     }
 }
