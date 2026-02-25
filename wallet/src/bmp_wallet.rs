@@ -21,7 +21,6 @@ use bdk_wallet::{
     AddressInfo, Balance, ChangeSet, KeychainKind, PersistedWallet, SignOptions, TxBuilder,
     TxOrdering, Utxo, Wallet, WalletPersister, WeightedUtxo,
 };
-use bmp_tracing::tracing;
 use rand::RngCore as _;
 use secp::Scalar;
 

@@ -14,11 +14,12 @@ hex = { workspace = true }
 rand = { workspace = true }
 rusqlite = { workspace = true }
 secp = { workspace = true }
-bmp_tracing = { workspace = true }
+tracing = { workspace = true }
 zeroize = { workspace = true }
 
 [dev-dependencies]
 bdk_wallet = { workspace = true, features = ["test-utils"] }
+bmp_tracing = { workspace = true }
 simple-semaphore = { workspace = true }
 tempfile = { workspace = true }
 testenv = { path = "../testenv"}

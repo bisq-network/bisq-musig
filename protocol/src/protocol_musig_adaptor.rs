@@ -10,7 +10,6 @@ use bdk_wallet::bitcoin::{
 };
 use bdk_wallet::template::{Bip86, DescriptorTemplate as _};
 use bdk_wallet::{AddressInfo, KeychainKind, SignOptions, Wallet};
-use bmp_tracing::tracing;
 use musig2::secp::{MaybeScalar, Point};
 use musig2::{PartialSignature, PubNonce};
 use rand::RngCore as _;

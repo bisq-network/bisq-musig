@@ -1,5 +1,5 @@
-use bmp_tracing::tracing::info;
 use tonic::{Request, Response, Result};
+use tracing::info;
 
 use crate::pb::bmp_wallet;
 use crate::pb::bmp_wallet::wallet_server::Wallet;
