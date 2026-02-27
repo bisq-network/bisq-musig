@@ -16,7 +16,7 @@ use crate::pb::walletrpc::{
     ConfEvent, ConfidenceType, ConfirmationBlockTime, TransactionOutput, WalletBalanceResponse,
 };
 use crate::protocol::{
-    ExchangedAddresses, ExchangedNonces, ExchangedSigs, ProtocolErrorKind, Role,
+    ContractualTxids, ExchangedAddresses, ExchangedNonces, ExchangedSigs, ProtocolErrorKind, Role,
 };
 use crate::storage::{ByRef, ByVal};
 use crate::wallet::TxConfidence;
@@ -196,6 +196,8 @@ impl<'a> TryProtoInto<ExchangedSigs<'a, ByVal>> for PartialSignaturesMessage {
             self.swap_tx_input_partial_signature.try_proto_into()?,
             swap_tx_input_sighash:
             self.swap_tx_input_sighash.try_proto_into()?,
+            contractual_txids:
+            None, // ignore any contract-forming txids passed by the client
         })
     }
 }
@@ -244,6 +246,18 @@ impl From<SentAddressesNoncesPair<'_>> for NonceSharesMessage {
     }
 }
 
+impl From<ContractualTxids> for crate::pb::musigrpc::ContractualTxIds {
+    fn from(value: ContractualTxids) -> Self {
+        Self {
+            deposit_tx_id: value.deposit.to_byte_array().into(),
+            buyers_warning_tx_id: value.buyers_warning.to_byte_array().into(),
+            sellers_warning_tx_id: value.sellers_warning.to_byte_array().into(),
+            buyers_redirect_tx_id: value.buyers_redirect.to_byte_array().into(),
+            sellers_redirect_tx_id: value.sellers_redirect.to_byte_array().into(),
+        }
+    }
+}
+
 impl From<ExchangedSigs<'_, ByRef>> for PartialSignaturesMessage {
     fn from(value: ExchangedSigs<ByRef>) -> Self {
         Self {
@@ -259,6 +273,8 @@ impl From<ExchangedSigs<'_, ByRef>> for PartialSignaturesMessage {
             value.swap_tx_input_partial_signature.map(|s| s.serialize().into()),
             swap_tx_input_sighash:
             value.swap_tx_input_sighash.map(|s| s.as_byte_array().into()),
+            contractual_tx_ids:
+            value.contractual_txids.map(ContractualTxids::into),
         }
     }
 }

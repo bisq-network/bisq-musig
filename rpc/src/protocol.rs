@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 use std::sync::{Arc, LazyLock, Mutex};
 
 use bdk_wallet::bitcoin::address::{NetworkChecked, NetworkUnchecked, NetworkValidation};
-use bdk_wallet::bitcoin::{Address, Amount, FeeRate, Network, Psbt, TapSighash, Transaction};
+use bdk_wallet::bitcoin::{Address, Amount, FeeRate, Network, Psbt, TapSighash, Transaction, Txid};
 use guardian::ArcMutexGuardian;
 use musig2::secp::{MaybeScalar, Point, Scalar};
 use musig2::{PartialSignature, PubNonce};
@@ -135,6 +135,15 @@ pub struct ExchangedSigs<'a, S: Storage> {
     pub peers_claim_tx_input_partial_signature: S::Store<'a, PartialSignature>,
     pub swap_tx_input_partial_signature: Option<S::Store<'a, PartialSignature>>,
     pub swap_tx_input_sighash: Option<S::Store<'a, TapSighash>>,
+    pub contractual_txids: Option<ContractualTxids>,
+}
+
+pub struct ContractualTxids {
+    pub deposit: Txid,
+    pub buyers_warning: Txid,
+    pub sellers_warning: Txid,
+    pub buyers_redirect: Txid,
+    pub sellers_redirect: Txid,
 }
 
 impl TradeModel {
@@ -368,6 +377,18 @@ impl TradeModel {
         Ok(())
     }
 
+    fn get_contractual_txids(&self) -> Option<ContractualTxids> {
+        // TODO: This needlessly recomputes txids that were already determined earlier when
+        //  computing the outpoints of any connecting txs -- cache in the builders to optimize.
+        Some(ContractualTxids {
+            deposit: self.get_deposit_psbt()?.unsigned_tx.compute_txid(),
+            buyers_warning: self.buyer_txs.warning.builder.unsigned_tx().ok()?.compute_txid(),
+            sellers_warning: self.seller_txs.warning.builder.unsigned_tx().ok()?.compute_txid(),
+            buyers_redirect: self.buyer_txs.redirect.builder.unsigned_tx().ok()?.compute_txid(),
+            sellers_redirect: self.seller_txs.redirect.builder.unsigned_tx().ok()?.compute_txid(),
+        })
+    }
+
     pub fn set_redirection_receivers<I, E>(&mut self, receivers: I) -> Result<(), E>
         where I: IntoIterator<Item=Result<Receiver<NetworkUnchecked>, E>>,
               E: From<ProtocolErrorKind>
@@ -511,6 +532,8 @@ impl TradeModel {
             self.swap_tx.input_sig_ctx.my_partial_sig().ok().filter(|_| ready_to_release),
             swap_tx_input_sighash:
             self.swap_tx.input_sighash.as_ref(),
+            contractual_txids:
+            self.get_contractual_txids().filter(|_| !buyer_ready_to_release),
         })
     }
 
