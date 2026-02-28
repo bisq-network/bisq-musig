@@ -6,6 +6,8 @@ use bdk_wallet::WeightedUtxo;
 
 #[derive(Debug)]
 pub struct AlwaysSpendImportedFirst(pub Vec<WeightedUtxo>);
+#[derive(Debug)]
+pub struct SpendImportedOnly(pub Vec<WeightedUtxo>);
 
 impl CoinSelectionAlgorithm for AlwaysSpendImportedFirst {
     fn coin_select<R: key::rand::RngCore>(
@@ -52,6 +54,31 @@ impl CoinSelectionAlgorithm for AlwaysSpendImportedFirst {
     }
 }
 
+impl CoinSelectionAlgorithm for SpendImportedOnly {
+    fn coin_select<R: key::rand::RngCore>(
+        &self,
+        _required_utxos: Vec<WeightedUtxo>,
+        mut optional_utxos: Vec<WeightedUtxo>,
+        fee_rate: FeeRate,
+        target_amount: Amount,
+        drain_script: &Script,
+        rand: &mut R,
+    ) -> Result<CoinSelectionResult, InsufficientFunds> {
+        let imported_utxos = self.0.clone();
+        let bnb = DefaultCoinSelectionAlgorithm::default();
+        // Clearing the optional utxos to make sure no additional output is added.
+        optional_utxos.clear();
+
+        bnb.coin_select(
+            imported_utxos.clone(),
+            optional_utxos.clone(),
+            fee_rate,
+            target_amount,
+            drain_script,
+            rand,
+        )
+    }
+}
 #[cfg(test)]
 mod tests {
     use bdk_wallet::bitcoin::key::rand::thread_rng;
