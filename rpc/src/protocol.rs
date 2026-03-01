@@ -44,8 +44,7 @@ pub struct TradeModel {
     trade_wallet: Option<Arc<Mutex<dyn TradeWallet + Send + 'static>>>,
     prepared_tx_fee_rate: Option<FeeRate>,
     redirection_receivers: Option<ReceiverList>,
-    buyer_output_key_ctx: KeyCtx,
-    seller_output_key_ctx: KeyCtx,
+    key_ctxs: KeyCtxs,
     deposit_tx: DepositTx,
     swap_tx: SwapTx,
     buyer_txs: ArbitrationTxs,
@@ -58,6 +57,13 @@ pub enum Role {
     SellerAsTaker,
     BuyerAsMaker,
     BuyerAsTaker,
+}
+
+#[derive(Default)]
+struct KeyCtxs {
+    am_buyer: bool,
+    buyer_payout: KeyCtx,
+    seller_payout: KeyCtx,
 }
 
 #[derive(Default)]
@@ -160,6 +166,7 @@ impl TradeModel {
             txs.claim.builder.set_lock_time(network.claim_lock_time());
         }
         trade_model.swap_tx.builder.disable_lock_time();
+        trade_model.key_ctxs.am_buyer = trade_model.am_buyer();
         trade_model
     }
 
@@ -218,29 +225,30 @@ impl TradeModel {
     }
 
     pub fn init_my_key_shares(&mut self) {
-        self.buyer_output_key_ctx.init_my_key_share();
-        self.seller_output_key_ctx.init_my_key_share();
+        self.key_ctxs.buyer_payout.init_my_key_share();
+        self.key_ctxs.seller_payout.init_my_key_share();
     }
 
     pub fn get_my_key_shares(&self) -> Option<[&KeyPair; 2]> {
         Some([
-            self.buyer_output_key_ctx.my_key_share().ok()?,
-            self.seller_output_key_ctx.my_key_share().ok()?
+            self.key_ctxs.buyer_payout.my_key_share().ok()?,
+            self.key_ctxs.seller_payout.my_key_share().ok()?
         ])
     }
 
     pub fn set_peer_key_shares(&mut self, buyer_output_pub_key: Point, seller_output_pub_key: Point) {
-        self.buyer_output_key_ctx.set_peers_pub_key(buyer_output_pub_key);
-        self.seller_output_key_ctx.set_peers_pub_key(seller_output_pub_key);
+        self.key_ctxs.buyer_payout.set_peers_pub_key(buyer_output_pub_key);
+        self.key_ctxs.seller_payout.set_peers_pub_key(seller_output_pub_key);
     }
 
+    // TODO: Try to refactor this method:
     pub fn aggregate_key_shares(&mut self) -> Result<()> {
         let network = self.trade_wallet()?.network();
-        self.buyer_output_key_ctx.aggregate_pub_key_shares()?;
-        self.seller_output_key_ctx.aggregate_pub_key_shares()?;
+        self.key_ctxs.buyer_payout.aggregate_pub_key_shares()?;
+        self.key_ctxs.seller_payout.aggregate_pub_key_shares()?;
 
-        let buyer_output_tweaked_key_ctx = self.buyer_output_key_ctx.with_taproot_tweak(None)?;
-        let seller_output_tweaked_key_ctx = self.seller_output_key_ctx.with_taproot_tweak(None)?;
+        let buyer_output_tweaked_key_ctx = self.key_ctxs.buyer_payout.with_taproot_tweak(None)?;
+        let seller_output_tweaked_key_ctx = self.key_ctxs.seller_payout.with_taproot_tweak(None)?;
 
         let buyer_payout_address = buyer_output_tweaked_key_ctx.p2tr_address(network);
         let seller_payout_address = seller_output_tweaked_key_ctx.p2tr_address(network);
@@ -249,16 +257,16 @@ impl TradeModel {
 
         self.buyer_txs.warning.buyer_input_sig_ctx.set_tweaked_key_ctx(buyer_output_tweaked_key_ctx.clone());
         self.seller_txs.warning.buyer_input_sig_ctx.set_tweaked_key_ctx(buyer_output_tweaked_key_ctx);
-        self.swap_tx.input_sig_ctx.set_adaptor_point(*self.adaptor_key_share()?.pub_key())?;
+        self.swap_tx.input_sig_ctx.set_adaptor_point(*self.key_ctxs.adaptor_key_share()?.pub_key())?;
         self.swap_tx.input_sig_ctx.set_tweaked_key_ctx(seller_output_tweaked_key_ctx.clone());
         self.buyer_txs.warning.seller_input_sig_ctx.set_tweaked_key_ctx(seller_output_tweaked_key_ctx.clone());
         self.seller_txs.warning.seller_input_sig_ctx.set_tweaked_key_ctx(seller_output_tweaked_key_ctx);
 
-        let [buyer_claim_merkle_root, seller_claim_merkle_root] = self.claim_key_shares()?
+        let [buyer_claim_merkle_root, seller_claim_merkle_root] = self.key_ctxs.claim_key_shares()?
             .map(|p| network.warning_output_merkle_root(&p.pub_key().to_public_key().into()));
-        let buyers_warning_output_tweaked_key_ctx = self.seller_output_key_ctx.with_taproot_tweak(
+        let buyers_warning_output_tweaked_key_ctx = self.key_ctxs.seller_payout.with_taproot_tweak(
             Some(&buyer_claim_merkle_root))?;
-        let sellers_warning_output_tweaked_key_ctx = self.buyer_output_key_ctx.with_taproot_tweak(
+        let sellers_warning_output_tweaked_key_ctx = self.key_ctxs.buyer_payout.with_taproot_tweak(
             Some(&seller_claim_merkle_root))?;
 
         let buyers_warning_escrow_address = buyers_warning_output_tweaked_key_ctx.p2tr_address(network);
@@ -271,23 +279,6 @@ impl TradeModel {
         self.seller_txs.claim.input_sig_ctx.set_tweaked_key_ctx(sellers_warning_output_tweaked_key_ctx.clone());
         self.buyer_txs.redirect.input_sig_ctx.set_tweaked_key_ctx(sellers_warning_output_tweaked_key_ctx);
         Ok(())
-    }
-
-    fn adaptor_key_share(&self) -> Result<&KeyPair> {
-        Ok(if self.am_buyer() {
-            self.buyer_output_key_ctx.peers_key_share()?
-        } else {
-            self.buyer_output_key_ctx.my_key_share()?
-        })
-    }
-
-    fn claim_key_shares(&self) -> Result<[&KeyPair; 2]> {
-        let [buyer_key_ctx, seller_key_ctx] = [&self.buyer_output_key_ctx, &self.seller_output_key_ctx];
-        Ok(if self.am_buyer() {
-            [buyer_key_ctx.my_key_share()?, seller_key_ctx.peers_key_share()?]
-        } else {
-            [buyer_key_ctx.peers_key_share()?, seller_key_ctx.my_key_share()?]
-        })
     }
 
     pub fn init_my_addresses(&mut self) -> Result<()> {
@@ -625,33 +616,20 @@ impl TradeModel {
 
     pub fn get_my_private_key_share_for_peer_output(&self) -> Option<&Scalar> {
         // FIXME: Check that it's actually safe to release the funds at this point.
-        let peer_key_ctx = if self.am_buyer() {
-            &self.seller_output_key_ctx
-        } else {
-            &self.buyer_output_key_ctx
-        };
-        peer_key_ctx.my_key_share().ok()?.prv_key().ok()
-    }
-
-    const fn get_my_key_ctx_mut(&mut self) -> &mut KeyCtx {
-        if self.am_buyer() {
-            &mut self.buyer_output_key_ctx
-        } else {
-            &mut self.seller_output_key_ctx
-        }
+        self.key_ctxs.peers_payout().my_key_share().ok()?.prv_key().ok()
     }
 
     pub fn set_peer_private_key_share_for_my_output(&mut self, prv_key_share: Scalar) -> Result<()> {
-        self.get_my_key_ctx_mut().set_peers_prv_key(prv_key_share)?;
+        self.key_ctxs.my_payout_mut().set_peers_prv_key(prv_key_share)?;
         Ok(())
     }
 
     pub fn aggregate_private_keys_for_my_output(&mut self) -> Result<&Scalar> {
-        Ok(self.get_my_key_ctx_mut().aggregate_prv_key_shares()?)
+        Ok(self.key_ctxs.my_payout_mut().aggregate_prv_key_shares()?)
     }
 
     pub fn compute_signed_swap_tx(&mut self) -> Result<()> {
-        let adaptor_secret = (*self.adaptor_key_share()?.prv_key()?).into();
+        let adaptor_secret = (*self.key_ctxs.adaptor_key_share()?.prv_key()?).into();
         self.swap_tx.builder
             .set_input_signature(self.swap_tx.input_sig_ctx.compute_taproot_signature(adaptor_secret)?)
             .compute_signed_tx()?;
@@ -667,9 +645,35 @@ impl TradeModel {
             let swap_tx_input = self.deposit_tx.builder.seller_payout()?;
             let input_signature = swap_tx.find_key_spend_signature(swap_tx_input)?;
             let adaptor_secret = self.swap_tx.input_sig_ctx.reveal_adaptor_secret(input_signature)?;
-            self.buyer_output_key_ctx.set_peers_prv_key(adaptor_secret)?;
+            self.key_ctxs.buyer_payout.set_peers_prv_key(adaptor_secret)?;
         }
         Ok(())
+    }
+}
+
+impl KeyCtxs {
+    const fn my_payout_mut(&mut self) -> &mut KeyCtx {
+        if self.am_buyer { &mut self.buyer_payout } else { &mut self.seller_payout }
+    }
+
+    const fn peers_payout(&self) -> &KeyCtx {
+        if self.am_buyer { &self.seller_payout } else { &self.buyer_payout }
+    }
+
+    fn adaptor_key_share(&self) -> Result<&KeyPair> {
+        Ok(if self.am_buyer {
+            self.buyer_payout.peers_key_share()?
+        } else {
+            self.buyer_payout.my_key_share()?
+        })
+    }
+
+    fn claim_key_shares(&self) -> Result<[&KeyPair; 2]> {
+        Ok(if self.am_buyer {
+            [self.buyer_payout.my_key_share()?, self.seller_payout.peers_key_share()?]
+        } else {
+            [self.buyer_payout.peers_key_share()?, self.seller_payout.my_key_share()?]
+        })
     }
 }
 
