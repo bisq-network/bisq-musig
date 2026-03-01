@@ -377,15 +377,13 @@ impl TradeModel {
         Ok(())
     }
 
-    fn get_contractual_txids(&self) -> Option<ContractualTxids> {
-        // TODO: This needlessly recomputes txids that were already determined earlier when
-        //  computing the outpoints of any connecting txs -- cache in the builders to optimize.
-        Some(ContractualTxids {
-            deposit: self.get_deposit_psbt()?.unsigned_tx.compute_txid(),
-            buyers_warning: self.buyer_txs.warning.builder.unsigned_tx().ok()?.compute_txid(),
-            sellers_warning: self.seller_txs.warning.builder.unsigned_tx().ok()?.compute_txid(),
-            buyers_redirect: self.buyer_txs.redirect.builder.unsigned_tx().ok()?.compute_txid(),
-            sellers_redirect: self.seller_txs.redirect.builder.unsigned_tx().ok()?.compute_txid(),
+    fn contractual_txids(&self) -> Result<ContractualTxids> {
+        Ok(ContractualTxids {
+            deposit: *self.deposit_tx.builder.txid()?,
+            buyers_warning: *self.buyer_txs.warning.builder.txid()?,
+            sellers_warning: *self.seller_txs.warning.builder.txid()?,
+            buyers_redirect: *self.buyer_txs.redirect.builder.txid()?,
+            sellers_redirect: *self.seller_txs.redirect.builder.txid()?,
         })
     }
 
@@ -533,7 +531,7 @@ impl TradeModel {
             swap_tx_input_sighash:
             self.swap_tx.input_sighash.as_ref(),
             contractual_txids:
-            self.get_contractual_txids().filter(|_| !buyer_ready_to_release),
+            self.contractual_txids().ok().filter(|_| !buyer_ready_to_release),
         })
     }
 

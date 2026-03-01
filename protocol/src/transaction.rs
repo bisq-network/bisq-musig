@@ -10,7 +10,7 @@ use bdk_wallet::bitcoin::taproot::{Signature, TAPROOT_ANNEX_PREFIX, TaprootBuild
 use bdk_wallet::bitcoin::transaction::Version;
 use bdk_wallet::bitcoin::{
     Address, Amount, FeeRate, Network, OutPoint, Psbt, ScriptBuf, Sequence, TapNodeHash,
-    TapSighash, TapSighashType, Transaction, TxIn, TxOut, Weight, Witness, XOnlyPublicKey,
+    TapSighash, TapSighashType, Transaction, TxIn, TxOut, Txid, Weight, Witness, XOnlyPublicKey,
     absolute, relative, script, secp256k1,
 };
 use paste::paste;
@@ -93,9 +93,12 @@ impl NetworkParams for Network {
 
 macro_rules! make_getter {
     ($field_name:ident: $field_type:ident) => {
+        make_getter!($field_name: $field_type: $field_type);
+    };
+    ($field_name:ident: $field_type:ident: $base_field_type:ident) => {
         paste! {
             pub fn $field_name(&self) -> Result<&$field_type> {
-                self.$field_name.as_ref().ok_or(TransactionErrorKind::[<Missing $field_type>])
+                self.$field_name.as_ref().ok_or(TransactionErrorKind::[<Missing $base_field_type>])
             }
         }
     };
@@ -253,9 +256,9 @@ impl DepositTxBuilder {
     make_getter_setter!(fee_rate: FeeRate);
     make_getter_setter!(buyers_half_psbt: Psbt);
     make_getter_setter!(sellers_half_psbt: Psbt);
-    make_getter!(psbt: Psbt);
-    make_getter!(buyer_payout: TxOutput);
-    make_getter!(seller_payout: TxOutput);
+    make_getter!(psbt: Psbt: Transaction);
+    make_getter!(buyer_payout: TxOutput: Transaction);
+    make_getter!(seller_payout: TxOutput: Transaction);
 
     fn sellers_trade_deposit(&self) -> Result<Amount> {
         self.trade_amount()?.checked_add(*self.sellers_security_deposit()?)
@@ -316,6 +319,8 @@ impl DepositTxBuilder {
         Ok(self)
     }
 
+    pub fn txid(&self) -> Result<&Txid> { Ok(&self.buyer_payout()?.outpoint.txid) }
+
     pub fn sign_buyer_inputs(&mut self, trade_wallet: &(impl TradeWallet + ?Sized)) -> Result<&mut Self> {
         self.sign_matching_inputs(trade_wallet, &prevout_set(self.buyers_half_psbt()?))
     }
@@ -329,14 +334,14 @@ impl DepositTxBuilder {
         trade_wallet: &(impl TradeWallet + ?Sized),
         prevouts: &BTreeSet<OutPoint>,
     ) -> Result<&mut Self> {
-        let psbt = self.psbt.as_mut().ok_or(TransactionErrorKind::MissingPsbt)?;
+        let psbt = self.psbt.as_mut().ok_or(TransactionErrorKind::MissingTransaction)?;
         trade_wallet.sign_selected_inputs(psbt, &|o| prevouts.contains(o))?;
         Ok(self)
     }
 
     pub fn combine_psbts(&mut self, other: Psbt) -> Result<&mut Self> {
         // TODO: We may need to do some validation of the provided PSBT.
-        self.psbt.as_mut().ok_or(TransactionErrorKind::MissingPsbt)?.combine(other)?;
+        self.psbt.as_mut().ok_or(TransactionErrorKind::MissingTransaction)?.combine(other)?;
         Ok(self)
     }
 
@@ -357,6 +362,7 @@ pub struct WarningTxBuilder {
     // Derived fields:
     unsigned_tx: Option<Transaction>,
     signed_tx: Option<Transaction>,
+    txid: Option<Txid>,
 }
 
 impl WarningTxBuilder {
@@ -370,6 +376,7 @@ impl WarningTxBuilder {
     make_getter_setter!(seller_input_signature: Signature);
     make_getter!(unsigned_tx: Transaction);
     make_getter!(signed_tx: Transaction);
+    make_getter!(txid: Txid: Transaction);
 
     pub fn escrow_amount(input_amounts: impl IntoIterator<Item=Amount>, fee_rate: FeeRate) -> Option<Amount> {
         input_amounts.into_iter().checked_sum()?
@@ -395,14 +402,13 @@ impl WarningTxBuilder {
             input: self.tx_ins(*self.lock_time()?)?.to_vec(),
             output: vec![escrow_output, anchor_output],
         };
-        self.unsigned_tx.get_or_insert(tx);
+        self.txid = Some(self.unsigned_tx.get_or_insert(tx).compute_txid());
         Ok(self)
     }
 
     pub fn escrow(&self) -> Result<TxOutput> {
-        let txid = self.unsigned_tx()?.compute_txid();
         let output = self.unsigned_tx()?.output[0].clone();
-        Ok(TxOutput::new(OutPoint::new(txid, 0), output))
+        Ok(TxOutput::new(OutPoint::new(*self.txid()?, 0), output))
     }
 
     pub fn buyer_input_sighash(&self) -> Result<TapSighash> {
@@ -437,6 +443,7 @@ pub struct RedirectTxBuilder {
     // Derived fields:
     unsigned_tx: Option<Transaction>,
     signed_tx: Option<Transaction>,
+    txid: Option<Txid>,
 }
 
 impl RedirectTxBuilder {
@@ -447,6 +454,7 @@ impl RedirectTxBuilder {
     make_getter_setter!(input_signature: Signature);
     make_getter!(unsigned_tx: Transaction);
     make_getter!(signed_tx: Transaction);
+    make_getter!(txid: Txid: Transaction);
 
     pub fn available_amount_msat(escrow_amount: Amount, fee_rate: FeeRate) -> Option<u64> {
         let redirection_tx_base_fee = fee_rate.to_sat_per_kwu()
@@ -470,7 +478,7 @@ impl RedirectTxBuilder {
             input: self.tx_ins(*self.lock_time()?)?.to_vec(),
             output,
         };
-        self.unsigned_tx.get_or_insert(tx);
+        self.txid = Some(self.unsigned_tx.get_or_insert(tx).compute_txid());
         Ok(self)
     }
 

@@ -5,7 +5,7 @@ use bdk_electrum::BdkElectrumClient;
 use bdk_electrum::electrum_client::Client;
 use bdk_wallet::bitcoin::bip32::Xpriv;
 use bdk_wallet::bitcoin::{
-    Address, Amount, FeeRate, Network, OutPoint, Psbt, ScriptBuf, Transaction, TxOut, Txid,
+    Address, Amount, FeeRate, Network, OutPoint, Psbt, Script, ScriptBuf, Transaction, TxOut, Txid,
     relative,
 };
 use bdk_wallet::template::{Bip86, DescriptorTemplate as _};
@@ -324,7 +324,7 @@ impl BMPProtocol {
             ProtocolRole::Buyer => self.p_tik.peers_key_share(),
         }?.pub_key();
         // given the DepositTx, we can create SwapTx for Alice.
-        self.swap_tx.build(&self.q_tik, adaptor_point, &self.deposit_tx, bob.swap_script.as_ref())?;
+        self.swap_tx.build(&self.q_tik, adaptor_point, &self.deposit_tx, bob.swap_script.as_deref())?;
         // let start the signing process for SwapTx already.
         let swap_pub_nonce = self.swap_tx.get_pub_nonce(); // could be one round earlier, if we solve secure nonce generation
 
@@ -368,8 +368,7 @@ impl BMPProtocol {
         assert_eq!(bob.p_agg, *self.p_tik.aggregated_key()?.pub_key(), "Bob is sending the wrong P' for his aggregated key.");
         assert_eq!(bob.q_agg, *self.q_tik.aggregated_key()?.pub_key(), "Bob is sending the wrong Q' for his aggregated key.");
 
-        // let txid = self.deposit_tx.transfer_sig_and_broadcast(&mut self.ctx, bob.deposit_tx_merged)?;
-        let txid = self.deposit_tx.tx()?.compute_txid();
+        let txid = self.deposit_tx.txid()?;
         // here we are building the partial signature of the SwapTx, note that there is only one SwapTx (for Alice)
         let swap_part_sig = self.swap_tx.build_partial_sig(bob.swap_pub_nonce)?;
 
@@ -573,15 +572,9 @@ impl WarningTx {
 
     pub fn signed_tx(&self) -> anyhow::Result<&Transaction> { Ok(self.builder.signed_tx()?) }
 
-    pub fn funds_as_outpoint(&self) -> OutPoint {
-        OutPoint::new(self.unsigned_tx().unwrap().compute_txid(), 0)
-    }
+    pub fn funds_as_outpoint(&self) -> OutPoint { self.builder.escrow().unwrap().outpoint }
 
-    pub fn funds_as_output(&self) -> TxOut {
-        let w = self.unsigned_tx().unwrap();
-        let wout: &Vec<TxOut> = w.output.as_ref();
-        wout[0].clone()
-    }
+    pub fn funds_as_output(&self) -> TxOut { self.builder.escrow().unwrap().prevout }
 
     pub fn new(role: ProtocolRole) -> Self {
         Self {
@@ -605,7 +598,7 @@ impl WarningTx {
             ProtocolRole::Buyer => p_tik
         }.with_taproot_tweak(None)?;
 
-        let tx = self.builder
+        let txid = self.builder
             .set_buyer_input(deposit_tx.builder.buyer_payout()?.clone())
             .set_seller_input(deposit_tx.builder.seller_payout()?.clone())
             .set_escrow_address(key_spend.p2tr_address(Network::Regtest))
@@ -613,9 +606,9 @@ impl WarningTx {
             .set_lock_time(relative::LockTime::ZERO)
             .set_fee_rate(FeeRate::from_sat_per_vb_unchecked(10)) // TODO: feerates shall come from pricenodes
             .compute_unsigned_tx()?
-            .unsigned_tx()?;
+            .txid()?;
 
-        dbg!(ctx.role, self.role, tx.compute_txid());
+        dbg!(ctx.role, self.role, txid);
         Ok(())
     }
 
@@ -691,7 +684,7 @@ impl SwapTx {
     }
 
     // round 1
-    pub fn build(&mut self, q_tik: &KeyCtx, p_a: Point, deposit_tx: &DepositTx, swap_spend_opt: Option<&ScriptBuf>) -> anyhow::Result<()> {
+    pub fn build(&mut self, q_tik: &KeyCtx, p_a: Point, deposit_tx: &DepositTx, swap_spend_opt: Option<&Script>) -> anyhow::Result<()> {
         self.fund_sig.set_tweaked_key_ctx(q_tik.with_taproot_tweak(None)?);
         // SwapTx is asymmetric, both parties need to agree on P_a being the public adaptor
         // P_a is the Public key which Alice (the seller) contributes to 2of2 Multisig to lock the deposit and trade amount in the DepositTx
@@ -699,7 +692,7 @@ impl SwapTx {
         self.fund_sig.set_adaptor_point(p_a)?;
         self.fund_sig.init_my_nonce_share()?;
         let Some(use_spend) = (match self.role {
-            ProtocolRole::Seller => self.swap_spend.as_ref(),
+            ProtocolRole::Seller => self.swap_spend.as_deref(),
             ProtocolRole::Buyer => swap_spend_opt,
         }) else { panic!("No spend-condition from role {:?}", self.role) };
 
@@ -772,7 +765,7 @@ impl DepositTx {
 
     fn merged_psbt(&self) -> anyhow::Result<&Psbt> { Ok(self.builder.psbt()?) }
 
-    fn tx(&self) -> anyhow::Result<&Transaction> { Ok(&self.merged_psbt()?.unsigned_tx) }
+    fn txid(&self) -> anyhow::Result<Txid> { Ok(*self.builder.txid()?) }
 
     pub fn generate_part_tx(&mut self, ctx: &mut BMPContext) -> anyhow::Result<Psbt> {
         self.builder
@@ -828,13 +821,13 @@ impl DepositTx {
         Ok(deposit_txid)
     }
 
-    fn _get_outpoint_for(self, script: &ScriptBuf) -> anyhow::Result<OutPoint> {
-        let tx = self.tx()?;
+    fn _get_outpoint_for(self, script: &Script) -> anyhow::Result<OutPoint> {
+        let tx = &self.merged_psbt()?.unsigned_tx;
 
         for (index, output) in tx.output.iter().enumerate() {
             if output.script_pubkey == *script {
                 return Ok(OutPoint {
-                    txid: tx.compute_txid(),
+                    txid: self.txid()?,
                     vout: u32::try_from(index)?,
                 });
             }
