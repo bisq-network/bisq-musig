@@ -1,6 +1,7 @@
 use std::error::Error;
 use std::sync::Arc;
 
+use bmp_tracing::tracing::info;
 use clap::Parser;
 use rpc::bmp_service::BmpServiceImpl;
 use rpc::bmp_wallet_service::BmpWalletServiceImpl;
@@ -10,7 +11,6 @@ use rpc::server::{MusigImpl, MusigServer, WalletImpl, WalletServer};
 use rpc::wallet::WalletServiceImpl;
 use testenv::TestEnv;
 use tonic::transport::Server;
-use tracing::info;
 
 #[derive(Debug, Parser)]
 #[command(version, about, long_about = None)]
@@ -24,6 +24,9 @@ struct Cli {
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
     let cli: Cli = Cli::parse();
+
+    bmp_tracing::init("info");
+
     let testenv = TestEnv::new()?;
 
     let addr = format!("127.0.0.1:{}", cli.port).parse()?;

@@ -84,9 +84,11 @@ impl MemWallet {
 
         let network: Network = Network::Regtest;
         let xprv: Xpriv = Xpriv::new_master(network, &seed)?;
-        println!("Generated Master Private Key:\n{xprv}\nWarning: be very careful with private \
+        tracing::info!(
+            "Generated Master Private Key:\n{xprv}\nWarning: be very careful with private \
             keys when using MainNet! We are logging these values for convenience only because this \
-            is an example on RegTest.\n");
+            is an example on RegTest.\n"
+        );
 
         let (descriptor, external_map, _) = Bip86(xprv, KeychainKind::External)
             .build(network)
@@ -122,7 +124,7 @@ impl MemWallet {
                 stdout.flush().expect("must flush");
             }
         });
-        eprintln!("requesting update...");
+        tracing::info!("requesting update...");
         let update = self
             .client
             .full_scan(request, STOP_GAP, BATCH_SIZE, false)?;
@@ -297,11 +299,18 @@ impl BMPProtocol {
         })
     }
 
-    #[expect(clippy::similar_names, reason = "easy to distinguish local variable names in this case")]
+    #[expect(
+        clippy::similar_names,
+        reason = "easy to distinguish local variable names in this case"
+    )]
     pub fn round2(&mut self, bob: Round1Parameter) -> anyhow::Result<Round2Parameter> {
         self.check_round(2);
         assert_ne!(bob.p_a, bob.q_a, "Bob is sending the same point for P' and Q'.");
-        println!("The {:?} sellers secret for P_Tik is {:?}.", self.ctx.role, self.p_tik.my_key_share()?.prv_key()?);
+        tracing::debug!(
+            "The {:?} sellers secret for P_Tik is {:?}.",
+            self.ctx.role,
+            self.p_tik.my_key_share()?.prv_key()?
+        );
 
         // key Aggregation -----
         self.p_tik.set_peers_pub_key(bob.p_a);
@@ -749,7 +758,7 @@ impl SwapTx {
         if self.role == ProtocolRole::Buyer {
             p_tik.set_peers_prv_key(self.fund_sig.reveal_adaptor_secret(signature)?)?;
             p_tik.aggregate_prv_key_shares()?;
-            println!("revealed p_tik aggregated secret key: {:?}", p_tik.peers_key_share()?.prv_key()?);
+            tracing::debug!("revealed p_tik aggregated secret key: {:?}", p_tik.peers_key_share()?.prv_key()?);
             // p_tik shall have the other sec key and the aggregated secret key.
             // TODO Bob can import now the aggregated key into his wallet. there is no risk that
             //  Alice may publish any transaction messing with it.

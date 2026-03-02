@@ -65,7 +65,7 @@ jobs:
         run: cargo clippy --all-targets
       
       - name: Unit and Integration tests
-        run: cargo test
+        run: RUST_LOG=off cargo test
 
   protocol:
     name: Build and test protocol
@@ -107,5 +107,5 @@ jobs:
         run: cargo clippy --all-targets
 
       - name: Unit and Integration tests
-        run: cargo test
+        run: RUST_LOG=off cargo test
 

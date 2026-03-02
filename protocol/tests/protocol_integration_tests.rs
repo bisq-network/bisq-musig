@@ -2,6 +2,7 @@ use bdk_wallet::bitcoin;
 use bitcoin::key::{Keypair, Secp256k1, TapTweak as _, TweakedKeypair, TweakedPublicKey};
 use bitcoin::secp256k1::Message;
 use bitcoin::{Amount, TapSighashType};
+use bmp_tracing::tracing;
 use musig2::KeyAggContext;
 use musig2::secp::Point;
 use protocol::protocol_musig_adaptor::{BMPContext, BMPProtocol, MemWallet, ProtocolRole};
@@ -18,7 +19,7 @@ fn test_initial_tx_creation() -> anyhow::Result<()> {
 }
 
 fn initial_tx_creation(env: &TestEnv) -> anyhow::Result<(BMPProtocol, BMPProtocol)> {
-    println!("running...");
+    tracing::debug!("running...");
     let alice_funds = MemWallet::funded_wallet(env);
     let bob_funds = MemWallet::funded_wallet(env);
 
@@ -130,7 +131,7 @@ fn test_claim() -> anyhow::Result<()> {
 
     let tx = alice.claim_tx_me.broadcast(&alice.ctx)?;
 
-    println!("http://localhost:5000/tx/{tx}");
+    tracing::info!("http://localhost:5000/tx/{tx}");
     env.mine_block()?;
     Ok(())
 }

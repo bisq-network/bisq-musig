@@ -752,6 +752,7 @@ mod tests {
     use bdk_wallet::chain::{self, BlockId};
     use bdk_wallet::test_utils::{receive_output_to_address, ReceiveTo};
     use bdk_wallet::{AddressInfo, KeychainKind, SignOptions};
+    use bmp_tracing::tracing;
     use rand::RngCore as _;
     use secp::Scalar;
     use simple_semaphore::{self, Semaphore};

@@ -1,9 +1,12 @@
-#![cfg_attr(feature = "unimock", expect(clippy::ignored_unit_patterns, reason = "macro-generated code"))]
+#![cfg_attr(
+    feature = "unimock",
+    expect(clippy::ignored_unit_patterns, reason = "macro-generated code")
+)]
 
 use std::sync::{Arc, Mutex, RwLock};
 
-use bdk_bitcoind_rpc::bitcoincore_rpc::{Client, RpcApi as _};
 use bdk_bitcoind_rpc::Emitter;
+use bdk_bitcoind_rpc::bitcoincore_rpc::{Client, RpcApi as _};
 use bdk_wallet::bitcoin::{Network, Transaction, Txid};
 use bdk_wallet::chain::{ChainPosition, CheckPoint, ConfirmationBlockTime};
 use bdk_wallet::{AddressInfo, Balance, KeychainKind, LocalOutput, Wallet};

@@ -56,6 +56,21 @@ To set it up you need to run the following command.
 The command will copy the pre-commit script to your local `.git/hooks/pre-commit` file.
 This helps us keeping clean build and focus on the essentials parts when reviewing pull requests.
 
+## logging / tracing
+
+A small helper crate called `bmp_tracing` lives in the workspace.  It
+exposes a single initialization function that all binaries and test
+environments should call once at startup.  The API is intentionally
+minimal:
+
+```rust
+bmp_tracing::init("info");
+```
+
+The function reads the standard `RUST_LOG` environment variable and falls
+back to the supplied default level.  You can disable logging completely by
+setting `RUST_LOG=off`.
+
 ## running the tests
 
 to run the test you need a work regtest environment as provided by nigiri. You may need to
