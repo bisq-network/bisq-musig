@@ -42,8 +42,6 @@ pub struct TradeModel {
     trade_id: String,
     my_role: Role,
     trade_wallet: Option<Arc<Mutex<dyn TradeWallet + Send + 'static>>>,
-    prepared_tx_fee_rate: Option<FeeRate>,
-    redirection_receivers: Option<ReceiverList>,
     key_ctxs: KeyCtxs,
     deposit_tx: DepositTx,
     swap_tx: SwapTx,
@@ -195,12 +193,13 @@ impl TradeModel {
         self.deposit_tx.builder.set_fee_rate(fee_rate);
     }
 
+    fn prepared_tx_fee_rate(&self) -> Result<FeeRate> { Ok(*self.swap_tx.builder.fee_rate()?) }
+
     pub fn set_prepared_tx_fee_rate(&mut self, fee_rate: FeeRate) {
         for txs in [&mut self.buyer_txs, &mut self.seller_txs] {
             txs.warning.builder.set_fee_rate(fee_rate);
             txs.claim.builder.set_fee_rate(fee_rate);
         }
-        self.prepared_tx_fee_rate.get_or_insert(fee_rate);
         self.swap_tx.builder.set_fee_rate(fee_rate);
     }
 
@@ -212,16 +211,16 @@ impl TradeModel {
         Ok(())
     }
 
-    pub fn redirection_amount_msat(&self) -> Option<u64> {
+    pub fn redirection_amount_msat(&self) -> Result<u64> {
         let split_input_amounts = [
-            *self.deposit_tx.builder.trade_amount().ok()?,
-            *self.deposit_tx.builder.buyers_security_deposit().ok()?,
-            *self.deposit_tx.builder.sellers_security_deposit().ok()?,
+            *self.deposit_tx.builder.trade_amount()?,
+            *self.deposit_tx.builder.buyers_security_deposit()?,
+            *self.deposit_tx.builder.sellers_security_deposit()?,
         ];
         let escrow_amount =
-            WarningTxBuilder::escrow_amount(split_input_amounts, self.prepared_tx_fee_rate?)?;
+            WarningTxBuilder::escrow_amount(split_input_amounts, self.prepared_tx_fee_rate()?)?;
 
-        RedirectTxBuilder::available_amount_msat(escrow_amount, self.prepared_tx_fee_rate?)
+        Ok(RedirectTxBuilder::available_amount_msat(escrow_amount, self.prepared_tx_fee_rate()?)?)
     }
 
     pub fn init_my_key_shares(&mut self) {
@@ -378,6 +377,10 @@ impl TradeModel {
         })
     }
 
+    fn redirection_receivers(&self) -> Result<&[Receiver]> {
+        Ok(&self.buyer_txs.redirect.builder.receivers()?[..])
+    }
+
     pub fn set_redirection_receivers<I, E>(&mut self, receivers: I) -> Result<(), E>
         where I: IntoIterator<Item=Result<Receiver<NetworkUnchecked>, E>>,
               E: From<ProtocolErrorKind>
@@ -388,22 +391,16 @@ impl TradeModel {
             vec.push(receiver?.require_network(network).map_err(ProtocolErrorKind::from)?);
         }
         let receivers: ReceiverList = vec.into();
-        self.redirection_receivers = Some(receivers.clone());
         self.buyer_txs.redirect.builder.set_receivers(receivers.clone());
         self.seller_txs.redirect.builder.set_receivers(receivers);
         Ok(())
     }
 
     pub fn check_redirect_tx_params(&self) -> Result<()> {
-        // FIXME: Don't falsely report overflows & invalid params as missing-param errors:
-        let receivers = &self.redirection_receivers.as_ref()
-            .ok_or(ProtocolErrorKind::MissingTxParams)?[..];
-        let fee_rate = self.prepared_tx_fee_rate
-            .ok_or(ProtocolErrorKind::MissingTxParams)?;
-        let available_msat = self.redirection_amount_msat()
-            .ok_or(ProtocolErrorKind::MissingTxParams)?;
-        let used_msat = Receiver::total_output_cost_msat(receivers, fee_rate, 1)
-            .ok_or(ProtocolErrorKind::MissingTxParams)?;
+        let receivers = self.redirection_receivers()?;
+        let fee_rate = self.prepared_tx_fee_rate()?;
+        let available_msat = self.redirection_amount_msat()?;
+        let used_msat = Receiver::total_output_cost_msat(receivers, fee_rate, 1)?;
 
         if used_msat > available_msat {
             return Err(ProtocolErrorKind::InsufficientRedirectionFunds { available_msat, used_msat });
@@ -592,9 +589,7 @@ impl TradeModel {
         Ok(())
     }
 
-    pub fn get_deposit_psbt(&self) -> Option<&Psbt> {
-        self.deposit_tx.builder.psbt().ok()
-    }
+    pub fn get_deposit_psbt(&self) -> Option<&Psbt> { self.deposit_tx.builder.psbt().ok() }
 
     pub fn combine_deposit_psbts(&mut self, other: Psbt) -> Result<()> {
         self.deposit_tx.builder.combine_psbts(other)?;
@@ -683,8 +678,6 @@ type Result<T, E = ProtocolErrorKind> = std::result::Result<T, E>;
 #[error(transparent)]
 #[non_exhaustive]
 pub enum ProtocolErrorKind {
-    #[error("missing tx params")]
-    MissingTxParams,
     #[error("missing trade wallet")]
     MissingTradeWallet,
     #[error("insufficient redirection funds (available {available_msat:?} msat, used {used_msat:?} msat)")]

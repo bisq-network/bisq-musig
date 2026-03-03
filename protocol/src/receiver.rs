@@ -4,7 +4,7 @@ use bdk_wallet::bitcoin::address::{NetworkChecked, NetworkUnchecked, NetworkVali
 use bdk_wallet::bitcoin::amount::CheckedSum as _;
 use bdk_wallet::bitcoin::{Address, Amount, FeeRate, Network, TxOut, Weight};
 
-use crate::transaction::Result;
+use crate::transaction::{Result, TransactionErrorKind};
 
 // Receivers paid less than this absolute satoshi amount are excluded:
 const MIN_OUTPUT_AMOUNT: Amount = Amount::from_sat(1000);
@@ -32,21 +32,23 @@ impl Receiver {
         amount_msat.checked_add(fee_msat)
     }
 
-    pub fn total_output_cost_msat<'a, I>(receivers: I, fee_rate: FeeRate, extra_output_num: u16) -> Option<u64>
+    pub fn total_output_cost_msat<'a, I>(receivers: I, fee_rate: FeeRate, extra_output_num: u16) -> Result<u64>
         where I: IntoIterator<Item=&'a Self>
     {
-        let mut cost = 0u64;
-        let mut num = extra_output_num;
-        for receiver in receivers {
-            cost = cost.checked_add(receiver.output_cost_msat(fee_rate)?)?;
-            // Fail if more than 65535 outputs, which will never happen for a standard tx:
-            num = num.checked_add(1)?;
-        }
-        if num > 252 {
-            // For more than 252 outputs, we get a 3-byte length encoding instead of 1, adding 8 wu.
-            cost = cost.checked_add(fee_rate.to_sat_per_kwu().checked_mul(8)?)?;
-        }
-        Some(cost)
+        (|| {
+            let mut cost = 0u64;
+            let mut num = extra_output_num;
+            for receiver in receivers {
+                cost = cost.checked_add(receiver.output_cost_msat(fee_rate)?)?;
+                // Fail if more than 65535 outputs, which will never happen for a standard tx:
+                num = num.checked_add(1)?;
+            }
+            if num > 252 {
+                // For >252 outputs, we get a 3-byte length encoding instead of 1, adding 8 wu.
+                cost = cost.checked_add(fee_rate.to_sat_per_kwu().checked_mul(8)?)?;
+            }
+            Some(cost)
+        })().ok_or(TransactionErrorKind::Overflow)
     }
 
     // TODO: Consider returning a `Result<T>` instead of an `Option<T>` to distinguish overflows

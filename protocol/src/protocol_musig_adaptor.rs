@@ -454,8 +454,7 @@ impl RedirectTx {
         let fee_rate = FeeRate::from_sat_per_vb_unchecked(10); // TODO: feerates shall come from pricenodes
 
         let escrow_amount = warn_tx.builder.escrow()?.prevout.value;
-        let available_amount_msat = RedirectTxBuilder::available_amount_msat(escrow_amount, fee_rate)
-            .ok_or(anyhow::anyhow!("Overflow computing available amount for receivers"))?;
+        let available_amount_msat = RedirectTxBuilder::available_amount_msat(escrow_amount, fee_rate)?;
 
         let receivers = Receiver::compute_receivers_from_shares(receiver_shares, available_amount_msat, fee_rate)
             .ok_or(anyhow::anyhow!("Could not compute receiver list"))?;
