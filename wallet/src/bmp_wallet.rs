@@ -752,18 +752,18 @@ impl WalletApi for BMPWallet<Connection> {
             Err(e) => match e {
                 bdk_wallet::error::CreateTxError::CoinSelection(insufficient_funds) => {
                     let cs = SpendImportedOnly(imported_utxos);
-                    let amount_to_send = imported_balance
-                        - (insufficient_funds.needed - insufficient_funds.available);
+                    let fees = insufficient_funds.needed - insufficient_funds.available;
+                    let amount_to_send = imported_balance - fees;
                     let mut new_builder = self.build_tx().coin_selection(cs);
                     new_builder
                         .fee_rate(fee_rate)
                         .add_recipient(drain_to_address.script_pubkey(), amount_to_send);
 
                     let psbt = new_builder.finish()?;
+                    self.imported_balance = Balance::default();
 
-                    println!(
-                        "AMOUNT TO SEND {amount_to_send}, fees {}",
-                        insufficient_funds.needed - insufficient_funds.available
+                    tracing::debug!(
+                        "AMOUNT TO SEND {amount_to_send}, fees {fees}, imported balance {}", self.imported_balance
                     );
 
                     Ok(psbt)

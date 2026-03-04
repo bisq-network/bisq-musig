@@ -1,10 +1,10 @@
 use std::str::FromStr as _;
 
 use anyhow::Ok;
-use bdk_electrum::electrum_client::{Client, Config};
 use bdk_electrum::BdkElectrumClient;
+use bdk_electrum::electrum_client::{Client, Config};
 use bdk_kyoto::bip157::tokio;
-use bdk_kyoto::TrustedPeer;
+use bdk_kyoto::{FeeRate, TrustedPeer};
 use bdk_wallet::bitcoin::{Address, Amount, Network};
 use bdk_wallet::psbt::PsbtUtils as _;
 use bdk_wallet::{KeychainKind, SignOptions};
@@ -346,4 +346,74 @@ async fn test_cbf_persistence() -> anyhow::Result<()> {
     assert_eq!(encrypted_wallet.balance(), Amount::from_sat(230_000) - fee);
 
     Ok(())
+}
+
+#[tokio::test]
+async fn test_drain_wallet_with_main_balance() -> anyhow::Result<()> {
+    // This test will attempt to drain the imported wallets UTXOs
+    // With the main wallet having some balance it won't be touched.
+    let env = TestEnv::new()?;
+    env.mine_block()?;
+
+    let mut wallet = BMPWallet::new(Network::Regtest)?;
+    let addr = wallet.next_unused_address(KeychainKind::External);
+
+    let amount_to_send_main_wallet = Amount::from_sat(100_000);
+    let amount_to_send_imported = Amount::from_sat(10_000);
+    env.fund_address(&addr, amount_to_send_main_wallet)?;
+
+    let prv_keys = [new_private_key(), new_private_key()];
+    prv_keys.iter().for_each(|e| wallet.import_private_key(*e));
+    prv_keys.iter().for_each(|e| {
+        env.fund_from_prv_key(e, amount_to_send_imported).unwrap();
+    });
+
+    env.mine_block()?;
+
+    let client = Client::from_config(&env.electrum_url(), Config::default())?;
+    let data_source = BdkElectrumClient::new(client);
+
+    wallet.sync_all(&data_source)?;
+
+    // Doing *2 because we have two imported keys with the same amount received 10_000
+    let current_balance = amount_to_send_main_wallet + amount_to_send_imported * 2;
+    assert_eq!(wallet.balance(), current_balance);
+
+    let mut psbt = wallet.drain(FeeRate::from_sat_per_vb(10).unwrap())?;
+
+    wallet.sign(&mut psbt, SignOptions::default())?;
+
+    let drained_amount = amount_to_send_imported * 2 - psbt.fee()?;
+
+    let tx = psbt.extract_tx()?;
+
+    env.broadcast(&tx)?;
+    env.mine_block()?;
+
+    wallet.sync_all(&data_source)?;
+
+    let main_wallet_balance = drained_amount + amount_to_send_main_wallet;
+
+    assert_eq!(wallet.balance(), main_wallet_balance);
+
+    Ok(())
+}
+
+#[tokio::test]
+#[should_panic(expected = "value: Output below the dust limit: 0")]
+async fn test_drain_wallet_no_balance() {
+    // In this test drain is called but the wallet doesn't have any imported key
+    // insuffucient balance should be thrown
+    let env = TestEnv::new().unwrap();
+    env.mine_block().unwrap();
+
+    let mut wallet = BMPWallet::new(Network::Regtest).unwrap();
+    let addr = wallet.next_unused_address(KeychainKind::External);
+
+    let amount_to_send_main_wallet = Amount::from_sat(100_000);
+
+    env.fund_address(&addr, amount_to_send_main_wallet).unwrap();
+    env.mine_block().unwrap();
+
+    wallet.drain(FeeRate::from_sat_per_vb(10).unwrap()).unwrap();
 }
