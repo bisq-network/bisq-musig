@@ -363,7 +363,7 @@ pub trait WalletApi {
         peers: Vec<TrustedPeer>,
     ) -> impl Future<Output = anyhow::Result<()>> + Send;
 
-    fn drain(&mut self, feerate: FeeRate) -> anyhow::Result<Psbt>;
+    fn drain_imported_balance(&mut self, feerate: FeeRate) -> anyhow::Result<Psbt>;
 }
 
 impl WalletApi for BMPWallet<Connection> {
@@ -735,8 +735,8 @@ impl WalletApi for BMPWallet<Connection> {
         })
     }
 
-    fn drain(&mut self, fee_rate: FeeRate) -> anyhow::Result<Psbt> {
-        let drain_to_address = self.next_address(KeychainKind::External)?;
+    fn drain_imported_balance(&mut self, fee_rate: FeeRate) -> anyhow::Result<Psbt> {
+        let drain_to_address = self.next_address(KeychainKind::Internal)?;
         let imported_balance = self.imported_balance.trusted_spendable();
 
         let imported_utxos = self.imported_utxos();
@@ -1201,7 +1201,7 @@ mod tests {
         );
 
         // Now attempt to drain the 2 BTC from the imported wallets
-        let psbt = bmp_wallet.drain(FeeRate::from_sat_per_kwu(25_000))?;
+        let psbt = bmp_wallet.drain_imported_balance(FeeRate::from_sat_per_kwu(25_000))?;
         let tx = psbt.extract_tx()?;
         assert_eq!(tx.input.len(), 2);
         assert_eq!(tx.output.len(), 1);
