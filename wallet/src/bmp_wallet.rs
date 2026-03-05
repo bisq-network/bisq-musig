@@ -25,7 +25,7 @@ use rand::RngCore as _;
 use secp::Scalar;
 
 use crate::chain_data_source::ChainDataSource;
-use crate::coin_selection::AlwaysSpendImportedFirst;
+use crate::coin_selection::{AlwaysSpendImportedFirst, SpendImportedOnly};
 use crate::protocol_wallet_api::ProtocolWalletApi;
 use crate::utils::{derive_key_from_password, get_salt, trace_logs};
 
@@ -228,9 +228,10 @@ impl BMPWallet<Connection> {
         Ok((requester, update_subscriber))
     }
 
-    fn build_tx(&mut self) -> TxBuilder<'_, AlwaysSpendImportedFirst> {
-        let secp = self.secp_ctx();
-        let imported_weighted_utxos = self
+    fn imported_utxos(&self) -> Vec<WeightedUtxo> {
+        let secp: &bdk_wallet::bitcoin::key::Secp256k1<bdk_wallet::bitcoin::secp256k1::All> =
+            self.secp_ctx();
+        self
             .tx_graph()
             .floating_txouts()
             .map(|utxo| {
@@ -261,8 +262,11 @@ impl BMPWallet<Connection> {
                     satisfaction_weight: Weight::from_wu_usize(65),
                 }
             })
-            .collect::<Vec<_>>();
+            .collect::<Vec<_>>()
+    }
 
+    fn build_tx(&mut self) -> TxBuilder<'_, AlwaysSpendImportedFirst> {
+        let imported_weighted_utxos = self.imported_utxos();
         let coin_selection = AlwaysSpendImportedFirst(imported_weighted_utxos);
         self.wallet.build_tx().coin_selection(coin_selection)
     }
@@ -358,6 +362,8 @@ pub trait WalletApi {
         scan_type: ScanType,
         peers: Vec<TrustedPeer>,
     ) -> impl Future<Output = anyhow::Result<()>> + Send;
+
+    fn drain_imported_balance(&mut self, feerate: FeeRate) -> anyhow::Result<Psbt>;
 }
 
 impl WalletApi for BMPWallet<Connection> {
@@ -728,6 +734,45 @@ impl WalletApi for BMPWallet<Connection> {
             db: encrypted_conn,
         })
     }
+
+    fn drain_imported_balance(&mut self, fee_rate: FeeRate) -> anyhow::Result<Psbt> {
+        let drain_to_address = self.next_address(KeychainKind::Internal)?;
+        let imported_balance = self.imported_balance.trusted_spendable();
+
+        let imported_utxos = self.imported_utxos();
+        let cs = SpendImportedOnly(imported_utxos.clone());
+
+        let mut tx_builder = self.build_tx().coin_selection(cs);
+
+        tx_builder
+            .fee_rate(fee_rate)
+            .add_recipient(drain_to_address.script_pubkey(), imported_balance);
+
+        match tx_builder.finish() {
+            Err(e) => match e {
+                bdk_wallet::error::CreateTxError::CoinSelection(insufficient_funds) => {
+                    let cs = SpendImportedOnly(imported_utxos);
+                    let fees = insufficient_funds.needed - insufficient_funds.available;
+                    let amount_to_send = imported_balance - fees;
+                    let mut new_builder = self.build_tx().coin_selection(cs);
+                    new_builder
+                        .fee_rate(fee_rate)
+                        .add_recipient(drain_to_address.script_pubkey(), amount_to_send);
+
+                    let psbt = new_builder.finish()?;
+                    self.imported_balance = Balance::default();
+
+                    tracing::debug!(
+                        "AMOUNT TO SEND {amount_to_send}, fees {fees}, imported balance {}", self.imported_balance
+                    );
+
+                    Ok(psbt)
+                }
+                _ => Err(e.into()),
+            },
+            Ok(psbt) => Ok(psbt),
+        }
+    }
 }
 
 impl Deref for BMPWallet<Connection> {
@@ -745,8 +790,10 @@ impl DerefMut for BMPWallet<Connection> {
 
 #[cfg(test)]
 mod tests {
+    use std::str::FromStr;
     use std::sync::{Arc, LazyLock};
 
+    use bdk_kyoto::FeeRate;
     use bdk_wallet::bitcoin::hashes::Hash as _;
     use bdk_wallet::bitcoin::{psbt, Address, AddressType, Amount, BlockHash, Network, Weight};
     use bdk_wallet::chain::{self, BlockId};
@@ -1123,5 +1170,43 @@ mod tests {
         let lw = BMPWallet::load_wallet(Network::Regtest, Some("secret123")).unwrap();
 
         assert_eq!(lw.get_seed_phrase().unwrap(), seed);
+    }
+
+    #[test]
+    fn drain_wallet() -> anyhow::Result<()> {
+        let _permit = SEMAPHORE.acquire();
+        let _tmp_dir = tear_up();
+
+        let pk1 = new_private_key();
+        let pk2 = new_private_key();
+
+        let mut bmp_wallet = BMPWallet::new(Network::Regtest)?;
+
+        bmp_wallet.import_private_key(pk1);
+        bmp_wallet.import_private_key(pk2);
+
+        assert_eq!(bmp_wallet.imported_keys.len(), 2);
+
+        let client = MockedBDKElectrum {};
+
+        tracing::info!("Wallet balance before syncing {}", bmp_wallet.balance());
+        assert_eq!(bmp_wallet.balance(), Amount::from_int_btc(0));
+
+        let _ = bmp_wallet.sync_all(&client);
+
+        assert_eq!(bmp_wallet.balance(), Amount::from_int_btc(3));
+        assert_eq!(
+            bmp_wallet.imported_balance.trusted_spendable(),
+            Amount::from_int_btc(2)
+        );
+
+        // Now attempt to drain the 2 BTC from the imported wallets
+        let psbt = bmp_wallet.drain_imported_balance(FeeRate::from_sat_per_kwu(25_000))?;
+        let tx = psbt.extract_tx()?;
+        assert_eq!(tx.input.len(), 2);
+        assert_eq!(tx.output.len(), 1);
+        assert_eq!(tx.output[0].value, Amount::from_str("1.99983150 BTC")?);
+
+        Ok(())
     }
 }
