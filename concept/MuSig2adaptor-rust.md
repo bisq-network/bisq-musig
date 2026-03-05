@@ -60,7 +60,7 @@ Up to here, its independent of the message and can be precalculated.
 
 ### Sign round 2
 
-From collected Nonce the aggregated Nonce $R$ is calculated:
+At this point in time the public Adaptor $T$ must be known to both parties. From collected Nonce the aggregated Nonce $R$ is calculated:
 
 $$\begin{aligned}
 (2)~~ R_1 &= R_{a,1} + R_{b,1} \\
