@@ -16,7 +16,7 @@ use crate::pb::walletrpc::{
     ConfEvent, ConfidenceType, ConfirmationBlockTime, TransactionOutput, WalletBalanceResponse,
 };
 use crate::protocol::{
-    ExchangedAddresses, ExchangedNonces, ExchangedSigs, ProtocolErrorKind, Role,
+    ContractualTxids, ExchangedAddresses, ExchangedNonces, ExchangedSigs, ProtocolErrorKind, Role,
 };
 use crate::storage::{ByRef, ByVal};
 use crate::wallet::TxConfidence;
@@ -152,30 +152,30 @@ type ReceivedAddressesNoncesPair<'a> = (ExchangedAddresses<'a, ByVal, NetworkUnc
 impl<'a> TryProtoInto<ReceivedAddressesNoncesPair<'a>> for NonceSharesMessage {
     fn try_proto_into(self) -> Result<ReceivedAddressesNoncesPair<'a>> {
         Ok((ExchangedAddresses {
-            warning_tx_fee_bump_address:
+            warning_tx_fee_bump:
             self.warning_tx_fee_bump_address.try_proto_into()?,
-            redirect_tx_fee_bump_address:
+            redirect_tx_fee_bump:
             self.redirect_tx_fee_bump_address.try_proto_into()?,
-            claim_tx_payout_address:
+            claim_tx_payout:
             self.claim_tx_payout_address.try_proto_into()?,
         }, ExchangedNonces {
-            swap_tx_input_nonce_share:
+            swap_tx_input:
             self.swap_tx_input_nonce_share.try_proto_into()?,
-            buyers_warning_tx_buyer_input_nonce_share:
+            buyers_warning_tx_buyer_input:
             self.buyers_warning_tx_buyer_input_nonce_share.try_proto_into()?,
-            buyers_warning_tx_seller_input_nonce_share:
+            buyers_warning_tx_seller_input:
             self.buyers_warning_tx_seller_input_nonce_share.try_proto_into()?,
-            sellers_warning_tx_buyer_input_nonce_share:
+            sellers_warning_tx_buyer_input:
             self.sellers_warning_tx_buyer_input_nonce_share.try_proto_into()?,
-            sellers_warning_tx_seller_input_nonce_share:
+            sellers_warning_tx_seller_input:
             self.sellers_warning_tx_seller_input_nonce_share.try_proto_into()?,
-            buyers_redirect_tx_input_nonce_share:
+            buyers_redirect_tx_input:
             self.buyers_redirect_tx_input_nonce_share.try_proto_into()?,
-            sellers_redirect_tx_input_nonce_share:
+            sellers_redirect_tx_input:
             self.sellers_redirect_tx_input_nonce_share.try_proto_into()?,
-            buyers_claim_tx_input_nonce_share:
+            buyers_claim_tx_input:
             self.buyers_claim_tx_input_nonce_share.try_proto_into()?,
-            sellers_claim_tx_input_nonce_share:
+            sellers_claim_tx_input:
             self.sellers_claim_tx_input_nonce_share.try_proto_into()?,
         }))
     }
@@ -196,6 +196,8 @@ impl<'a> TryProtoInto<ExchangedSigs<'a, ByVal>> for PartialSignaturesMessage {
             self.swap_tx_input_partial_signature.try_proto_into()?,
             swap_tx_input_sighash:
             self.swap_tx_input_sighash.try_proto_into()?,
+            contractual_txids:
+            None, // ignore any contract-forming txids passed by the client
         })
     }
 }
@@ -218,28 +220,40 @@ impl From<SentAddressesNoncesPair<'_>> for NonceSharesMessage {
             half_deposit_psbt: Vec::default(),
             redirection_amount_msat: 0,
             // Addresses...
-            warning_tx_fee_bump_address: addresses.warning_tx_fee_bump_address.to_string(),
-            redirect_tx_fee_bump_address: addresses.redirect_tx_fee_bump_address.to_string(),
-            claim_tx_payout_address: addresses.claim_tx_payout_address.to_string(),
+            warning_tx_fee_bump_address: addresses.warning_tx_fee_bump.to_string(),
+            redirect_tx_fee_bump_address: addresses.redirect_tx_fee_bump.to_string(),
+            claim_tx_payout_address: addresses.claim_tx_payout.to_string(),
             // Actual nonce shares...
             swap_tx_input_nonce_share:
-            nonces.swap_tx_input_nonce_share.serialize().into(),
+            nonces.swap_tx_input.serialize().into(),
             buyers_warning_tx_buyer_input_nonce_share:
-            nonces.buyers_warning_tx_buyer_input_nonce_share.serialize().into(),
+            nonces.buyers_warning_tx_buyer_input.serialize().into(),
             buyers_warning_tx_seller_input_nonce_share:
-            nonces.buyers_warning_tx_seller_input_nonce_share.serialize().into(),
+            nonces.buyers_warning_tx_seller_input.serialize().into(),
             sellers_warning_tx_buyer_input_nonce_share:
-            nonces.sellers_warning_tx_buyer_input_nonce_share.serialize().into(),
+            nonces.sellers_warning_tx_buyer_input.serialize().into(),
             sellers_warning_tx_seller_input_nonce_share:
-            nonces.sellers_warning_tx_seller_input_nonce_share.serialize().into(),
+            nonces.sellers_warning_tx_seller_input.serialize().into(),
             buyers_redirect_tx_input_nonce_share:
-            nonces.buyers_redirect_tx_input_nonce_share.serialize().into(),
+            nonces.buyers_redirect_tx_input.serialize().into(),
             sellers_redirect_tx_input_nonce_share:
-            nonces.sellers_redirect_tx_input_nonce_share.serialize().into(),
+            nonces.sellers_redirect_tx_input.serialize().into(),
             buyers_claim_tx_input_nonce_share:
-            nonces.buyers_claim_tx_input_nonce_share.serialize().into(),
+            nonces.buyers_claim_tx_input.serialize().into(),
             sellers_claim_tx_input_nonce_share:
-            nonces.sellers_claim_tx_input_nonce_share.serialize().into(),
+            nonces.sellers_claim_tx_input.serialize().into(),
+        }
+    }
+}
+
+impl From<ContractualTxids> for crate::pb::musigrpc::ContractualTxIds {
+    fn from(value: ContractualTxids) -> Self {
+        Self {
+            deposit_tx_id: value.deposit.to_byte_array().into(),
+            buyers_warning_tx_id: value.buyers_warning.to_byte_array().into(),
+            sellers_warning_tx_id: value.sellers_warning.to_byte_array().into(),
+            buyers_redirect_tx_id: value.buyers_redirect.to_byte_array().into(),
+            sellers_redirect_tx_id: value.sellers_redirect.to_byte_array().into(),
         }
     }
 }
@@ -259,6 +273,8 @@ impl From<ExchangedSigs<'_, ByRef>> for PartialSignaturesMessage {
             value.swap_tx_input_partial_signature.map(|s| s.serialize().into()),
             swap_tx_input_sighash:
             value.swap_tx_input_sighash.map(|s| s.as_byte_array().into()),
+            contractual_tx_ids:
+            value.contractual_txids.map(ContractualTxids::into),
         }
     }
 }

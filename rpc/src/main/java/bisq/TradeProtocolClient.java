@@ -128,7 +128,8 @@ public class TradeProtocolClient {
 
         var sellerDepositPsbt = stub.signDepositTx(DepositTxSignatureRequest.newBuilder()
                 .setTradeId(sellerTradeId)
-                .setPeersPartialSignatures(buyerPartialSignatureMessage)
+                // Don't include contract-forming (Deposit/Warning/Redirect) txids, as they are ignored:
+                .setPeersPartialSignatures(buyerPartialSignatureMessage.toBuilder().clearContractualTxIds())
                 .build());
         System.out.println("Got reply: " + sellerDepositPsbt);
 
@@ -141,7 +142,8 @@ public class TradeProtocolClient {
 
         var buyerDepositPsbt = stub.signDepositTx(DepositTxSignatureRequest.newBuilder()
                 .setTradeId(buyerTradeId)
-                .setPeersPartialSignatures(sellerPartialSignatureMessage)
+                // Don't include contract-forming (Deposit/Warning/Redirect) txids, as they are ignored:
+                .setPeersPartialSignatures(sellerPartialSignatureMessage.toBuilder().clearContractualTxIds())
                 .build());
         System.out.println("Got reply: " + buyerDepositPsbt);
 
@@ -219,7 +221,8 @@ public class TradeProtocolClient {
 
         var buyerDepositPsbt = stub.signDepositTx(DepositTxSignatureRequest.newBuilder()
                 .setTradeId(buyerTradeId)
-                .setPeersPartialSignatures(sellerPartialSignatureMessage)
+                // Don't include contract-forming (Deposit/Warning/Redirect) txids, as they are ignored:
+                .setPeersPartialSignatures(sellerPartialSignatureMessage.toBuilder().clearContractualTxIds())
                 .build());
         System.out.println("Got reply: " + buyerDepositPsbt);
 
@@ -232,7 +235,8 @@ public class TradeProtocolClient {
 
         var sellerDepositPsbt = stub.signDepositTx(DepositTxSignatureRequest.newBuilder()
                 .setTradeId(sellerTradeId)
-                .setPeersPartialSignatures(buyerPartialSignatureMessage)
+                // Don't include contract-forming (Deposit/Warning/Redirect) txids, as they are ignored:
+                .setPeersPartialSignatures(buyerPartialSignatureMessage.toBuilder().clearContractualTxIds())
                 .build());
         System.out.println("Got reply: " + sellerDepositPsbt);
 

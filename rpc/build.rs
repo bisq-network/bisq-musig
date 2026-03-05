@@ -28,6 +28,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             "ReceiverAddressAndAmount", "PartialSignaturesRequest", "DepositTxSignatureRequest",
             "PublishDepositTxRequest", "SubscribeTxConfirmationStatusRequest"
         ])
+        .serde_serialized_type("ContractualTxIds", &[
+            rev_hex("depositTxId"), rev_hex("buyersWarningTxId"), rev_hex("sellersWarningTxId"),
+            rev_hex("buyersRedirectTxId"), rev_hex("sellersRedirectTxId")
+        ])
         .serde_serialized_type("PubKeySharesRequest", &[
             enum_field("myRole", "Role")
         ])

@@ -80,8 +80,7 @@ impl<Cs: Iterator<Item=TxOutput>, As: Iterator<Item=Address>> TradeWallet for Mo
         output.extend(trade_fee_receivers.iter().map(TxOut::from));
         let mut change_output = TxOut { value: Amount::ZERO, script_pubkey: self.new_address()?.script_pubkey() };
 
-        let mut cost_msat = Receiver::total_output_cost_msat(trade_fee_receivers, fee_rate, 2)
-            .ok_or(TransactionErrorKind::Overflow)?
+        let mut cost_msat = Receiver::total_output_cost_msat(trade_fee_receivers, fee_rate, 2)?
             .checked_add(deposit_amount_msat)
             .ok_or(TransactionErrorKind::Overflow)?
             .checked_add(fee_cost_msat(HALF_DEPOSIT_TX_BASE_WEIGHT)?)

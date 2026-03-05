@@ -75,9 +75,8 @@ impl musig_server::Musig for MusigImpl {
             trade_model.init_my_half_deposit_psbt()?;
             trade_model.init_my_nonce_shares()?;
 
-            let redirection_amount_msat = trade_model.redirection_amount_msat()
-                .and_then(|amount| amount.check_in_signed_range().ok())
-                .ok_or_else(|| Status::internal("missing redirection amount"))?;
+            let redirection_amount_msat = trade_model.redirection_amount_msat()?
+                .check_in_signed_range()?;
             let my_addresses = trade_model.get_my_addresses()
                 .ok_or_else(|| Status::internal("missing addresses"))?;
             let my_half_deposit_psbt = trade_model.get_my_half_deposit_psbt()
