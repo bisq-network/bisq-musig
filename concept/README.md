@@ -9,6 +9,7 @@
 
 - [update.md](update.md)
 - [ProtocolUpdate2.md](ProtocolUpdate2.md)
+- [use of blinded signature in SwapTx](blindedsig/blindedsig-swaptx.md)
 
 ## Different aspects in detail
 
