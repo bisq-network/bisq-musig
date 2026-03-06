@@ -246,14 +246,14 @@ impl From<SentAddressesNoncesPair<'_>> for NonceSharesMessage {
     }
 }
 
-impl From<ContractualTxids> for crate::pb::musigrpc::ContractualTxIds {
+impl From<ContractualTxids> for musigrpc::ContractualTxIds {
     fn from(value: ContractualTxids) -> Self {
         Self {
-            deposit_tx_id: value.deposit.to_byte_array().into(),
-            buyers_warning_tx_id: value.buyers_warning.to_byte_array().into(),
-            sellers_warning_tx_id: value.sellers_warning.to_byte_array().into(),
-            buyers_redirect_tx_id: value.buyers_redirect.to_byte_array().into(),
-            sellers_redirect_tx_id: value.sellers_redirect.to_byte_array().into(),
+            deposit_tx_id: value.deposit.to_string(),
+            buyers_warning_tx_id: value.buyers_warning.to_string(),
+            sellers_warning_tx_id: value.sellers_warning.to_string(),
+            buyers_redirect_tx_id: value.buyers_redirect.to_string(),
+            sellers_redirect_tx_id: value.sellers_redirect.to_string(),
         }
     }
 }

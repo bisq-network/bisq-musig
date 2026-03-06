@@ -33,11 +33,11 @@ message ReceiverAddressAndAmount {
 }
 
 message ContractualTxIds {
-  bytes depositTxId = 1;
-  bytes buyersWarningTxId = 2;
-  bytes sellersWarningTxId = 3;
-  bytes buyersRedirectTxId = 4;
-  bytes sellersRedirectTxId = 5;
+  string depositTxId = 1;
+  string buyersWarningTxId = 2;
+  string sellersWarningTxId = 3;
+  string buyersRedirectTxId = 4;
+  string sellersRedirectTxId = 5;
 }
 
 message PubKeySharesRequest {
