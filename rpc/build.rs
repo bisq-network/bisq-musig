@@ -26,11 +26,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         // Add Serde serialization for musigrpc request types...
         .serde_serialized_types(&[
             "ReceiverAddressAndAmount", "PartialSignaturesRequest", "DepositTxSignatureRequest",
-            "PublishDepositTxRequest", "SubscribeTxConfirmationStatusRequest"
-        ])
-        .serde_serialized_type("ContractualTxIds", &[
-            rev_hex("depositTxId"), rev_hex("buyersWarningTxId"), rev_hex("sellersWarningTxId"),
-            rev_hex("buyersRedirectTxId"), rev_hex("sellersRedirectTxId")
+            "PublishDepositTxRequest", "SubscribeTxConfirmationStatusRequest", "ContractualTxIds"
         ])
         .serde_serialized_type("PubKeySharesRequest", &[
             enum_field("myRole", "Role")
