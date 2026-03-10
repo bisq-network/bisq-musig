@@ -2419,6 +2419,7 @@ dependencies = [
  "sha2",
  "simple-semaphore",
  "tempfile",
+ "tokio",
 ]
 
 [[package]]
