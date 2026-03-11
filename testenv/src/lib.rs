@@ -15,12 +15,6 @@ use bdk_wallet::bitcoin::secp256k1::All;
 use bdk_wallet::bitcoin::{Address, Amount, BlockHash, Network, Transaction, Txid};
 use bmp_tracing::tracing;
 use tokio::net::TcpListener;
-
-/// Returns a TcpListener bound to an available port (port 0 lets OS assign).
-/// This avoids race conditions by keeping the port bound until used.
-pub async fn get_bound_port() -> Result<TcpListener> {
-    TcpListener::bind("127.0.0.1:0").await.map_err(Into::into)
-}
 use electrsd::corepc_node::Node;
 use electrsd::electrum_client::{Client, ElectrumApi};
 use electrsd::{ElectrsD, corepc_node};
@@ -467,6 +461,14 @@ impl TestEnv {
     /// Get the running bitcoind socket address
     pub fn p2p_socket_addr(&self) -> Option<SocketAddrV4> {
         self.bitcoind.params.p2p_socket
+    }
+
+    /// Returns a TcpListener bound to an available port (port 0 lets OS assign).
+    /// This avoids race conditions by keeping the port bound until used.
+    pub async fn get_bound_port() -> Result<(u16, TcpListener)> {
+        let listener = TcpListener::bind("127.0.0.1:0").await?;
+        let port = listener.local_addr().unwrap().port();
+        Ok((port, listener))
     }
 }
 

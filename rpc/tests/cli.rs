@@ -101,8 +101,7 @@ fn test_cli_no_connection() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn test_cli_wallet_balance() {
     let testenv = TestEnv::new().expect("testEnv could not start");
-    let listener = testenv::get_bound_port().await.expect("listener");
-    let port = listener.local_addr().unwrap().port();
+    let (port, listener) = TestEnv::get_bound_port().await.expect("listener");
     spawn_wallet_grpc_service(
         listener,
         WalletServiceImpl::create_with_rpc_params(testenv.bitcoin_core_rpc_client().unwrap()),
@@ -118,8 +117,7 @@ async fn test_cli_wallet_balance() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn test_cli_new_address() {
     let testenv = TestEnv::new().expect("testEnv could not start"); // TODO: this doesnt make sense as a CLI make only sense if the bitcoind is
-    let listener = testenv::get_bound_port().await.expect("listener");
-    let port = listener.local_addr().unwrap().port();
+    let (port, listener) = TestEnv::get_bound_port().await.expect("listener");
     spawn_wallet_grpc_service(
         listener,
         WalletServiceImpl::create_with_rpc_params(testenv.bitcoin_core_rpc_client().unwrap()),
@@ -144,8 +142,7 @@ async fn test_cli_list_unspent() {
         .some_call(matching!()).returns(vec![mock_utxo()]);
     let mock_wallet_service = Unimock::new(clause).no_verify_in_drop();
 
-    let listener = testenv::get_bound_port().await.expect("listener");
-    let port = listener.local_addr().unwrap().port();
+    let (port, listener) = TestEnv::get_bound_port().await.expect("listener");
     spawn_wallet_grpc_service(listener, mock_wallet_service);
 
     task::spawn_blocking(move || assert_cli_with_port(port, ["list-unspent"]))
@@ -163,8 +160,7 @@ async fn test_cli_notify_confidence() {
         .answers(&|_, _| mock_confidence_stream());
     let mock_wallet_service = Unimock::new(clause).no_verify_in_drop();
 
-    let listener = testenv::get_bound_port().await.expect("listener");
-    let port = listener.local_addr().unwrap().port();
+    let (port, listener) = TestEnv::get_bound_port().await.expect("listener");
     spawn_wallet_grpc_service(listener, mock_wallet_service);
 
     task::spawn_blocking(move || assert_cli_with_port(port, ["notify-confidence",
