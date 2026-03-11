@@ -14,7 +14,7 @@ use bdk_wallet::bitcoin::key::Secp256k1;
 use bdk_wallet::bitcoin::secp256k1::All;
 use bdk_wallet::bitcoin::{Address, Amount, BlockHash, Network, Transaction, Txid};
 use bmp_tracing::tracing;
-pub use corepc_node::get_available_port;
+use tokio::net::TcpListener;
 use electrsd::corepc_node::Node;
 use electrsd::electrum_client::{Client, ElectrumApi};
 use electrsd::{ElectrsD, corepc_node};
@@ -235,7 +235,8 @@ impl TestEnv {
     pub fn start_explorer_in_container(&mut self) -> Result<()> {
         // this start a container for debugging
         let bitcoind_rpc_port = self.bitcoin_rpc_port();
-        let browser_port = get_available_port()?;
+        let listener = std::net::TcpListener::bind("127.0.0.1:0")?;
+        let browser_port = listener.local_addr()?.port();
 
         let electrum_port = self.electrsd.electrum_url.split(':').next_back()
                 .context("Failed to parse electrum port")?;
@@ -266,6 +267,9 @@ impl TestEnv {
 
         self.explorer_process = Some(child);
         self.container_name = Some(container_name);
+
+        // Drop the listener to free the port for the container
+        drop(listener);
 
         tracing::info!(
             "Starting explorer in container, access it at http://127.0.0.1:{browser_port}/blocks"
@@ -457,6 +461,14 @@ impl TestEnv {
     /// Get the running bitcoind socket address
     pub fn p2p_socket_addr(&self) -> Option<SocketAddrV4> {
         self.bitcoind.params.p2p_socket
+    }
+
+    /// Returns a TcpListener bound to an available port (port 0 lets OS assign).
+    /// This avoids race conditions by keeping the port bound until used.
+    pub async fn get_bound_port() -> Result<(u16, TcpListener)> {
+        let listener = TcpListener::bind("127.0.0.1:0").await?;
+        let port = listener.local_addr().unwrap().port();
+        Ok((port, listener))
     }
 }
 

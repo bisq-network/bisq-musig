@@ -4,7 +4,7 @@ use std::time::Duration;
 use assert_cmd::assert::Assert;
 use assert_cmd::cargo::cargo_bin_cmd;
 use bdk_wallet::bitcoin::hex::test_hex_unwrap as hex;
-use bdk_wallet::bitcoin::{consensus, OutPoint, Transaction};
+use bdk_wallet::bitcoin::{OutPoint, Transaction, consensus};
 use bdk_wallet::chain::{ChainPosition, ConfirmationBlockTime};
 use bdk_wallet::{KeychainKind, LocalOutput};
 use const_format::str_replace;
@@ -13,10 +13,11 @@ use predicates::str;
 use rpc::server::{WalletImpl, WalletServer};
 use rpc::wallet::{TxConfidence, WalletService, WalletServiceImpl, WalletServiceMock, WalletTx};
 use testenv::TestEnv;
+use tokio::net::TcpListener;
 use tokio::task::{self, JoinHandle};
 use tonic::transport::server::TcpIncoming;
 use tonic::transport::{self, Server};
-use unimock::{matching, MockFn as _, Unimock};
+use unimock::{MockFn as _, Unimock, matching};
 
 const CLI_TIMEOUT: Duration = Duration::from_millis(200);
 
@@ -100,8 +101,11 @@ fn test_cli_no_connection() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn test_cli_wallet_balance() {
     let testenv = TestEnv::new().expect("testEnv could not start");
-    let port = testenv::get_available_port().expect("port");
-    spawn_wallet_grpc_service(port, WalletServiceImpl::create_with_rpc_params(testenv.bitcoin_core_rpc_client().unwrap()));
+    let (port, listener) = TestEnv::get_bound_port().await.expect("listener");
+    spawn_wallet_grpc_service(
+        listener,
+        WalletServiceImpl::create_with_rpc_params(testenv.bitcoin_core_rpc_client().unwrap()),
+    );
 
     task::spawn_blocking(move || assert_cli_with_port(port, ["wallet-balance"]))
         .await.unwrap()
@@ -113,8 +117,11 @@ async fn test_cli_wallet_balance() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn test_cli_new_address() {
     let testenv = TestEnv::new().expect("testEnv could not start"); // TODO: this doesnt make sense as a CLI make only sense if the bitcoind is
-    let port = testenv::get_available_port().expect("port");
-    spawn_wallet_grpc_service(port, WalletServiceImpl::create_with_rpc_params(testenv.bitcoin_core_rpc_client().unwrap()));
+    let (port, listener) = TestEnv::get_bound_port().await.expect("listener");
+    spawn_wallet_grpc_service(
+        listener,
+        WalletServiceImpl::create_with_rpc_params(testenv.bitcoin_core_rpc_client().unwrap()),
+    );
 
     task::spawn_blocking(move || assert_cli_with_port(port, ["new-address"]))
         .await.unwrap()
@@ -135,8 +142,8 @@ async fn test_cli_list_unspent() {
         .some_call(matching!()).returns(vec![mock_utxo()]);
     let mock_wallet_service = Unimock::new(clause).no_verify_in_drop();
 
-    let port = testenv::get_available_port().expect("port");
-    spawn_wallet_grpc_service(port, mock_wallet_service);
+    let (port, listener) = TestEnv::get_bound_port().await.expect("listener");
+    spawn_wallet_grpc_service(listener, mock_wallet_service);
 
     task::spawn_blocking(move || assert_cli_with_port(port, ["list-unspent"]))
         .await.unwrap()
@@ -153,8 +160,8 @@ async fn test_cli_notify_confidence() {
         .answers(&|_, _| mock_confidence_stream());
     let mock_wallet_service = Unimock::new(clause).no_verify_in_drop();
 
-    let port = testenv::get_available_port().expect("port");
-    spawn_wallet_grpc_service(port, mock_wallet_service);
+    let (port, listener) = TestEnv::get_bound_port().await.expect("listener");
+    spawn_wallet_grpc_service(listener, mock_wallet_service);
 
     task::spawn_blocking(move || assert_cli_with_port(port, ["notify-confidence",
         "37b560334094515cfdaa0146bfd4ce19e940064c505082031858b0aba3218990"]))
@@ -229,10 +236,12 @@ fn assert_cli_with_port<'a>(port: u16, args: impl IntoIterator<Item=&'a str>) ->
     assert_cli(args)
 }
 
-fn spawn_wallet_grpc_service(port: u16, wallet_service: impl WalletService + Send + Sync + 'static)
-                             -> JoinHandle<Result<(), transport::Error>> {
+fn spawn_wallet_grpc_service(
+    listener: TcpListener,
+    wallet_service: impl WalletService + Send + Sync + 'static,
+) -> JoinHandle<Result<(), transport::Error>> {
     let wallet = WalletImpl { wallet_service: Arc::new(wallet_service) };
-    let incoming = TcpIncoming::bind(format!("127.0.0.1:{port}").parse().unwrap()).unwrap();
+    let incoming = TcpIncoming::from(listener);
 
     task::spawn(async move {
         Server::builder()
