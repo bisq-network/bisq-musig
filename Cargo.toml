@@ -12,6 +12,7 @@ bdk_electrum = { version = "0.23.2", default-features = false, features = ["use-
 bdk_kyoto = "0.15.4"
 # v2.2.0 deprecates `bdk_wallet::wallet::signer` without making it clear what alternative to use & how:
 bdk_wallet = { version = "~2.1.0", features = ["rusqlite", "keys-bip39"] }
+bmp_tracing = { path = "bmp_tracing" }
 const_format = "0.2.35"
 hex = "0.4.3"
 musig2 = { version = "0.3.1", features = ["rand"] }
@@ -24,13 +25,13 @@ tempfile = "3.25.0"
 thiserror = "2.0.18"
 tokio = "1.49.0"
 tracing = "0.1.44"
-tracing-core = {version = "0.1.35", default-features = false}
+tracing-core = { version = "0.1.35", default-features = false }
 tracing-subscriber = { version = "0.3.22", features = ["env-filter"] }
-bmp_tracing = { path = "bmp_tracing" }
 zeroize = "1.8.2"
 
 [workspace.lints.rust]
 rust-2024-compatibility = "warn"
+unused-qualifications = "warn"
 # Most of the time, changing drop order is harmless ('rust-2024-compatibility' lint):
 tail_expr_drop_order = { level = "allow", priority = 1 }
 
