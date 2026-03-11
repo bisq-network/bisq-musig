@@ -4,30 +4,30 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::task::{Context, Poll};
 
-use bdk_wallet::bitcoin::{consensus, Amount, FeeRate};
+use bdk_wallet::bitcoin::{Amount, FeeRate, consensus};
 use bdk_wallet::serde_json;
 use drop_stream::DropStreamExt as _;
 use futures_util::stream::{self, BoxStream, Stream, StreamExt as _, TryStream, TryStreamExt as _};
 use serde::Serialize;
 use tokio::time::{self, Duration};
 use tonic::{Request, Response, Result, Status};
-use tracing::{debug, error, info, instrument, trace, Span};
+use tracing::{Span, debug, error, info, instrument, trace};
 
 use crate::pb::convert::{CheckInSignedRange as _, TryProtoInto};
 pub use crate::pb::musigrpc::musig_server::MusigServer;
 use crate::pb::musigrpc::{
-    musig_server, CloseTradeRequest, CloseTradeResponse, DepositPsbt, DepositTxSignatureRequest,
+    CloseTradeRequest, CloseTradeResponse, DepositPsbt, DepositTxSignatureRequest,
     NonceSharesMessage, NonceSharesRequest, PartialSignaturesMessage, PartialSignaturesRequest,
     PubKeySharesRequest, PubKeySharesResponse, PublishDepositTxRequest,
     SubscribeTxConfirmationStatusRequest, SwapTxSignatureRequest, SwapTxSignatureResponse,
-    TxConfirmationStatus,
+    TxConfirmationStatus, musig_server,
 };
 pub use crate::pb::walletrpc::wallet_server::WalletServer;
 use crate::pb::walletrpc::{
-    wallet_server, ConfEvent, ConfRequest, ListUnspentRequest, ListUnspentResponse,
-    NewAddressRequest, NewAddressResponse, WalletBalanceRequest, WalletBalanceResponse,
+    ConfEvent, ConfRequest, ListUnspentRequest, ListUnspentResponse, NewAddressRequest,
+    NewAddressResponse, WalletBalanceRequest, WalletBalanceResponse, wallet_server,
 };
-use crate::protocol::{TradeModel, TradeModelStore as _, TRADE_MODELS};
+use crate::protocol::{TRADE_MODELS, TradeModel, TradeModelStore as _};
 use crate::wallet::WalletService;
 
 #[derive(Debug, Default)]

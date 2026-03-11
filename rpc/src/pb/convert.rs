@@ -1,10 +1,10 @@
 use bdk_wallet::bitcoin::address::NetworkUnchecked;
 use bdk_wallet::bitcoin::hashes::Hash as _;
-use bdk_wallet::bitcoin::{consensus, Address, Amount, Psbt, TapSighash, Transaction, Txid};
+use bdk_wallet::bitcoin::{Address, Amount, Psbt, TapSighash, Transaction, Txid, consensus};
 use bdk_wallet::chain::ChainPosition;
 use bdk_wallet::{Balance, LocalOutput};
-use musig2::secp::{MaybeScalar, Point, Scalar};
 use musig2::PubNonce;
+use musig2::secp::{MaybeScalar, Point, Scalar};
 use prost::UnknownEnumValue;
 use protocol::receiver::Receiver;
 use tonic::{Result, Status};
@@ -23,9 +23,9 @@ use crate::wallet::TxConfidence;
 
 pub(crate) mod hex {
     use serde::Serializer;
+    use serde_with::SerializeAs;
     use serde_with::formats::Lowercase;
     use serde_with::hex::Hex;
-    use serde_with::SerializeAs;
 
     pub struct ByteReversedHex;
 

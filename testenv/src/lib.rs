@@ -14,7 +14,6 @@ use bdk_wallet::bitcoin::key::Secp256k1;
 use bdk_wallet::bitcoin::secp256k1::All;
 use bdk_wallet::bitcoin::{Address, Amount, BlockHash, Network, Transaction, Txid};
 use bmp_tracing::tracing;
-use tokio::net::TcpListener;
 use electrsd::corepc_node::Node;
 use electrsd::electrum_client::{Client, ElectrumApi};
 use electrsd::{ElectrsD, corepc_node};
@@ -24,6 +23,7 @@ use secp::Scalar;
 use sha2::Sha256;
 use simple_semaphore::{Permit, Semaphore};
 use tempfile::{TempDir, tempdir};
+use tokio::net::TcpListener;
 
 /// Bitcoin regtest environment manager
 pub struct TestEnv {

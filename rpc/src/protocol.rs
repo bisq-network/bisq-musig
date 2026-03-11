@@ -7,7 +7,7 @@ use guardian::ArcMutexGuardian;
 use musig2::secp::{MaybeScalar, Point, Scalar};
 use musig2::{PartialSignature, PubNonce};
 use protocol::multisig::{KeyCtx, KeyPair, PointExt as _, SigCtx};
-use protocol::psbt::{mock_buyer_trade_wallet, mock_seller_trade_wallet, TradeWallet};
+use protocol::psbt::{TradeWallet, mock_buyer_trade_wallet, mock_seller_trade_wallet};
 use protocol::receiver::{Receiver, ReceiverList};
 use protocol::transaction::{
     DepositTxBuilder, ForwardingTxBuilder, NetworkParams as _, RedirectTxBuilder, WarningTxBuilder,
