@@ -2419,6 +2419,7 @@ dependencies = [
  "hmac",
  "rand 0.9.2",
  "secp",
+ "serde_json",
  "sha2",
  "simple-semaphore",
  "tempfile",
