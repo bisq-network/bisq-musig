@@ -22,8 +22,7 @@ use rand::{Rng as _, RngCore as _};
 use secp::Scalar;
 use sha2::Sha256;
 use simple_semaphore::{Permit, Semaphore};
-use tempfile::{TempDir, tempdir};
-use tokio::net::TcpListener;
+use tempfile::{tempdir, TempDir};
 
 /// Bitcoin regtest environment manager
 pub struct TestEnv {
