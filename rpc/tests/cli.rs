@@ -13,7 +13,6 @@ use predicates::str;
 use rpc::server::{WalletImpl, WalletServer};
 use rpc::wallet::{TxConfidence, WalletService, WalletServiceImpl, WalletServiceMock, WalletTx};
 use testenv::TestEnv;
-use tokio::net::TcpListener;
 use tokio::task::{self, JoinHandle};
 use tonic::transport::server::TcpIncoming;
 use tonic::transport::{self, Server};
@@ -101,7 +100,7 @@ fn test_cli_no_connection() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn test_cli_wallet_balance() {
     let testenv = TestEnv::new().expect("testEnv could not start");
-    let (port, listener) = TestEnv::get_bound_port().await.expect("listener");
+    let (port, listener) = TestEnv::get_bound_port().expect("listener");
     spawn_wallet_grpc_service(
         listener,
         WalletServiceImpl::create_with_rpc_params(testenv.bitcoin_core_rpc_client().unwrap()),
@@ -117,7 +116,7 @@ async fn test_cli_wallet_balance() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn test_cli_new_address() {
     let testenv = TestEnv::new().expect("testEnv could not start"); // TODO: this doesnt make sense as a CLI make only sense if the bitcoind is
-    let (port, listener) = TestEnv::get_bound_port().await.expect("listener");
+    let (port, listener) = TestEnv::get_bound_port().expect("listener");
     spawn_wallet_grpc_service(
         listener,
         WalletServiceImpl::create_with_rpc_params(testenv.bitcoin_core_rpc_client().unwrap()),
@@ -142,7 +141,7 @@ async fn test_cli_list_unspent() {
         .some_call(matching!()).returns(vec![mock_utxo()]);
     let mock_wallet_service = Unimock::new(clause).no_verify_in_drop();
 
-    let (port, listener) = TestEnv::get_bound_port().await.expect("listener");
+    let (port, listener) = TestEnv::get_bound_port().expect("listener");
     spawn_wallet_grpc_service(listener, mock_wallet_service);
 
     task::spawn_blocking(move || assert_cli_with_port(port, ["list-unspent"]))
@@ -160,7 +159,7 @@ async fn test_cli_notify_confidence() {
         .answers(&|_, _| mock_confidence_stream());
     let mock_wallet_service = Unimock::new(clause).no_verify_in_drop();
 
-    let (port, listener) = TestEnv::get_bound_port().await.expect("listener");
+    let (port, listener) = TestEnv::get_bound_port().expect("listener");
     spawn_wallet_grpc_service(listener, mock_wallet_service);
 
     task::spawn_blocking(move || assert_cli_with_port(port, ["notify-confidence",
@@ -237,11 +236,13 @@ fn assert_cli_with_port<'a>(port: u16, args: impl IntoIterator<Item=&'a str>) ->
 }
 
 fn spawn_wallet_grpc_service(
-    listener: TcpListener,
+    listener: std::net::TcpListener,
     wallet_service: impl WalletService + Send + Sync + 'static,
 ) -> JoinHandle<Result<(), transport::Error>> {
+    listener.set_nonblocking(true).expect("set_nonblocking");
+    let tokio_listener = tokio::net::TcpListener::from_std(listener).expect("from_std");
     let wallet = WalletImpl { wallet_service: Arc::new(wallet_service) };
-    let incoming = TcpIncoming::from(listener);
+    let incoming = TcpIncoming::from(tokio_listener);
 
     task::spawn(async move {
         Server::builder()

@@ -14,7 +14,6 @@ use bdk_wallet::bitcoin::key::Secp256k1;
 use bdk_wallet::bitcoin::secp256k1::All;
 use bdk_wallet::bitcoin::{Address, Amount, BlockHash, Network, Transaction, Txid};
 use bmp_tracing::tracing;
-use tokio::net::TcpListener;
 use electrsd::corepc_node::Node;
 use electrsd::electrum_client::{Client, ElectrumApi};
 use electrsd::{ElectrsD, corepc_node};
@@ -155,6 +154,27 @@ impl TestEnv {
     /// Create a new test environment with automatic executable downloads
     pub fn new() -> Result<Self> {
         Self::new_with_conf(Config::default())
+    }
+
+    /// Create a new test environment with ZMQ enabled on bitcoind.
+    ///
+    /// The ZMQ socket addresses are available via
+    /// [`zmq_pub_raw_tx_socket`](Self::zmq_pub_raw_tx_socket) and
+    /// [`zmq_pub_raw_block_socket`](Self::zmq_pub_raw_block_socket).
+    pub fn enable_zmq() -> Result<Self> {
+        let mut config = Config::default();
+        config.bitcoind.enable_zmq = true;
+        Self::new_with_conf(config)
+    }
+
+    /// ZMQ socket for raw transaction notifications (set when created via [`enable_zmq`](Self::enable_zmq)).
+    pub fn zmq_pub_raw_tx_socket(&self) -> Option<SocketAddrV4> {
+        self.bitcoind.params.zmq_pub_raw_tx_socket
+    }
+
+    /// ZMQ socket for raw block notifications (set when created via [`enable_zmq`](Self::enable_zmq)).
+    pub fn zmq_pub_raw_block_socket(&self) -> Option<SocketAddrV4> {
+        self.bitcoind.params.zmq_pub_raw_block_socket
     }
 
     /// create environment with automatic downloads
@@ -463,11 +483,11 @@ impl TestEnv {
         self.bitcoind.params.p2p_socket
     }
 
-    /// Returns a TcpListener bound to an available port (port 0 lets OS assign).
+    /// Returns a `TcpListener` bound to an available port (port 0 lets OS assign).
     /// This avoids race conditions by keeping the port bound until used.
-    pub async fn get_bound_port() -> Result<(u16, TcpListener)> {
-        let listener = TcpListener::bind("127.0.0.1:0").await?;
-        let port = listener.local_addr().unwrap().port();
+    pub fn get_bound_port() -> Result<(u16, std::net::TcpListener)> {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0")?;
+        let port = listener.local_addr()?.port();
         Ok((port, listener))
     }
 }
@@ -596,6 +616,32 @@ mod tests {
         env.start_explorer_in_container()?;
         env.mine_block()?;
         // put a breakpoint on the Ok statement so you inspect the blockchain before it is dropped
+        Ok(())
+    }
+
+    #[test]
+    fn test_enable_zmq() -> Result<()> {
+        let env = TestEnv::enable_zmq()?;
+
+        // Verify ZMQ sockets were assigned
+        let tx_socket = env.zmq_pub_raw_tx_socket().expect("zmq rawtx socket");
+        let block_socket = env.zmq_pub_raw_block_socket().expect("zmq rawblock socket");
+        tracing::info!("ZMQ rawtx={tx_socket}, rawblock={block_socket}");
+
+        // Verify the environment is fully functional with ZMQ enabled
+        assert!(env.block_count().is_ok());
+        env.mine_block()?;
+
+        // Verify ZMQ is configured by querying bitcoind
+        let rpc = env.bitcoin_core_rpc_client()?;
+        let notifications: serde_json::Value = rpc.call("getzmqnotifications", &[])?;
+        let types: Vec<&str> = notifications.as_array().unwrap()
+            .iter()
+            .map(|n| n["type"].as_str().unwrap())
+            .collect();
+        assert!(types.contains(&"pubrawtx"));
+        assert!(types.contains(&"pubrawblock"));
+
         Ok(())
     }
 
