@@ -7,15 +7,16 @@ use bdk_wallet::bitcoin::taproot::Signature;
 use bdk_wallet::bitcoin::transaction::Version;
 use bdk_wallet::bitcoin::{
     Address, Amount, FeeRate, Network, OutPoint, Psbt, ScriptBuf, Sequence, TapSighashType,
-    Transaction, TxIn, TxOut, Weight, Witness, absolute, psbt, script,
+    Transaction, TxIn, TxOut, Weight, Witness, XOnlyPublicKey, absolute, psbt, script,
 };
+use bdk_wallet::miniscript::{Descriptor, ToPublicKey as _};
 use bdk_wallet::{KeychainKind, TxOrdering, Wallet};
 use rand::{RngCore, SeedableRng as _};
 use rand_chacha::ChaCha20Rng;
 
 use crate::receiver::Receiver;
 use crate::swap::Swap as _;
-use crate::transaction::{Result, TransactionErrorKind, TxOutput};
+use crate::transaction::{LIBSECP256K1_CTX, Result, TransactionErrorKind, TxOutput};
 
 // We disallow half-deposit PSBTs with more than half the single-byte VarInt-representable limit
 // number (252) of inputs or outputs, as otherwise merging the peer's PSBT could cause it to tip
@@ -29,6 +30,8 @@ pub trait TradeWallet {
     fn network(&self) -> Network;
 
     fn new_address(&mut self) -> Result<Address>;
+
+    fn new_internal_key(&mut self) -> Result<XOnlyPublicKey>;
 
     fn create_half_deposit_psbt(
         &mut self,
@@ -45,6 +48,7 @@ struct MockTradeWallet<Cs: Iterator<Item=TxOutput>, As: Iterator<Item=Address>> 
     funding_coins: Cs,
     new_addresses: As,
     signature_map: BTreeMap<OutPoint, Signature>,
+    internal_key: Option<XOnlyPublicKey>,
 }
 
 impl<Cs: Iterator<Item=TxOutput>, As: Iterator<Item=Address>> TradeWallet for MockTradeWallet<Cs, As> {
@@ -52,6 +56,10 @@ impl<Cs: Iterator<Item=TxOutput>, As: Iterator<Item=Address>> TradeWallet for Mo
 
     fn new_address(&mut self) -> Result<Address> {
         self.new_addresses.next().ok_or(TransactionErrorKind::MissingAddress)
+    }
+
+    fn new_internal_key(&mut self) -> Result<XOnlyPublicKey> {
+        self.internal_key.take().ok_or(TransactionErrorKind::MissingAddress)
     }
 
     fn create_half_deposit_psbt(
@@ -155,8 +163,10 @@ pub fn mock_buyer_trade_wallet() -> impl TradeWallet {
         "bcrt1pzvynlely05x82u40cts3znctmvyskue74xa5zwy0t5ueuv92726szpgpaa",
     ].map(|a| a.parse::<Address<_>>()
         .expect("hardcoded addresses should be valid").assume_checked()).into_iter();
+    let internal_key = funding_coins[0].internal_key;
+    let funding_coins = funding_coins.into_iter();
 
-    MockTradeWallet { funding_coins: funding_coins.into_iter(), new_addresses, signature_map }
+    MockTradeWallet { funding_coins, new_addresses, signature_map, internal_key }
 }
 
 //noinspection SpellCheckingInspection
@@ -166,7 +176,7 @@ pub fn mock_seller_trade_wallet() -> impl TradeWallet {
             "0000000000000000000000000000000000000000000000000000000000000002"),
         TxOutput::mock_1_btc_coin("373b3ca0b9135e9649672772d4659bb5597d06b4694f1fbdbece285823fde0a3:1",
             "0000000000000000000000000000000000000000000000000000000000000003"),
-    ].into_iter();
+    ];
     let signature_map = signature_map(funding_coins.as_slice(), &[
         "2376111ed79dac9ff6f2d85dfe57d142f6075f4df9381aeab87a941477425224\
          7555f791ddf82354a3d73fa24955f6c5330ae44b2b238fa74be2eee9a46fcb72",
@@ -181,8 +191,10 @@ pub fn mock_seller_trade_wallet() -> impl TradeWallet {
         "bcrt1pe3kcs085e8qej9aqqx6qryv2qsfxzywy9xd8pryzwemv2dghdqgscylr69",
     ].map(|a| a.parse::<Address<_>>()
         .expect("hardcoded addresses should be valid").assume_checked()).into_iter();
+    let internal_key = funding_coins[0].internal_key;
+    let funding_coins = funding_coins.into_iter();
 
-    MockTradeWallet { funding_coins, new_addresses, signature_map }
+    MockTradeWallet { funding_coins, new_addresses, signature_map, internal_key }
 }
 
 fn signature_map(funding_coins: &[TxOutput], signatures: &[&'static str]) -> BTreeMap<OutPoint, Signature> {
@@ -200,6 +212,18 @@ impl TradeWallet for Wallet {
         // For privacy, always get fresh addresses for the trade protocol.
         // FIXME: Need to find a way to prevent gaps of unused addresses from growing too large.
         Ok(self.reveal_next_address(KeychainKind::External).address)
+    }
+
+    fn new_internal_key(&mut self) -> Result<XOnlyPublicKey> {
+        if let Descriptor::Tr(tr) = self.public_descriptor(KeychainKind::External) {
+            let ik = tr.internal_key().clone();
+            let index = self.reveal_next_address(KeychainKind::External).index;
+
+            return Ok(ik.at_derivation_index(index)?.derive_public_key(&*LIBSECP256K1_CTX)?
+                .to_x_only_pubkey());
+        }
+        // TODO: Consider returning a dedicated error for this:
+        Err(TransactionErrorKind::MissingAddress)
     }
 
     fn create_half_deposit_psbt(
@@ -520,6 +544,29 @@ mod tests {
             wallet.spk_index().index_of_spk(addr.script_pubkey()).expect("missing address").1);
 
         assert_eq!([1, 2], spk_indices);
+        Ok(())
+    }
+
+    #[test]
+    fn bdk_trade_wallet_new_internal_key() -> Result<()> {
+        let descriptor = test_utils::get_test_tr_single_sig_xprv();
+        let mut wallet = test_utils::get_funded_wallet_single(descriptor).0;
+
+        // Wallet was created with one already-used non-change address at index 0.
+        assert_eq!(Some(0), wallet.derivation_index(KeychainKind::External));
+
+        let ik1 = wallet.new_internal_key()?;
+        let addr2 = wallet.new_address()?;
+        let ik3 = wallet.new_internal_key()?;
+
+        let spk1 = ScriptBuf::new_p2tr(&*LIBSECP256K1_CTX, ik1, None);
+        let spk2 = addr2.script_pubkey();
+        let spk3 = ScriptBuf::new_p2tr(&*LIBSECP256K1_CTX, ik3, None);
+
+        let spk_indices = [spk1, spk2, spk3].map(|spk|
+            wallet.spk_index().index_of_spk(spk).expect("missing spk").1);
+
+        assert_eq!([1, 2, 3], spk_indices);
         Ok(())
     }
 }

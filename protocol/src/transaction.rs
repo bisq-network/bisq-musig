@@ -39,6 +39,9 @@ pub const SIGNED_FORWARDING_TX_WEIGHT: Weight = Weight::from_wu(444);
 pub const SIGNED_WARNING_TX_WEIGHT: Weight = Weight::from_wu(846);
 pub const SIGNED_REDIRECT_TX_BASE_WEIGHT: Weight = SIGNED_FORWARDING_TX_WEIGHT;
 
+pub(crate) static LIBSECP256K1_CTX: LazyLock<secp256k1::Secp256k1<secp256k1::All>> =
+    LazyLock::new(secp256k1::Secp256k1::new);
+
 pub trait NetworkParams {
     fn warning_lock_time(&self) -> LockTime;
 
@@ -138,8 +141,6 @@ impl TxOutput {
     }
 
     fn keyspend_only_spk(internal_key: XOnlyPublicKey) -> ScriptBuf {
-        static LIBSECP256K1_CTX: LazyLock<secp256k1::Secp256k1<secp256k1::All>> =
-            LazyLock::new(secp256k1::Secp256k1::new);
         ScriptBuf::new_p2tr(&*LIBSECP256K1_CTX, internal_key, None)
     }
 }
@@ -575,6 +576,7 @@ pub enum TransactionErrorKind {
     ExtractTx(#[from] Box<ExtractTxError>),
     CreateTx(#[from] bdk_wallet::error::CreateTxError),
     Signer(#[from] bdk_wallet::signer::SignerError),
+    Conversion(#[from] bdk_wallet::miniscript::descriptor::ConversionError),
 }
 
 impl From<ExtractTxError> for TransactionErrorKind {
