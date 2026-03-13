@@ -7,8 +7,9 @@ use guardian::ArcMutexGuardian;
 use musig2::secp::{MaybeScalar, Point, Scalar};
 use musig2::{PartialSignature, PubNonce};
 use protocol::multisig::{KeyCtx, KeyPair, PointExt as _, SigCtx};
-use protocol::psbt::{TradeWallet, mock_buyer_trade_wallet, mock_seller_trade_wallet};
+use protocol::psbt::{self, TradeWallet};
 use protocol::receiver::{Receiver, ReceiverList};
+use protocol::script_paths;
 use protocol::transaction::{
     DepositTxBuilder, ForwardingTxBuilder, NetworkParams as _, RedirectTxBuilder, WarningTxBuilder,
     WithWitnesses as _,
@@ -154,9 +155,9 @@ impl TradeModel {
     pub fn new(trade_id: String, my_role: Role) -> Self {
         let mut trade_model = Self { trade_id, my_role, ..Default::default() };
         let network = trade_model.trade_wallet.insert(if trade_model.am_buyer() {
-            Arc::new(Mutex::new(mock_buyer_trade_wallet()))
+            Arc::new(Mutex::new(psbt::mock_buyer_trade_wallet()))
         } else {
-            Arc::new(Mutex::new(mock_seller_trade_wallet()))
+            Arc::new(Mutex::new(psbt::mock_seller_trade_wallet()))
         }).lock().unwrap().network();
         for txs in [&mut trade_model.buyer_txs, &mut trade_model.seller_txs] {
             txs.warning.builder.set_lock_time(network.warning_lock_time());
@@ -262,7 +263,7 @@ impl TradeModel {
         self.seller_txs.warning.seller_input_sig_ctx.set_tweaked_key_ctx(seller_output_tweaked_key_ctx);
 
         let [buyer_claim_merkle_root, seller_claim_merkle_root] = self.key_ctxs.claim_key_shares()?
-            .map(|p| network.warning_output_merkle_root(&p.pub_key().to_public_key().into()));
+            .map(|p| script_paths::warning_escrow_merkle_root(&p.pub_key().to_public_key().into(), network));
         let buyers_warning_output_tweaked_key_ctx = self.key_ctxs.seller_payout.with_taproot_tweak(
             Some(&buyer_claim_merkle_root))?;
         let sellers_warning_output_tweaked_key_ctx = self.key_ctxs.buyer_payout.with_taproot_tweak(

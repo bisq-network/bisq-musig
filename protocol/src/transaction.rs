@@ -3,15 +3,14 @@ use std::str::FromStr as _;
 use std::sync::LazyLock;
 
 use bdk_wallet::bitcoin::amount::CheckedSum as _;
-use bdk_wallet::bitcoin::opcodes::all::{OP_CHECKSIG, OP_CSV, OP_DROP};
 use bdk_wallet::bitcoin::psbt::ExtractTxError;
 use bdk_wallet::bitcoin::sighash::{Prevouts, SighashCache};
-use bdk_wallet::bitcoin::taproot::{Signature, TAPROOT_ANNEX_PREFIX, TaprootBuilder};
+use bdk_wallet::bitcoin::taproot::{Signature, TAPROOT_ANNEX_PREFIX};
 use bdk_wallet::bitcoin::transaction::Version;
 use bdk_wallet::bitcoin::{
-    Address, Amount, FeeRate, Network, OutPoint, Psbt, ScriptBuf, Sequence, TapNodeHash,
-    TapSighash, TapSighashType, Transaction, TxIn, TxOut, Txid, Weight, Witness, XOnlyPublicKey,
-    absolute, relative, script, secp256k1,
+    Address, Amount, FeeRate, Network, OutPoint, Psbt, ScriptBuf, Sequence, TapSighash,
+    TapSighashType, Transaction, TxIn, TxOut, Txid, Weight, Witness, XOnlyPublicKey, absolute,
+    relative, secp256k1,
 };
 use paste::paste;
 use rand::RngCore;
@@ -46,26 +45,6 @@ pub trait NetworkParams {
     fn redirect_lock_time(&self) -> LockTime;
 
     fn claim_lock_time(&self) -> LockTime;
-
-    fn warning_output_merkle_root(&self, claim_pub_key: &XOnlyPublicKey) -> TapNodeHash {
-        let claim_script = claim_script(claim_pub_key, self.claim_lock_time());
-        TaprootBuilder::with_capacity(1)
-            .add_leaf(0, claim_script)
-            .expect("hardcoded TapTree build sequence should be valid")
-            .try_into_taptree()
-            .expect("hardcoded TapTree build sequence should be complete")
-            .root_hash()
-    }
-}
-
-fn claim_script(pub_key: &XOnlyPublicKey, lock_time: LockTime) -> ScriptBuf {
-    script::Builder::new()
-        .push_sequence(lock_time.to_sequence())
-        .push_opcode(OP_CSV)
-        .push_opcode(OP_DROP)
-        .push_x_only_key(pub_key)
-        .push_opcode(OP_CHECKSIG)
-        .into_script()
 }
 
 impl NetworkParams for Network {
