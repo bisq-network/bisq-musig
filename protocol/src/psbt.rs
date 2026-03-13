@@ -78,6 +78,7 @@ impl<Cs: Iterator<Item=TxOutput>, As: Iterator<Item=Address>> TradeWallet for Mo
             script_pubkey: half_deposit_placeholder_spk(rng),
         });
         output.extend(trade_fee_receivers.iter().map(TxOut::from));
+        // We should never normally use `new_address()` for change outputs, but this is just a mock:
         let mut change_output = TxOut { value: Amount::ZERO, script_pubkey: self.new_address()?.script_pubkey() };
 
         let mut cost_msat = Receiver::total_output_cost_msat(trade_fee_receivers, fee_rate, 2)?
@@ -196,7 +197,9 @@ impl TradeWallet for Wallet {
     fn network(&self) -> Network { self.network() }
 
     fn new_address(&mut self) -> Result<Address> {
-        Ok(self.next_unused_address(KeychainKind::External).address)
+        // For privacy, always get fresh addresses for the trade protocol.
+        // FIXME: Need to find a way to prevent gaps of unused addresses from growing too large.
+        Ok(self.reveal_next_address(KeychainKind::External).address)
     }
 
     fn create_half_deposit_psbt(
@@ -467,7 +470,7 @@ mod tests {
 
     //noinspection SpellCheckingInspection
     #[test]
-    fn test_bdk_trade_wallet() -> Result<()> {
+    fn bdk_trade_wallet_half_deposit_psbt() -> Result<()> {
         let descriptor = test_utils::get_test_tr_single_sig_xprv();
         let mut wallet = test_utils::get_funded_wallet_single(descriptor).0;
         let mut rng = rand::rng();
@@ -501,6 +504,22 @@ mod tests {
         let ideal_weight = actual_weight - Weight::from_wu(1);
         assert!(fee_rate * actual_weight > fee_amount);
         assert_eq!(fee_rate * ideal_weight, fee_amount);
+        Ok(())
+    }
+
+    #[test]
+    fn bdk_trade_wallet_new_address() -> Result<()> {
+        let descriptor = test_utils::get_test_tr_single_sig_xprv();
+        let mut wallet = test_utils::get_funded_wallet_single(descriptor).0;
+
+        // Wallet was created with one already-used non-change address at index 0.
+        assert_eq!(Some(0), wallet.derivation_index(KeychainKind::External));
+
+        let addresses = [wallet.new_address()?, wallet.new_address()?];
+        let spk_indices = addresses.map(|addr|
+            wallet.spk_index().index_of_spk(addr.script_pubkey()).expect("missing address").1);
+
+        assert_eq!([1, 2], spk_indices);
         Ok(())
     }
 }

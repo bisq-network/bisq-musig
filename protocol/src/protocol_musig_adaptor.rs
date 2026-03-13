@@ -137,6 +137,9 @@ impl MemWallet {
     }
 
     pub fn next_unused_address(&mut self) -> AddressInfo {
+        // FIXME: `next_unused_address` just returns the same unused address over and over. It has
+        //  to either be marked as used (which change isn't staged and therefore presumably never
+        //  persisted) or a fresh address requested with `reveal_next_address`.
         self.wallet.next_unused_address(KeychainKind::External)
     }
 
@@ -277,15 +280,15 @@ impl BMPProtocol {
 
         let dep_part_psbt = self.deposit_tx.generate_part_tx(&mut self.ctx)?;
         let swap_script = self.swap_tx.spend_condition(&mut self.ctx);
-        let warn_anchor_spend = self.ctx.funds.wallet.next_unused_address(KeychainKind::External).script_pubkey();
+        let warn_anchor_spend = self.ctx.funds.next_unused_address().script_pubkey();
         self.warning_tx_me.anchor_spend = Some(warn_anchor_spend.clone());
 
         // ClaimTx
-        let claim_spend = self.ctx.funds.wallet.next_unused_address(KeychainKind::External).script_pubkey();
+        let claim_spend = self.ctx.funds.next_unused_address().script_pubkey();
         self.claim_tx_me.claim_spend = Some(claim_spend.clone());
 
         // RedirectTx
-        let redirect_anchor_spend = self.ctx.funds.wallet.next_unused_address(KeychainKind::External).script_pubkey();
+        let redirect_anchor_spend = self.ctx.funds.next_unused_address().script_pubkey();
         self.redirect_tx_me.anchor_spend = Some(redirect_anchor_spend.clone());
 
         Ok(Round1Parameter {
@@ -299,10 +302,7 @@ impl BMPProtocol {
         })
     }
 
-    #[expect(
-        clippy::similar_names,
-        reason = "easy to distinguish local variable names in this case"
-    )]
+    #[expect(clippy::similar_names, reason = "easy to distinguish local variable names in this case")]
     pub fn round2(&mut self, bob: Round1Parameter) -> anyhow::Result<Round2Parameter> {
         self.check_round(2);
         assert_ne!(bob.p_a, bob.q_a, "Bob is sending the same point for P' and Q'.");
@@ -588,7 +588,7 @@ impl WarningTx {
         Self {
             role,
             builder: WarningTxBuilder::default(),
-            anchor_spend: None, // ctx.funds.wallet.next_unused_address(KeychainKind::External).script_pubkey(),
+            anchor_spend: None, // ctx.funds.next_unused_address().script_pubkey(),
             sig_p: SigCtx::default(),
             sig_q: SigCtx::default(),
         }
@@ -668,7 +668,7 @@ pub struct SwapTx {
 impl SwapTx {
     pub(crate) fn spend_condition(&mut self, ctx: &mut BMPContext) -> Option<ScriptBuf> {
         self.swap_spend = match self.role {
-            ProtocolRole::Seller => Some(ctx.funds.wallet.next_unused_address(KeychainKind::External).script_pubkey()),
+            ProtocolRole::Seller => Some(ctx.funds.next_unused_address().script_pubkey()),
             ProtocolRole::Buyer => None,
         };
         self.swap_spend.clone()
