@@ -2,7 +2,9 @@ use std::collections::BTreeMap;
 use std::sync::{Arc, LazyLock, Mutex};
 
 use bdk_wallet::bitcoin::address::{NetworkChecked, NetworkUnchecked, NetworkValidation};
-use bdk_wallet::bitcoin::{Address, Amount, FeeRate, Network, Psbt, TapSighash, Transaction, Txid};
+use bdk_wallet::bitcoin::{
+    Address, Amount, FeeRate, Network, Psbt, TapSighash, Transaction, Txid, XOnlyPublicKey,
+};
 use guardian::ArcMutexGuardian;
 use musig2::secp::{MaybeScalar, Point, Scalar};
 use musig2::{PartialSignature, PubNonce};
@@ -43,7 +45,7 @@ pub struct TradeModel {
     trade_id: String,
     my_role: Role,
     trade_wallet: Option<Arc<Mutex<dyn TradeWallet + Send + 'static>>>,
-    key_ctxs: KeyCtxs,
+    keys: Keys,
     deposit_tx: DepositTx,
     swap_tx: SwapTx,
     buyer_txs: ArbitrationTxs,
@@ -59,10 +61,12 @@ pub enum Role {
 }
 
 #[derive(Default)]
-struct KeyCtxs {
+struct Keys {
     am_buyer: bool,
-    buyer_payout: KeyCtx,
-    seller_payout: KeyCtx,
+    buyer_payout_ctx: KeyCtx,
+    seller_payout_ctx: KeyCtx,
+    my_multisig_script_key: Option<XOnlyPublicKey>,
+    peers_multisig_script_key: Option<XOnlyPublicKey>,
 }
 
 #[derive(Default)]
@@ -101,6 +105,12 @@ struct RedirectTx {
 struct ClaimTx {
     builder: ForwardingTxBuilder,
     input_sig_ctx: SigCtx,
+}
+
+pub struct ExchangedKeys<'a, S: Storage> {
+    pub buyer_payout: S::Store<'a, Point>,
+    pub seller_payout: S::Store<'a, Point>,
+    pub multisig_script: S::Store<'a, XOnlyPublicKey>,
 }
 
 pub struct ExchangedAddresses<'a, S: Storage, V: NetworkValidation + 'a = NetworkChecked> {
@@ -165,7 +175,7 @@ impl TradeModel {
             txs.claim.builder.set_lock_time(network.claim_lock_time());
         }
         trade_model.swap_tx.builder.disable_lock_time();
-        trade_model.key_ctxs.am_buyer = trade_model.am_buyer();
+        trade_model.keys.am_buyer = trade_model.am_buyer();
         trade_model
     }
 
@@ -224,60 +234,68 @@ impl TradeModel {
         Ok(RedirectTxBuilder::available_amount_msat(escrow_amount, self.prepared_tx_fee_rate()?)?)
     }
 
-    pub fn init_my_key_shares(&mut self) {
-        self.key_ctxs.buyer_payout.init_my_key_share();
-        self.key_ctxs.seller_payout.init_my_key_share();
+    pub fn init_my_key_shares(&mut self) -> Result<()> {
+        self.keys.buyer_payout_ctx.init_my_key_share();
+        self.keys.seller_payout_ctx.init_my_key_share();
+        self.keys.my_multisig_script_key.get_or_insert(self.trade_wallet()?.new_internal_key()?);
+        Ok(())
     }
 
-    pub fn get_my_key_shares(&self) -> Option<[&KeyPair; 2]> {
-        Some([
-            self.key_ctxs.buyer_payout.my_key_share().ok()?,
-            self.key_ctxs.seller_payout.my_key_share().ok()?
-        ])
+    pub fn get_my_key_shares(&self) -> Option<ExchangedKeys<'_, ByRef>> {
+        Some(ExchangedKeys {
+            buyer_payout: self.keys.buyer_payout_ctx.my_key_share().ok()?.pub_key(),
+            seller_payout: self.keys.seller_payout_ctx.my_key_share().ok()?.pub_key(),
+            multisig_script: self.keys.my_multisig_script_key.as_ref()?,
+        })
     }
 
-    pub fn set_peer_key_shares(&mut self, buyer_output_pub_key: Point, seller_output_pub_key: Point) {
-        self.key_ctxs.buyer_payout.set_peers_pub_key(buyer_output_pub_key);
-        self.key_ctxs.seller_payout.set_peers_pub_key(seller_output_pub_key);
+    pub fn set_peer_key_shares(&mut self, keys: &ExchangedKeys<ByVal>) {
+        self.keys.buyer_payout_ctx.set_peers_pub_key(keys.buyer_payout);
+        self.keys.seller_payout_ctx.set_peers_pub_key(keys.seller_payout);
+        self.keys.peers_multisig_script_key.get_or_insert(keys.multisig_script);
     }
 
     // TODO: Try to refactor this method:
     pub fn aggregate_key_shares(&mut self) -> Result<()> {
         let network = self.trade_wallet()?.network();
-        self.key_ctxs.buyer_payout.aggregate_pub_key_shares()?;
-        self.key_ctxs.seller_payout.aggregate_pub_key_shares()?;
+        self.keys.buyer_payout_ctx.aggregate_pub_key_shares()?;
+        self.keys.seller_payout_ctx.aggregate_pub_key_shares()?;
 
-        let buyer_output_tweaked_key_ctx = self.key_ctxs.buyer_payout.with_taproot_tweak(None)?;
-        let seller_output_tweaked_key_ctx = self.key_ctxs.seller_payout.with_taproot_tweak(None)?;
+        let [buyer_pub_key, seller_pub_key] = self.keys.multisig_script_keys()?;
+        let deposit_merkle_root = script_paths::deposit_payout_merkle_root(buyer_pub_key, seller_pub_key);
+        let buyer_payout_tweaked_key_ctx = self.keys.buyer_payout_ctx.with_taproot_tweak(
+            Some(&deposit_merkle_root))?;
+        let seller_payout_tweaked_key_ctx = self.keys.seller_payout_ctx.with_taproot_tweak(
+            Some(&deposit_merkle_root))?;
 
-        let buyer_payout_address = buyer_output_tweaked_key_ctx.p2tr_address(network);
-        let seller_payout_address = seller_output_tweaked_key_ctx.p2tr_address(network);
+        let buyer_payout_address = buyer_payout_tweaked_key_ctx.p2tr_address(network);
+        let seller_payout_address = seller_payout_tweaked_key_ctx.p2tr_address(network);
         self.deposit_tx.builder.set_buyer_payout_address(buyer_payout_address);
         self.deposit_tx.builder.set_seller_payout_address(seller_payout_address);
 
-        self.buyer_txs.warning.buyer_input_sig_ctx.set_tweaked_key_ctx(buyer_output_tweaked_key_ctx.clone());
-        self.seller_txs.warning.buyer_input_sig_ctx.set_tweaked_key_ctx(buyer_output_tweaked_key_ctx);
-        self.swap_tx.input_sig_ctx.set_adaptor_point(*self.key_ctxs.adaptor_key_share()?.pub_key())?;
-        self.swap_tx.input_sig_ctx.set_tweaked_key_ctx(seller_output_tweaked_key_ctx.clone());
-        self.buyer_txs.warning.seller_input_sig_ctx.set_tweaked_key_ctx(seller_output_tweaked_key_ctx.clone());
-        self.seller_txs.warning.seller_input_sig_ctx.set_tweaked_key_ctx(seller_output_tweaked_key_ctx);
+        self.buyer_txs.warning.buyer_input_sig_ctx.set_tweaked_key_ctx(buyer_payout_tweaked_key_ctx.clone());
+        self.seller_txs.warning.buyer_input_sig_ctx.set_tweaked_key_ctx(buyer_payout_tweaked_key_ctx);
+        self.swap_tx.input_sig_ctx.set_adaptor_point(*self.keys.adaptor_key_share()?.pub_key())?;
+        self.swap_tx.input_sig_ctx.set_tweaked_key_ctx(seller_payout_tweaked_key_ctx.clone());
+        self.buyer_txs.warning.seller_input_sig_ctx.set_tweaked_key_ctx(seller_payout_tweaked_key_ctx.clone());
+        self.seller_txs.warning.seller_input_sig_ctx.set_tweaked_key_ctx(seller_payout_tweaked_key_ctx);
 
-        let [buyer_claim_merkle_root, seller_claim_merkle_root] = self.key_ctxs.claim_key_shares()?
+        let [buyer_claim_merkle_root, seller_claim_merkle_root] = self.keys.claim_key_shares()?
             .map(|p| script_paths::warning_escrow_merkle_root(&p.pub_key().to_public_key().into(), network));
-        let buyers_warning_output_tweaked_key_ctx = self.key_ctxs.seller_payout.with_taproot_tweak(
+        let buyers_warning_escrow_tweaked_key_ctx = self.keys.seller_payout_ctx.with_taproot_tweak(
             Some(&buyer_claim_merkle_root))?;
-        let sellers_warning_output_tweaked_key_ctx = self.key_ctxs.buyer_payout.with_taproot_tweak(
+        let sellers_warning_escrow_tweaked_key_ctx = self.keys.buyer_payout_ctx.with_taproot_tweak(
             Some(&seller_claim_merkle_root))?;
 
-        let buyers_warning_escrow_address = buyers_warning_output_tweaked_key_ctx.p2tr_address(network);
-        let sellers_warning_escrow_address = sellers_warning_output_tweaked_key_ctx.p2tr_address(network);
+        let buyers_warning_escrow_address = buyers_warning_escrow_tweaked_key_ctx.p2tr_address(network);
+        let sellers_warning_escrow_address = sellers_warning_escrow_tweaked_key_ctx.p2tr_address(network);
         self.buyer_txs.warning.builder.set_escrow_address(buyers_warning_escrow_address);
         self.seller_txs.warning.builder.set_escrow_address(sellers_warning_escrow_address);
 
-        self.buyer_txs.claim.input_sig_ctx.set_tweaked_key_ctx(buyers_warning_output_tweaked_key_ctx.clone());
-        self.seller_txs.redirect.input_sig_ctx.set_tweaked_key_ctx(buyers_warning_output_tweaked_key_ctx);
-        self.seller_txs.claim.input_sig_ctx.set_tweaked_key_ctx(sellers_warning_output_tweaked_key_ctx.clone());
-        self.buyer_txs.redirect.input_sig_ctx.set_tweaked_key_ctx(sellers_warning_output_tweaked_key_ctx);
+        self.buyer_txs.claim.input_sig_ctx.set_tweaked_key_ctx(buyers_warning_escrow_tweaked_key_ctx.clone());
+        self.seller_txs.redirect.input_sig_ctx.set_tweaked_key_ctx(buyers_warning_escrow_tweaked_key_ctx);
+        self.seller_txs.claim.input_sig_ctx.set_tweaked_key_ctx(sellers_warning_escrow_tweaked_key_ctx.clone());
+        self.buyer_txs.redirect.input_sig_ctx.set_tweaked_key_ctx(sellers_warning_escrow_tweaked_key_ctx);
         Ok(())
     }
 
@@ -612,20 +630,20 @@ impl TradeModel {
 
     pub fn get_my_private_key_share_for_peer_output(&self) -> Option<&Scalar> {
         // FIXME: Check that it's actually safe to release the funds at this point.
-        self.key_ctxs.peers_payout().my_key_share().ok()?.prv_key().ok()
+        self.keys.peers_payout_ctx().my_key_share().ok()?.prv_key().ok()
     }
 
     pub fn set_peer_private_key_share_for_my_output(&mut self, prv_key_share: Scalar) -> Result<()> {
-        self.key_ctxs.my_payout_mut().set_peers_prv_key(prv_key_share)?;
+        self.keys.my_payout_ctx_mut().set_peers_prv_key(prv_key_share)?;
         Ok(())
     }
 
     pub fn aggregate_private_keys_for_my_output(&mut self) -> Result<&Scalar> {
-        Ok(self.key_ctxs.my_payout_mut().aggregate_prv_key_shares()?)
+        Ok(self.keys.my_payout_ctx_mut().aggregate_prv_key_shares()?)
     }
 
     pub fn compute_signed_swap_tx(&mut self) -> Result<()> {
-        let adaptor_secret = (*self.key_ctxs.adaptor_key_share()?.prv_key()?).into();
+        let adaptor_secret = (*self.keys.adaptor_key_share()?.prv_key()?).into();
         self.swap_tx.builder
             .set_input_signature(self.swap_tx.input_sig_ctx.compute_taproot_signature(adaptor_secret)?)
             .compute_signed_tx()?;
@@ -641,35 +659,43 @@ impl TradeModel {
             let swap_tx_input = self.deposit_tx.builder.seller_payout()?;
             let input_signature = swap_tx.find_key_spend_signature(swap_tx_input)?;
             let adaptor_secret = self.swap_tx.input_sig_ctx.reveal_adaptor_secret(input_signature)?;
-            self.key_ctxs.buyer_payout.set_peers_prv_key(adaptor_secret)?;
+            self.keys.buyer_payout_ctx.set_peers_prv_key(adaptor_secret)?;
         }
         Ok(())
     }
 }
 
-impl KeyCtxs {
-    const fn my_payout_mut(&mut self) -> &mut KeyCtx {
-        if self.am_buyer { &mut self.buyer_payout } else { &mut self.seller_payout }
+impl Keys {
+    const fn my_payout_ctx_mut(&mut self) -> &mut KeyCtx {
+        if self.am_buyer { &mut self.buyer_payout_ctx } else { &mut self.seller_payout_ctx }
     }
 
-    const fn peers_payout(&self) -> &KeyCtx {
-        if self.am_buyer { &self.seller_payout } else { &self.buyer_payout }
+    const fn peers_payout_ctx(&self) -> &KeyCtx {
+        if self.am_buyer { &self.seller_payout_ctx } else { &self.buyer_payout_ctx }
     }
 
     fn adaptor_key_share(&self) -> Result<&KeyPair> {
         Ok(if self.am_buyer {
-            self.buyer_payout.peers_key_share()?
+            self.buyer_payout_ctx.peers_key_share()?
         } else {
-            self.buyer_payout.my_key_share()?
+            self.buyer_payout_ctx.my_key_share()?
         })
     }
 
     fn claim_key_shares(&self) -> Result<[&KeyPair; 2]> {
         Ok(if self.am_buyer {
-            [self.buyer_payout.my_key_share()?, self.seller_payout.peers_key_share()?]
+            [self.buyer_payout_ctx.my_key_share()?, self.seller_payout_ctx.peers_key_share()?]
         } else {
-            [self.buyer_payout.peers_key_share()?, self.seller_payout.my_key_share()?]
+            [self.buyer_payout_ctx.peers_key_share()?, self.seller_payout_ctx.my_key_share()?]
         })
+    }
+
+    fn multisig_script_keys(&self) -> Result<[&XOnlyPublicKey; 2]> {
+        (|| Some(if self.am_buyer {
+            [self.my_multisig_script_key.as_ref()?, self.peers_multisig_script_key.as_ref()?]
+        } else {
+            [self.peers_multisig_script_key.as_ref()?, self.my_multisig_script_key.as_ref()?]
+        }))().ok_or(ProtocolErrorKind::MissingScriptKey)
     }
 }
 
@@ -681,6 +707,8 @@ type Result<T, E = ProtocolErrorKind> = std::result::Result<T, E>;
 pub enum ProtocolErrorKind {
     #[error("missing trade wallet")]
     MissingTradeWallet,
+    #[error("missing script key")]
+    MissingScriptKey,
     #[error("insufficient redirection funds (available {available_msat:?} msat, used {used_msat:?} msat)")]
     InsufficientRedirectionFunds {
         available_msat: u64,

@@ -27,7 +27,7 @@ use crate::pb::walletrpc::{
     ConfEvent, ConfRequest, ListUnspentRequest, ListUnspentResponse, NewAddressRequest,
     NewAddressResponse, WalletBalanceRequest, WalletBalanceResponse, wallet_server,
 };
-use crate::protocol::{TRADE_MODELS, TradeModel, TradeModelStore as _};
+use crate::protocol::{ExchangedKeys, TRADE_MODELS, TradeModel, TradeModelStore as _};
 use crate::wallet::WalletService;
 
 #[derive(Debug, Default)]
@@ -39,12 +39,13 @@ impl musig_server::Musig for MusigImpl {
     async fn init_trade(&self, request: Request<PubKeySharesRequest>) -> Result<Response<PubKeySharesResponse>> {
         handle_request(request, move |request| {
             let mut trade_model = TradeModel::new(request.trade_id, request.my_role.try_proto_into()?);
-            trade_model.init_my_key_shares();
+            trade_model.init_my_key_shares()?;
             let my_key_shares = trade_model.get_my_key_shares()
                 .ok_or_else(|| Status::internal("missing key shares"))?;
             let response = PubKeySharesResponse {
-                buyer_output_pub_key_share: my_key_shares[0].pub_key().serialize().into(),
-                seller_output_pub_key_share: my_key_shares[1].pub_key().serialize().into(),
+                buyer_output_pub_key_share: my_key_shares.buyer_payout.serialize().into(),
+                seller_output_pub_key_share: my_key_shares.seller_payout.serialize().into(),
+                multisig_script_key: my_key_shares.multisig_script.serialize().into(),
                 current_block_height: 900_000,
             };
             TRADE_MODELS.add_trade_model(trade_model);
@@ -56,9 +57,11 @@ impl musig_server::Musig for MusigImpl {
     #[instrument(skip_all)]
     async fn get_nonce_shares(&self, request: Request<NonceSharesRequest>) -> Result<Response<NonceSharesMessage>> {
         handle_musig_request(request, move |request, trade_model| {
-            trade_model.set_peer_key_shares(
-                request.buyer_output_peers_pub_key_share.try_proto_into()?,
-                request.seller_output_peers_pub_key_share.try_proto_into()?);
+            trade_model.set_peer_key_shares(&ExchangedKeys {
+                buyer_payout: request.buyer_output_peers_pub_key_share.try_proto_into()?,
+                seller_payout: request.seller_output_peers_pub_key_share.try_proto_into()?,
+                multisig_script: request.peers_multisig_script_key.try_proto_into()?,
+            });
             trade_model.aggregate_key_shares()?;
             trade_model.set_trade_amount(
                 Amount::from_sat(request.trade_amount.check_in_signed_range()?));

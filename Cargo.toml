@@ -34,6 +34,8 @@ rust-2024-compatibility = "warn"
 unused-qualifications = "warn"
 # Most of the time, changing drop order is harmless ('rust-2024-compatibility' lint):
 tail_expr_drop_order = { level = "allow", priority = 1 }
+# Macros aren't usually exported and the 'expr' match widening is minor ('rust-2024-compatibility' lint):
+edition_2024_expr_fragment_specifier = { level = "allow", priority = 1 }
 
 [workspace.lints.clippy]
 pedantic = "warn"

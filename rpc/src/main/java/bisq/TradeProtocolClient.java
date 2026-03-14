@@ -86,6 +86,7 @@ public class TradeProtocolClient {
                 .setTradeId(sellerTradeId)
                 .setBuyerOutputPeersPubKeyShare(buyerPubKeyShareResponse.getBuyerOutputPubKeyShare())
                 .setSellerOutputPeersPubKeyShare(buyerPubKeyShareResponse.getSellerOutputPubKeyShare())
+                .setPeersMultisigScriptKey(buyerPubKeyShareResponse.getMultisigScriptKey())
                 .setDepositTxFeeRate(3_125)  // 12.5 sats per vbyte
                 .setPreparedTxFeeRate(2_500) // 10.0 sats per vbyte
                 .setTradeAmount(200_000)
@@ -101,6 +102,7 @@ public class TradeProtocolClient {
                 .setTradeId(buyerTradeId)
                 .setBuyerOutputPeersPubKeyShare(sellerPubKeyShareResponse.getBuyerOutputPubKeyShare())
                 .setSellerOutputPeersPubKeyShare(sellerPubKeyShareResponse.getSellerOutputPubKeyShare())
+                .setPeersMultisigScriptKey(sellerPubKeyShareResponse.getMultisigScriptKey())
                 .setDepositTxFeeRate(3_125)  // 12.5 sats per vbyte
                 .setPreparedTxFeeRate(2_500) // 10.0 sats per vbyte
                 .setTradeAmount(200_000)
@@ -179,6 +181,7 @@ public class TradeProtocolClient {
                 .setTradeId(buyerTradeId)
                 .setBuyerOutputPeersPubKeyShare(sellerPubKeyShareResponse.getBuyerOutputPubKeyShare())
                 .setSellerOutputPeersPubKeyShare(sellerPubKeyShareResponse.getSellerOutputPubKeyShare())
+                .setPeersMultisigScriptKey(sellerPubKeyShareResponse.getMultisigScriptKey())
                 .setDepositTxFeeRate(3_125)  // 12.5 sats per vbyte
                 .setPreparedTxFeeRate(2_500) // 10.0 sats per vbyte
                 .setTradeAmount(200_000)
@@ -194,6 +197,7 @@ public class TradeProtocolClient {
                 .setTradeId(sellerTradeId)
                 .setBuyerOutputPeersPubKeyShare(buyerPubKeyShareResponse.getBuyerOutputPubKeyShare())
                 .setSellerOutputPeersPubKeyShare(buyerPubKeyShareResponse.getSellerOutputPubKeyShare())
+                .setPeersMultisigScriptKey(buyerPubKeyShareResponse.getMultisigScriptKey())
                 .setDepositTxFeeRate(3_125)  // 12.5 sats per vbyte
                 .setPreparedTxFeeRate(2_500) // 10.0 sats per vbyte
                 .setTradeAmount(200_000)
