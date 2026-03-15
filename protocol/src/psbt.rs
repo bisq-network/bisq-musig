@@ -1,4 +1,5 @@
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::LazyLock;
 
 use bdk_wallet::bitcoin::amount::CheckedSum as _;
 use bdk_wallet::bitcoin::hashes::Hash as _;
@@ -7,16 +8,16 @@ use bdk_wallet::bitcoin::taproot::Signature;
 use bdk_wallet::bitcoin::transaction::Version;
 use bdk_wallet::bitcoin::{
     Address, Amount, FeeRate, Network, OutPoint, Psbt, ScriptBuf, Sequence, TapSighashType,
-    Transaction, TxIn, TxOut, Weight, Witness, XOnlyPublicKey, absolute, psbt, script,
+    Transaction, TxIn, TxOut, Weight, Witness, XOnlyPublicKey, absolute, psbt, script, secp256k1,
 };
 use bdk_wallet::miniscript::{Descriptor, ToPublicKey as _};
-use bdk_wallet::{KeychainKind, TxOrdering, Wallet};
+use bdk_wallet::{KeychainKind, SignOptions, TxOrdering, Wallet};
 use rand::{RngCore, SeedableRng as _};
 use rand_chacha::ChaCha20Rng;
 
 use crate::receiver::Receiver;
 use crate::swap::Swap as _;
-use crate::transaction::{LIBSECP256K1_CTX, Result, TransactionErrorKind, TxOutput};
+use crate::transaction::{Result, TransactionErrorKind, TxOutput};
 
 // We disallow half-deposit PSBTs with more than half the single-byte VarInt-representable limit
 // number (252) of inputs or outputs, as otherwise merging the peer's PSBT could cause it to tip
@@ -25,6 +26,9 @@ use crate::transaction::{LIBSECP256K1_CTX, Result, TransactionErrorKind, TxOutpu
 //  the boundary of what would guarantee a standard deposit tx if both sides maxed them out.
 pub const MAX_ALLOWED_HALF_PSBT_INPUT_NUM: usize = 126;
 pub const MAX_ALLOWED_HALF_PSBT_OUTPUT_NUM: usize = 126;
+
+pub(crate) static LIBSECP256K1_CTX: LazyLock<secp256k1::Secp256k1<secp256k1::All>> =
+    LazyLock::new(secp256k1::Secp256k1::new);
 
 pub trait TradeWallet {
     fn network(&self) -> Network;
@@ -114,7 +118,6 @@ impl<Cs: Iterator<Item=TxOutput>, As: Iterator<Item=Address>> TradeWallet for Mo
             });
             inputs.push(psbt::Input {
                 witness_utxo: Some(new_coin.prevout),
-                tap_internal_key: new_coin.internal_key,
                 ..psbt::Input::default()
             });
         }
@@ -149,10 +152,9 @@ impl<Cs: Iterator<Item=TxOutput>, As: Iterator<Item=Address>> TradeWallet for Mo
 //noinspection SpellCheckingInspection
 pub fn mock_buyer_trade_wallet() -> impl TradeWallet {
     let funding_coins = [
-        TxOutput::mock_1_btc_coin("658654575bbbeb46e965bd9eb37fd3be550a7e0fa2d64bc5f218763155602300:0",
-            "0000000000000000000000000000000000000000000000000000000000000001"),
-    ];
-    let signature_map = signature_map(&funding_coins, &[
+        "658654575bbbeb46e965bd9eb37fd3be550a7e0fa2d64bc5f218763155602300:0",
+    ].map(TxOutput::mock_1_btc_coin).into_iter();
+    let signature_map = signature_map(funding_coins.as_slice(), &[
         "f631ae99b4743315b237af9c48ae1f9bb87b6c5404e84d8e3907269218d1bba5\
          4c397158aa233fd3f2227f4dc46922ef62eb8cc39a06b7a339b33e2401d512c1",
     ]);
@@ -163,8 +165,8 @@ pub fn mock_buyer_trade_wallet() -> impl TradeWallet {
         "bcrt1pzvynlely05x82u40cts3znctmvyskue74xa5zwy0t5ueuv92726szpgpaa",
     ].map(|a| a.parse::<Address<_>>()
         .expect("hardcoded addresses should be valid").assume_checked()).into_iter();
-    let internal_key = funding_coins[0].internal_key;
-    let funding_coins = funding_coins.into_iter();
+    let internal_key =
+        "0000000000000000000000000000000000000000000000000000000000000001".parse().ok();
 
     MockTradeWallet { funding_coins, new_addresses, signature_map, internal_key }
 }
@@ -172,11 +174,9 @@ pub fn mock_buyer_trade_wallet() -> impl TradeWallet {
 //noinspection SpellCheckingInspection
 pub fn mock_seller_trade_wallet() -> impl TradeWallet {
     let funding_coins = [
-        TxOutput::mock_1_btc_coin("4a5ecc72ec8db78f11c6785f560a13f6f32eac66d160a8157d30956695ccf523:0",
-            "0000000000000000000000000000000000000000000000000000000000000002"),
-        TxOutput::mock_1_btc_coin("373b3ca0b9135e9649672772d4659bb5597d06b4694f1fbdbece285823fde0a3:1",
-            "0000000000000000000000000000000000000000000000000000000000000003"),
-    ];
+        "4a5ecc72ec8db78f11c6785f560a13f6f32eac66d160a8157d30956695ccf523:0",
+        "373b3ca0b9135e9649672772d4659bb5597d06b4694f1fbdbece285823fde0a3:1",
+    ].map(TxOutput::mock_1_btc_coin).into_iter();
     let signature_map = signature_map(funding_coins.as_slice(), &[
         "2376111ed79dac9ff6f2d85dfe57d142f6075f4df9381aeab87a941477425224\
          7555f791ddf82354a3d73fa24955f6c5330ae44b2b238fa74be2eee9a46fcb72",
@@ -191,8 +191,8 @@ pub fn mock_seller_trade_wallet() -> impl TradeWallet {
         "bcrt1pe3kcs085e8qej9aqqx6qryv2qsfxzywy9xd8pryzwemv2dghdqgscylr69",
     ].map(|a| a.parse::<Address<_>>()
         .expect("hardcoded addresses should be valid").assume_checked()).into_iter();
-    let internal_key = funding_coins[0].internal_key;
-    let funding_coins = funding_coins.into_iter();
+    let internal_key =
+        "0000000000000000000000000000000000000000000000000000000000000002".parse().ok();
 
     MockTradeWallet { funding_coins, new_addresses, signature_map, internal_key }
 }
@@ -266,7 +266,7 @@ impl TradeWallet for Wallet {
             return Err(TransactionErrorKind::InvalidPsbt);
         }
         let mut psbt_copy = psbt.clone();
-        self.sign(&mut psbt_copy, bdk_wallet::SignOptions::default())?;
+        self.sign(&mut psbt_copy, SignOptions { trust_witness_utxo: true, ..SignOptions::default() })?;
         for i in 0..psbt.inputs.len() {
             if is_selected(&psbt.unsigned_tx.input[i].previous_output) {
                 psbt.inputs[i].final_script_sig = psbt_copy.inputs[i].final_script_sig.take();
@@ -291,6 +291,9 @@ impl Redact for Psbt {
 impl Redact for psbt::Input {
     fn redact_sensitive_fields(&mut self) {
         self.tap_key_origins.clear();
+        self.tap_scripts.clear();
+        self.tap_internal_key = None;
+        self.tap_merkle_root = None;
     }
 }
 
@@ -298,6 +301,7 @@ impl Redact for psbt::Output {
     fn redact_sensitive_fields(&mut self) {
         self.tap_key_origins.clear();
         self.tap_internal_key = None;
+        self.tap_tree = None;
     }
 }
 
@@ -354,7 +358,6 @@ fn input_coin(psbt: &Psbt, index: usize) -> Option<TxOutput> {
     Some(TxOutput {
         outpoint: psbt.unsigned_tx.input[index].previous_output,
         prevout: psbt.inputs[index].witness_utxo.clone()?,
-        internal_key: psbt.inputs[index].tap_internal_key,
     })
 }
 

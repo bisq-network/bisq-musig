@@ -1,6 +1,4 @@
 use std::collections::BTreeSet;
-use std::str::FromStr as _;
-use std::sync::LazyLock;
 
 use bdk_wallet::bitcoin::amount::CheckedSum as _;
 use bdk_wallet::bitcoin::psbt::ExtractTxError;
@@ -8,9 +6,8 @@ use bdk_wallet::bitcoin::sighash::{Prevouts, SighashCache};
 use bdk_wallet::bitcoin::taproot::{Signature, TAPROOT_ANNEX_PREFIX};
 use bdk_wallet::bitcoin::transaction::Version;
 use bdk_wallet::bitcoin::{
-    Address, Amount, FeeRate, Network, OutPoint, Psbt, ScriptBuf, Sequence, TapSighash,
-    TapSighashType, Transaction, TxIn, TxOut, Txid, Weight, Witness, XOnlyPublicKey, absolute,
-    relative, secp256k1,
+    Address, Amount, FeeRate, Network, OutPoint, Psbt, Sequence, TapSighash, TapSighashType,
+    Transaction, TxIn, TxOut, Txid, Weight, Witness, absolute, relative, script,
 };
 use paste::paste;
 use rand::RngCore;
@@ -38,9 +35,6 @@ pub const ANCHOR_AMOUNT: Amount = Amount::from_sat(330);
 pub const SIGNED_FORWARDING_TX_WEIGHT: Weight = Weight::from_wu(444);
 pub const SIGNED_WARNING_TX_WEIGHT: Weight = Weight::from_wu(846);
 pub const SIGNED_REDIRECT_TX_BASE_WEIGHT: Weight = SIGNED_FORWARDING_TX_WEIGHT;
-
-pub(crate) static LIBSECP256K1_CTX: LazyLock<secp256k1::Secp256k1<secp256k1::All>> =
-    LazyLock::new(secp256k1::Secp256k1::new);
 
 pub trait NetworkParams {
     fn warning_lock_time(&self) -> LockTime;
@@ -108,40 +102,37 @@ macro_rules! make_getter_setter {
 pub struct TxOutput {
     pub outpoint: OutPoint,
     pub prevout: TxOut,
-    pub(crate) internal_key: Option<XOnlyPublicKey>,
 }
 
 impl TxOutput {
-    pub const fn new(outpoint: OutPoint, prevout: TxOut) -> Self {
-        Self { outpoint, prevout, internal_key: None }
-    }
+    pub const fn new(outpoint: OutPoint, prevout: TxOut) -> Self { Self { outpoint, prevout } }
 
     pub(crate) fn estimated_input_weight(&self) -> Option<Weight> {
-        Some(Weight::from_wu(match (&self.prevout.script_pubkey, self.internal_key) {
-            // Assumes default sighash type:
+        Some(Weight::from_wu(match &self.prevout.script_pubkey {
+            // Assumes a keyspend with default sighash type:
+            // NOTE: We're trusting the peer to make only keyspends for P2TR Deposit inputs, since
+            //  they should never be using the script paths of the outputs of previous trades (and
+            //  their keychain addresses are keyspend-only anyway). To actually enforce a bound on
+            //  the satisfaction weight would leak metadata and lead to consistent fee overpayment.
+            //  (The worst they can do is cause the Deposit Tx to get stuck, which is impossible to
+            //  prevent without additionally checking the entire ancestor tree of unconfirmed txs.)
             // weight = 230 = 4 * (36 + 1 + 4) (non-witness part) + 2 + 64 (signature)
-            (s, Some(k)) if s.is_p2tr() && *s == Self::keyspend_only_spk(k) => 230,
+            s if s.is_p2tr() => 230,
             // Assumes low-R nonce grinding:
             // weight = 271 = 4 * (36 + 1 + 4) (non-witness part) + 3 + 33 (pubkey) + 71 (signature)
-            (s, None) if s.is_p2wpkh() => 271,
+            s if s.is_p2wpkh() => 271,
             // Other spk types are forbidden, as they lead to either tx malleability or an
             // arbitrarily long and unstructured witness program, or no standard spends:
             _ => return None
         }))
     }
 
-    pub(crate) fn mock_1_btc_coin(outpoint: &'static str, internal_key: &'static str) -> Self {
-        let internal_key = XOnlyPublicKey::from_str(internal_key)
-            .expect("for mocking only; assumed valid X-only pubkey hex str");
+    pub(crate) fn mock_1_btc_coin(outpoint: &'static str) -> Self {
+        let script_pubkey = script::Builder::new().push_int(1).push_slice([0; 32]).into_script();
         Self {
             outpoint: outpoint.parse().expect("for mocking only; assumed valid outpoint str"),
-            prevout: TxOut { value: Amount::ONE_BTC, script_pubkey: Self::keyspend_only_spk(internal_key) },
-            internal_key: Some(internal_key),
+            prevout: TxOut { value: Amount::ONE_BTC, script_pubkey },
         }
-    }
-
-    fn keyspend_only_spk(internal_key: XOnlyPublicKey) -> ScriptBuf {
-        ScriptBuf::new_p2tr(&*LIBSECP256K1_CTX, internal_key, None)
     }
 }
 
