@@ -1520,6 +1520,7 @@ dependencies = [
  "hex",
  "testenv",
  "tokio",
+ "tokio-stream",
  "zeromq",
 ]
 

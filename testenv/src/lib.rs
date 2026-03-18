@@ -169,8 +169,8 @@ impl TestEnv {
     }
 
     /// ZMQ socket for raw transaction notifications (set when created via [`enable_zmq`](Self::enable_zmq)).
-    pub fn zmq_pub_raw_tx_socket(&self) -> Option<SocketAddrV4> {
-        self.bitcoind.params.zmq_pub_raw_tx_socket
+    pub fn zmq_pub_raw_tx_socket(&self) -> Option<String> {
+        self.bitcoind.params.zmq_pub_raw_tx_socket.map(|socket| format!("tcp://{socket}"))
     }
 
     /// ZMQ socket for raw block notifications (set when created via [`enable_zmq`](Self::enable_zmq)).
@@ -242,7 +242,7 @@ impl TestEnv {
             explorer_process: None,
             container_name: None,
             explorer_port: None,
-            bitcoin_rpc_pwd
+            bitcoin_rpc_pwd,
         };
         tracing::info!("Bitcoin regtest environment ready!");
         Ok(test_env)
@@ -307,7 +307,7 @@ impl TestEnv {
 
     pub fn debug_tx(&self, txid: Txid) {
         if let Some(port) = self.explorer_port {
-            println!("explorer tx: http://127.0.0.1:{port}/tx/{txid}");
+            tracing::info!("explorer tx: http://127.0.0.1:{port}/tx/{txid}");
         }
     }
 
