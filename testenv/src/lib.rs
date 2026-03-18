@@ -7,8 +7,8 @@ use std::time::Duration;
 use anyhow::{Context as _, Result};
 use bdk_bitcoind_rpc::bitcoincore_rpc;
 use bdk_bitcoind_rpc::bitcoincore_rpc::{Auth, RpcApi as _};
-use bdk_electrum::BdkElectrumClient;
 use bdk_electrum::bdk_core::bitcoin::{KnownHrp, XOnlyPublicKey};
+use bdk_electrum::BdkElectrumClient;
 use bdk_wallet::bitcoin::address::NetworkChecked;
 use bdk_wallet::bitcoin::key::Secp256k1;
 use bdk_wallet::bitcoin::secp256k1::All;
@@ -16,7 +16,7 @@ use bdk_wallet::bitcoin::{Address, Amount, BlockHash, Network, Transaction, Txid
 use bmp_tracing::tracing;
 use electrsd::corepc_node::Node;
 use electrsd::electrum_client::{Client, ElectrumApi};
-use electrsd::{ElectrsD, corepc_node};
+use electrsd::{corepc_node, ElectrsD};
 use hmac::{Hmac, Mac as _};
 use rand::{Rng as _, RngCore as _};
 use secp::Scalar;
@@ -36,6 +36,7 @@ pub struct TestEnv {
     _tmp_dir: TempDir,
     explorer_process: Option<std::process::Child>,
     container_name: Option<String>,
+    explorer_port: Option<u16>,
     bitcoin_rpc_pwd: String,
 }
 
@@ -240,7 +241,8 @@ impl TestEnv {
             _tmp_dir: tmp_dir,
             explorer_process: None,
             container_name: None,
-            bitcoin_rpc_pwd
+            explorer_port: None,
+            bitcoin_rpc_pwd,
         };
         tracing::info!("Bitcoin regtest environment ready!");
         Ok(test_env)
@@ -287,6 +289,7 @@ impl TestEnv {
 
         self.explorer_process = Some(child);
         self.container_name = Some(container_name);
+        self.explorer_port = Some(browser_port);
 
         // Drop the listener to free the port for the container
         drop(listener);
@@ -300,6 +303,12 @@ impl TestEnv {
             self.container_name.as_ref().unwrap()
         );
         Ok(())
+    }
+
+    pub fn debug_tx(&self, txid: Txid) {
+        if let Some(port) = self.explorer_port {
+            tracing::info!("explorer tx: http://127.0.0.1:{port}/tx/{txid}");
+        }
     }
 
     pub fn bitcoin_rpc_port(&self) -> u16 {
