@@ -197,8 +197,9 @@ fn test_broadcast_transaction_three() -> anyhow::Result<()> {
     assert_eq!(wallet.balance(), new_balance);
 
     // Reload the wallet by encrypting it to make sure the state changes are persisted
-    let enc_wallet = wallet.encrypt("hello")?;
-    let mut enc_wallet = enc_wallet.decrypt("hello")?;
+    let mut enc_wallet = wallet.encrypt("hello")?;
+    enc_wallet.decrypt("hello")?;
+
     env.fund_address(&main_wallet_addr, Amount::from_sat(10_000))?;
     env.mine_block()?;
     enc_wallet.sync_all(data_source)?;
@@ -308,8 +309,8 @@ async fn test_cbf_persistence() -> anyhow::Result<()> {
     assert_eq!(loaded_wallet.balance(), Amount::from_sat(230_000));
 
     // Encrypt the wallet then reload it and check for balance state
-    let encrypted_wallet = loaded_wallet.encrypt("secret123")?;
-    let mut encrypted_wallet = encrypted_wallet.decrypt("secret123")?;
+    let mut encrypted_wallet = loaded_wallet.encrypt("secret123")?;
+    encrypted_wallet.decrypt("secret123")?;
 
     env.fund_address(&addr, Amount::from_sat(70_000))?;
     env.mine_block()?;
