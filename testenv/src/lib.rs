@@ -169,8 +169,11 @@ impl TestEnv {
     }
 
     /// ZMQ socket for raw transaction notifications (set when created via [`enable_zmq`](Self::enable_zmq)).
-    pub fn zmq_pub_raw_tx_socket(&self) -> Option<SocketAddrV4> {
-        self.bitcoind.params.zmq_pub_raw_tx_socket
+    pub fn zmq_pub_raw_tx_socket(&self) -> Option<String> {
+        self.bitcoind
+            .params
+            .zmq_pub_raw_tx_socket
+            .map(|socket| format!("tcp://{socket}"))
     }
 
     /// ZMQ socket for raw block notifications (set when created via [`enable_zmq`](Self::enable_zmq)).
