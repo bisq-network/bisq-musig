@@ -323,7 +323,8 @@ impl ProtocolWalletApi for BMPWallet<Connection> {
 }
 
 pub trait WalletApi {
-    const DB_PATH: &str;
+    const DB_NAME: &str;
+    const ENC_DB_NAME: &str;
     const SEEDS_TABLE_NAME: &'static str;
     const IMPORTED_KEYS_TABLE_NAME: &'static str;
 
@@ -343,7 +344,7 @@ pub trait WalletApi {
     fn balance(&self) -> Amount;
 
     fn encrypt(self, password: &str) -> anyhow::Result<BMPWallet<Connection>>;
-    fn decrypt(self, password: &str) -> anyhow::Result<BMPWallet<Connection>>;
+    fn decrypt(&self, password: &str) -> anyhow::Result<()>;
 
     fn persist(&mut self) -> anyhow::Result<bool>;
 
@@ -373,7 +374,8 @@ pub trait WalletApi {
 impl WalletApi for BMPWallet<Connection> {
     const SEEDS_TABLE_NAME: &'static str = "bmp_seeds";
     const IMPORTED_KEYS_TABLE_NAME: &'static str = "bmp_imported_keys";
-    const DB_PATH: &str = "bmp_bdk_wallet.db3";
+    const DB_NAME: &str = "bmp_bdk_wallet.db3";
+    const ENC_DB_NAME: &str = "bmp_bdk_encrypted.db3";
 
     fn persist(&mut self) -> anyhow::Result<bool> {
         // Persist imported keys and then persist staged changes from ChangeSet
@@ -610,7 +612,7 @@ impl WalletApi for BMPWallet<Connection> {
             .build(network)
             .expect("Internal description generation should not fail");
 
-        let mut db = Connection::new(Self::DB_PATH)?;
+        let mut db = Connection::new(Self::DB_NAME)?;
 
         let wallet = Wallet::create(descriptor, change_descriptor)
             .network(network)
@@ -641,13 +643,13 @@ impl WalletApi for BMPWallet<Connection> {
     // This will also load the imported keys
     fn load_wallet(network: Network, password: Option<&str>) -> anyhow::Result<Self> {
         let mut db = if let Some(password) = password {
-            let salt = get_salt(Self::DB_PATH)?;
+            let salt = get_salt(Self::DB_NAME)?;
             let decrypt_key = derive_key_from_password(password, &salt)?;
-            let conn = Connection::open(Self::DB_PATH)?;
+            let conn = Connection::open(Self::ENC_DB_NAME)?;
             conn.pragma_update(None, "key", decrypt_key)?;
             conn
         } else {
-            Connection::open(Self::DB_PATH)?
+            Connection::open(Self::DB_NAME)?
         };
 
         let wallet_opt = Wallet::load().check_network(network).load_wallet(&mut db)?;
@@ -688,26 +690,21 @@ impl WalletApi for BMPWallet<Connection> {
         Connection::get_seed_phrase(&self.db, Self::SEEDS_TABLE_NAME)
     }
 
-    fn decrypt(self, password: &str) -> anyhow::Result<BMPWallet<Connection>> {
-        let salt = get_salt(Self::DB_PATH)?;
-
+    /// The decryption is done on the active connection which holds the decryption key in memory.
+    /// Without setting the right `pragma` value when connected to the database, an attacker
+    /// will not be able to access the database. Even when the active connection has decrypted the
+    /// file, on file system the database is still encrypted and can't be accessed.
+    /// The decryption is done only to the active connection
+    fn decrypt(&self, password: &str) -> anyhow::Result<()> {
+        let salt = get_salt(Self::DB_NAME)?;
         let decrypt_key = derive_key_from_password(password, &salt)?;
-
-        let encrypted_conn = Connection::open(Self::DB_PATH)?;
-        encrypted_conn.pragma_update(None, "key", decrypt_key)?;
-
-        Ok(Self {
-            wallet: self.wallet,
-            imported_keys: self.imported_keys,
-            imported_balance: self.imported_balance,
-            signers_loaded: false,
-            db: encrypted_conn,
-        })
+        self.db.pragma_update(None, "key", &decrypt_key)?;
+        Ok(())
     }
 
     fn encrypt(self, password: &str) -> anyhow::Result<BMPWallet<Connection>> {
         // Derive encryption key from password
-        let salt_path = format!("{}.salt", Self::DB_PATH);
+        let salt_path = format!("{}.salt", Self::DB_NAME);
 
         let mut salt = [0u8; 16];
         rand::rng().fill_bytes(&mut salt);
@@ -715,20 +712,17 @@ impl WalletApi for BMPWallet<Connection> {
         fs::write(&salt_path, general_purpose::STANDARD.encode(salt))?;
         let enc_key = derive_key_from_password(password, &salt)?;
 
-        let encrypted_conn = Connection::open("bmp_encrypted.db3")?;
+        let encrypted_conn = Connection::open(Self::ENC_DB_NAME)?;
         encrypted_conn.pragma_update(None, "key", &enc_key)?;
 
         let mut sql = format!(
             "ATTACH DATABASE '{}' AS encrypted_db KEY '{}';",
-            "bmp_encrypted.db3", enc_key
+            Self::ENC_DB_NAME, enc_key
         );
         sql += " SELECT sqlcipher_export('encrypted_db'); DETACH DATABASE encrypted_db;";
 
         self.db.execute_batch(&sql)?;
-
-        // Rename the bmp_encrypted.db3 to bmp_wallet.db3
-        fs::remove_file(Self::DB_PATH)?;
-        fs::rename("bmp_encrypted.db3", Self::DB_PATH)?;
+        fs::remove_file(Self::DB_NAME)?;
 
         Ok(Self {
             wallet: self.wallet,
