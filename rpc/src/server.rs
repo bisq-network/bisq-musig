@@ -4,30 +4,30 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::task::{Context, Poll};
 
-use bdk_wallet::bitcoin::{consensus, Amount, FeeRate};
+use bdk_wallet::bitcoin::{Amount, FeeRate, consensus};
 use bdk_wallet::serde_json;
 use drop_stream::DropStreamExt as _;
 use futures_util::stream::{self, BoxStream, Stream, StreamExt as _, TryStream, TryStreamExt as _};
 use serde::Serialize;
 use tokio::time::{self, Duration};
 use tonic::{Request, Response, Result, Status};
-use tracing::{debug, error, info, instrument, trace, Span};
+use tracing::{Span, debug, error, info, instrument, trace};
 
 use crate::pb::convert::{CheckInSignedRange as _, TryProtoInto};
 pub use crate::pb::musigrpc::musig_server::MusigServer;
 use crate::pb::musigrpc::{
-    musig_server, CloseTradeRequest, CloseTradeResponse, DepositPsbt, DepositTxSignatureRequest,
+    CloseTradeRequest, CloseTradeResponse, DepositPsbt, DepositTxSignatureRequest,
     NonceSharesMessage, NonceSharesRequest, PartialSignaturesMessage, PartialSignaturesRequest,
     PubKeySharesRequest, PubKeySharesResponse, PublishDepositTxRequest,
     SubscribeTxConfirmationStatusRequest, SwapTxSignatureRequest, SwapTxSignatureResponse,
-    TxConfirmationStatus,
+    TxConfirmationStatus, musig_server,
 };
 pub use crate::pb::walletrpc::wallet_server::WalletServer;
 use crate::pb::walletrpc::{
-    wallet_server, ConfEvent, ConfRequest, ListUnspentRequest, ListUnspentResponse,
-    NewAddressRequest, NewAddressResponse, WalletBalanceRequest, WalletBalanceResponse,
+    ConfEvent, ConfRequest, ListUnspentRequest, ListUnspentResponse, NewAddressRequest,
+    NewAddressResponse, WalletBalanceRequest, WalletBalanceResponse, wallet_server,
 };
-use crate::protocol::{TradeModel, TradeModelStore as _, TRADE_MODELS};
+use crate::protocol::{ExchangedKeys, TRADE_MODELS, TradeModel, TradeModelStore as _};
 use crate::wallet::WalletService;
 
 #[derive(Debug, Default)]
@@ -39,12 +39,13 @@ impl musig_server::Musig for MusigImpl {
     async fn init_trade(&self, request: Request<PubKeySharesRequest>) -> Result<Response<PubKeySharesResponse>> {
         handle_request(request, move |request| {
             let mut trade_model = TradeModel::new(request.trade_id, request.my_role.try_proto_into()?);
-            trade_model.init_my_key_shares();
+            trade_model.init_my_key_shares()?;
             let my_key_shares = trade_model.get_my_key_shares()
                 .ok_or_else(|| Status::internal("missing key shares"))?;
             let response = PubKeySharesResponse {
-                buyer_output_pub_key_share: my_key_shares[0].pub_key().serialize().into(),
-                seller_output_pub_key_share: my_key_shares[1].pub_key().serialize().into(),
+                buyer_output_pub_key_share: my_key_shares.buyer_payout.serialize().into(),
+                seller_output_pub_key_share: my_key_shares.seller_payout.serialize().into(),
+                multisig_script_key: my_key_shares.multisig_script.serialize().into(),
                 current_block_height: 900_000,
             };
             TRADE_MODELS.add_trade_model(trade_model);
@@ -56,9 +57,11 @@ impl musig_server::Musig for MusigImpl {
     #[instrument(skip_all)]
     async fn get_nonce_shares(&self, request: Request<NonceSharesRequest>) -> Result<Response<NonceSharesMessage>> {
         handle_musig_request(request, move |request, trade_model| {
-            trade_model.set_peer_key_shares(
-                request.buyer_output_peers_pub_key_share.try_proto_into()?,
-                request.seller_output_peers_pub_key_share.try_proto_into()?);
+            trade_model.set_peer_key_shares(&ExchangedKeys {
+                buyer_payout: request.buyer_output_peers_pub_key_share.try_proto_into()?,
+                seller_payout: request.seller_output_peers_pub_key_share.try_proto_into()?,
+                multisig_script: request.peers_multisig_script_key.try_proto_into()?,
+            });
             trade_model.aggregate_key_shares()?;
             trade_model.set_trade_amount(
                 Amount::from_sat(request.trade_amount.check_in_signed_range()?));

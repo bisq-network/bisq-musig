@@ -1,10 +1,12 @@
 use bdk_wallet::bitcoin::address::NetworkUnchecked;
 use bdk_wallet::bitcoin::hashes::Hash as _;
-use bdk_wallet::bitcoin::{consensus, Address, Amount, Psbt, TapSighash, Transaction, Txid};
+use bdk_wallet::bitcoin::{
+    Address, Amount, Psbt, TapSighash, Transaction, Txid, XOnlyPublicKey, consensus,
+};
 use bdk_wallet::chain::ChainPosition;
 use bdk_wallet::{Balance, LocalOutput};
-use musig2::secp::{MaybeScalar, Point, Scalar};
 use musig2::PubNonce;
+use musig2::secp::{MaybeScalar, Point, Scalar};
 use prost::UnknownEnumValue;
 use protocol::receiver::Receiver;
 use tonic::{Result, Status};
@@ -23,9 +25,9 @@ use crate::wallet::TxConfidence;
 
 pub(crate) mod hex {
     use serde::Serializer;
+    use serde_with::SerializeAs;
     use serde_with::formats::Lowercase;
     use serde_with::hex::Hex;
-    use serde_with::SerializeAs;
 
     pub struct ByteReversedHex;
 
@@ -60,10 +62,10 @@ pub trait TryProtoInto<T> {
 }
 
 macro_rules! impl_try_proto_into_for_slice {
-    ($into_type:ty, $err_msg:literal) => {
+    ($into_type:ty, $try_from_fn:expr, $err_msg:literal) => {
         impl TryProtoInto<$into_type> for &[u8] {
             fn try_proto_into(self) -> Result<$into_type> {
-                self.try_into().map_err(|e| {
+                $try_from_fn(self).map_err(|e| {
                     Status::invalid_argument(format!("could not decode {}: {e}", $err_msg))
                 })
             }
@@ -71,38 +73,16 @@ macro_rules! impl_try_proto_into_for_slice {
     };
 }
 
-impl_try_proto_into_for_slice!(Point, "nonzero point");
-impl_try_proto_into_for_slice!(PubNonce, "pub nonce");
-impl_try_proto_into_for_slice!(Scalar, "nonzero scalar");
-impl_try_proto_into_for_slice!(MaybeScalar, "scalar");
+impl_try_proto_into_for_slice!(Point, Point::try_from, "nonzero point");
+impl_try_proto_into_for_slice!(PubNonce, PubNonce::try_from, "pub nonce");
+impl_try_proto_into_for_slice!(Scalar, Scalar::try_from, "nonzero scalar");
+impl_try_proto_into_for_slice!(MaybeScalar, MaybeScalar::try_from, "scalar");
 
-impl TryProtoInto<Txid> for &[u8] {
-    fn try_proto_into(self) -> Result<Txid> {
-        Txid::from_slice(self)
-            .map_err(|e| Status::invalid_argument(format!("could not decode txid: {e}")))
-    }
-}
-
-impl TryProtoInto<TapSighash> for &[u8] {
-    fn try_proto_into(self) -> Result<TapSighash> {
-        TapSighash::from_slice(self)
-            .map_err(|e| Status::invalid_argument(format!("could not decode sighash: {e}")))
-    }
-}
-
-impl TryProtoInto<Transaction> for &[u8] {
-    fn try_proto_into(self) -> Result<Transaction> {
-        consensus::deserialize(self)
-            .map_err(|e| Status::invalid_argument(format!("could not decode transaction: {e}")))
-    }
-}
-
-impl TryProtoInto<Psbt> for &[u8] {
-    fn try_proto_into(self) -> Result<Psbt> {
-        Psbt::deserialize(self)
-            .map_err(|e| Status::invalid_argument(format!("could not decode PSBT: {e}")))
-    }
-}
+impl_try_proto_into_for_slice!(Txid, Txid::from_slice, "txid");
+impl_try_proto_into_for_slice!(TapSighash, TapSighash::from_slice, "sighash");
+impl_try_proto_into_for_slice!(XOnlyPublicKey, XOnlyPublicKey::from_slice, "x-only pubkey");
+impl_try_proto_into_for_slice!(Transaction, consensus::deserialize, "transaction");
+impl_try_proto_into_for_slice!(Psbt, Psbt::deserialize, "PSBT");
 
 impl TryProtoInto<Role> for i32 {
     fn try_proto_into(self) -> Result<Role> {

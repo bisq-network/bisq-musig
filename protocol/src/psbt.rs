@@ -1,4 +1,5 @@
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::LazyLock;
 
 use bdk_wallet::bitcoin::amount::CheckedSum as _;
 use bdk_wallet::bitcoin::hashes::Hash as _;
@@ -7,9 +8,10 @@ use bdk_wallet::bitcoin::taproot::Signature;
 use bdk_wallet::bitcoin::transaction::Version;
 use bdk_wallet::bitcoin::{
     Address, Amount, FeeRate, Network, OutPoint, Psbt, ScriptBuf, Sequence, TapSighashType,
-    Transaction, TxIn, TxOut, Weight, Witness, absolute, psbt, script,
+    Transaction, TxIn, TxOut, Weight, Witness, XOnlyPublicKey, absolute, psbt, script, secp256k1,
 };
-use bdk_wallet::{KeychainKind, TxOrdering, Wallet};
+use bdk_wallet::miniscript::{Descriptor, ToPublicKey as _};
+use bdk_wallet::{KeychainKind, SignOptions, TxOrdering, Wallet};
 use rand::{RngCore, SeedableRng as _};
 use rand_chacha::ChaCha20Rng;
 
@@ -25,10 +27,15 @@ use crate::transaction::{Result, TransactionErrorKind, TxOutput};
 pub const MAX_ALLOWED_HALF_PSBT_INPUT_NUM: usize = 126;
 pub const MAX_ALLOWED_HALF_PSBT_OUTPUT_NUM: usize = 126;
 
+pub(crate) static LIBSECP256K1_CTX: LazyLock<secp256k1::Secp256k1<secp256k1::All>> =
+    LazyLock::new(secp256k1::Secp256k1::new);
+
 pub trait TradeWallet {
     fn network(&self) -> Network;
 
     fn new_address(&mut self) -> Result<Address>;
+
+    fn new_internal_key(&mut self) -> Result<XOnlyPublicKey>;
 
     fn create_half_deposit_psbt(
         &mut self,
@@ -45,6 +52,7 @@ struct MockTradeWallet<Cs: Iterator<Item=TxOutput>, As: Iterator<Item=Address>> 
     funding_coins: Cs,
     new_addresses: As,
     signature_map: BTreeMap<OutPoint, Signature>,
+    internal_key: Option<XOnlyPublicKey>,
 }
 
 impl<Cs: Iterator<Item=TxOutput>, As: Iterator<Item=Address>> TradeWallet for MockTradeWallet<Cs, As> {
@@ -52,6 +60,10 @@ impl<Cs: Iterator<Item=TxOutput>, As: Iterator<Item=Address>> TradeWallet for Mo
 
     fn new_address(&mut self) -> Result<Address> {
         self.new_addresses.next().ok_or(TransactionErrorKind::MissingAddress)
+    }
+
+    fn new_internal_key(&mut self) -> Result<XOnlyPublicKey> {
+        self.internal_key.take().ok_or(TransactionErrorKind::MissingAddress)
     }
 
     fn create_half_deposit_psbt(
@@ -78,6 +90,7 @@ impl<Cs: Iterator<Item=TxOutput>, As: Iterator<Item=Address>> TradeWallet for Mo
             script_pubkey: half_deposit_placeholder_spk(rng),
         });
         output.extend(trade_fee_receivers.iter().map(TxOut::from));
+        // We should never normally use `new_address()` for change outputs, but this is just a mock:
         let mut change_output = TxOut { value: Amount::ZERO, script_pubkey: self.new_address()?.script_pubkey() };
 
         let mut cost_msat = Receiver::total_output_cost_msat(trade_fee_receivers, fee_rate, 2)?
@@ -105,7 +118,6 @@ impl<Cs: Iterator<Item=TxOutput>, As: Iterator<Item=Address>> TradeWallet for Mo
             });
             inputs.push(psbt::Input {
                 witness_utxo: Some(new_coin.prevout),
-                tap_internal_key: new_coin.internal_key,
                 ..psbt::Input::default()
             });
         }
@@ -140,10 +152,9 @@ impl<Cs: Iterator<Item=TxOutput>, As: Iterator<Item=Address>> TradeWallet for Mo
 //noinspection SpellCheckingInspection
 pub fn mock_buyer_trade_wallet() -> impl TradeWallet {
     let funding_coins = [
-        TxOutput::mock_1_btc_coin("658654575bbbeb46e965bd9eb37fd3be550a7e0fa2d64bc5f218763155602300:0",
-            "0000000000000000000000000000000000000000000000000000000000000001"),
-    ];
-    let signature_map = signature_map(&funding_coins, &[
+        "658654575bbbeb46e965bd9eb37fd3be550a7e0fa2d64bc5f218763155602300:0",
+    ].map(TxOutput::mock_1_btc_coin).into_iter();
+    let signature_map = signature_map(funding_coins.as_slice(), &[
         "f631ae99b4743315b237af9c48ae1f9bb87b6c5404e84d8e3907269218d1bba5\
          4c397158aa233fd3f2227f4dc46922ef62eb8cc39a06b7a339b33e2401d512c1",
     ]);
@@ -154,18 +165,18 @@ pub fn mock_buyer_trade_wallet() -> impl TradeWallet {
         "bcrt1pzvynlely05x82u40cts3znctmvyskue74xa5zwy0t5ueuv92726szpgpaa",
     ].map(|a| a.parse::<Address<_>>()
         .expect("hardcoded addresses should be valid").assume_checked()).into_iter();
+    let internal_key =
+        "0000000000000000000000000000000000000000000000000000000000000001".parse().ok();
 
-    MockTradeWallet { funding_coins: funding_coins.into_iter(), new_addresses, signature_map }
+    MockTradeWallet { funding_coins, new_addresses, signature_map, internal_key }
 }
 
 //noinspection SpellCheckingInspection
 pub fn mock_seller_trade_wallet() -> impl TradeWallet {
     let funding_coins = [
-        TxOutput::mock_1_btc_coin("4a5ecc72ec8db78f11c6785f560a13f6f32eac66d160a8157d30956695ccf523:0",
-            "0000000000000000000000000000000000000000000000000000000000000002"),
-        TxOutput::mock_1_btc_coin("373b3ca0b9135e9649672772d4659bb5597d06b4694f1fbdbece285823fde0a3:1",
-            "0000000000000000000000000000000000000000000000000000000000000003"),
-    ].into_iter();
+        "4a5ecc72ec8db78f11c6785f560a13f6f32eac66d160a8157d30956695ccf523:0",
+        "373b3ca0b9135e9649672772d4659bb5597d06b4694f1fbdbece285823fde0a3:1",
+    ].map(TxOutput::mock_1_btc_coin).into_iter();
     let signature_map = signature_map(funding_coins.as_slice(), &[
         "2376111ed79dac9ff6f2d85dfe57d142f6075f4df9381aeab87a941477425224\
          7555f791ddf82354a3d73fa24955f6c5330ae44b2b238fa74be2eee9a46fcb72",
@@ -180,8 +191,10 @@ pub fn mock_seller_trade_wallet() -> impl TradeWallet {
         "bcrt1pe3kcs085e8qej9aqqx6qryv2qsfxzywy9xd8pryzwemv2dghdqgscylr69",
     ].map(|a| a.parse::<Address<_>>()
         .expect("hardcoded addresses should be valid").assume_checked()).into_iter();
+    let internal_key =
+        "0000000000000000000000000000000000000000000000000000000000000002".parse().ok();
 
-    MockTradeWallet { funding_coins, new_addresses, signature_map }
+    MockTradeWallet { funding_coins, new_addresses, signature_map, internal_key }
 }
 
 fn signature_map(funding_coins: &[TxOutput], signatures: &[&'static str]) -> BTreeMap<OutPoint, Signature> {
@@ -196,7 +209,21 @@ impl TradeWallet for Wallet {
     fn network(&self) -> Network { self.network() }
 
     fn new_address(&mut self) -> Result<Address> {
-        Ok(self.next_unused_address(KeychainKind::External).address)
+        // For privacy, always get fresh addresses for the trade protocol.
+        // FIXME: Need to find a way to prevent gaps of unused addresses from growing too large.
+        Ok(self.reveal_next_address(KeychainKind::External).address)
+    }
+
+    fn new_internal_key(&mut self) -> Result<XOnlyPublicKey> {
+        if let Descriptor::Tr(tr) = self.public_descriptor(KeychainKind::External) {
+            let ik = tr.internal_key().clone();
+            let index = self.reveal_next_address(KeychainKind::External).index;
+
+            return Ok(ik.at_derivation_index(index)?.derive_public_key(&*LIBSECP256K1_CTX)?
+                .to_x_only_pubkey());
+        }
+        // TODO: Consider returning a dedicated error for this:
+        Err(TransactionErrorKind::MissingAddress)
     }
 
     fn create_half_deposit_psbt(
@@ -239,7 +266,7 @@ impl TradeWallet for Wallet {
             return Err(TransactionErrorKind::InvalidPsbt);
         }
         let mut psbt_copy = psbt.clone();
-        self.sign(&mut psbt_copy, bdk_wallet::SignOptions::default())?;
+        self.sign(&mut psbt_copy, SignOptions { trust_witness_utxo: true, ..SignOptions::default() })?;
         for i in 0..psbt.inputs.len() {
             if is_selected(&psbt.unsigned_tx.input[i].previous_output) {
                 psbt.inputs[i].final_script_sig = psbt_copy.inputs[i].final_script_sig.take();
@@ -264,6 +291,9 @@ impl Redact for Psbt {
 impl Redact for psbt::Input {
     fn redact_sensitive_fields(&mut self) {
         self.tap_key_origins.clear();
+        self.tap_scripts.clear();
+        self.tap_internal_key = None;
+        self.tap_merkle_root = None;
     }
 }
 
@@ -271,6 +301,7 @@ impl Redact for psbt::Output {
     fn redact_sensitive_fields(&mut self) {
         self.tap_key_origins.clear();
         self.tap_internal_key = None;
+        self.tap_tree = None;
     }
 }
 
@@ -327,7 +358,6 @@ fn input_coin(psbt: &Psbt, index: usize) -> Option<TxOutput> {
     Some(TxOutput {
         outpoint: psbt.unsigned_tx.input[index].previous_output,
         prevout: psbt.inputs[index].witness_utxo.clone()?,
-        internal_key: psbt.inputs[index].tap_internal_key,
     })
 }
 
@@ -467,7 +497,7 @@ mod tests {
 
     //noinspection SpellCheckingInspection
     #[test]
-    fn test_bdk_trade_wallet() -> Result<()> {
+    fn bdk_trade_wallet_half_deposit_psbt() -> Result<()> {
         let descriptor = test_utils::get_test_tr_single_sig_xprv();
         let mut wallet = test_utils::get_funded_wallet_single(descriptor).0;
         let mut rng = rand::rng();
@@ -501,6 +531,45 @@ mod tests {
         let ideal_weight = actual_weight - Weight::from_wu(1);
         assert!(fee_rate * actual_weight > fee_amount);
         assert_eq!(fee_rate * ideal_weight, fee_amount);
+        Ok(())
+    }
+
+    #[test]
+    fn bdk_trade_wallet_new_address() -> Result<()> {
+        let descriptor = test_utils::get_test_tr_single_sig_xprv();
+        let mut wallet = test_utils::get_funded_wallet_single(descriptor).0;
+
+        // Wallet was created with one already-used non-change address at index 0.
+        assert_eq!(Some(0), wallet.derivation_index(KeychainKind::External));
+
+        let addresses = [wallet.new_address()?, wallet.new_address()?];
+        let spk_indices = addresses.map(|addr|
+            wallet.spk_index().index_of_spk(addr.script_pubkey()).expect("missing address").1);
+
+        assert_eq!([1, 2], spk_indices);
+        Ok(())
+    }
+
+    #[test]
+    fn bdk_trade_wallet_new_internal_key() -> Result<()> {
+        let descriptor = test_utils::get_test_tr_single_sig_xprv();
+        let mut wallet = test_utils::get_funded_wallet_single(descriptor).0;
+
+        // Wallet was created with one already-used non-change address at index 0.
+        assert_eq!(Some(0), wallet.derivation_index(KeychainKind::External));
+
+        let ik1 = wallet.new_internal_key()?;
+        let addr2 = wallet.new_address()?;
+        let ik3 = wallet.new_internal_key()?;
+
+        let spk1 = ScriptBuf::new_p2tr(&*LIBSECP256K1_CTX, ik1, None);
+        let spk2 = addr2.script_pubkey();
+        let spk3 = ScriptBuf::new_p2tr(&*LIBSECP256K1_CTX, ik3, None);
+
+        let spk_indices = [spk1, spk2, spk3].map(|spk|
+            wallet.spk_index().index_of_spk(spk).expect("missing spk").1);
+
+        assert_eq!([1, 2, 3], spk_indices);
         Ok(())
     }
 }

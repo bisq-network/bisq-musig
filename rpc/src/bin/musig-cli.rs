@@ -1,4 +1,4 @@
-use bdk_wallet::bitcoin::hashes::{sha256d, Hash as _};
+use bdk_wallet::bitcoin::hashes::{Hash as _, sha256d};
 use bdk_wallet::serde_json;
 use clap::{Parser, Subcommand};
 use futures_util::StreamExt as _;

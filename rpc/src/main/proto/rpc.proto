@@ -48,7 +48,7 @@ message PubKeySharesRequest {
 message PubKeySharesResponse {
   bytes buyerOutputPubKeyShare = 1;
   bytes sellerOutputPubKeyShare = 2;
-  // bytes multisigScriptKey = 3; TODO: Uncomment - provisionally added to Bisq2 side.
+  bytes multisigScriptKey = 3;
   uint32 currentBlockHeight = 4;
 }
 
@@ -56,7 +56,7 @@ message NonceSharesRequest {
   string tradeId = 1;
   bytes buyerOutputPeersPubKeyShare = 2;
   bytes sellerOutputPeersPubKeyShare = 3;
-  // bytes peersMultisigScriptKey = 4; TODO: Uncomment - provisionally added to Bisq2 side.
+  bytes peersMultisigScriptKey = 4;
   uint64 depositTxFeeRate = 5;       // sats per kwu
   uint64 preparedTxFeeRate = 6;      // sats per kwu
   uint64 tradeAmount = 7;            // sats

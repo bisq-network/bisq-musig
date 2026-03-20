@@ -12,16 +12,15 @@ musig2 = { workspace = true }
 paste = "1.0.15"
 rand = { workspace = true }
 rand_chacha = { workspace = true }
-thiserror = { workspace = true }
 # TODO move this to dev-dependencies:
 testenv = { path = "../testenv" }
+thiserror = { workspace = true }
 tracing = { workspace = true }
 
 [dev-dependencies]
 bdk_wallet = { workspace = true, features = ["test-utils"] }
-const_format = { workspace = true }
-tokio = { workspace = true, features = ["macros", "test-util"] }
 bmp_tracing = { workspace = true }
+const_format = { workspace = true }
 
 [lints]
 workspace = true

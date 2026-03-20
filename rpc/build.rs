@@ -32,7 +32,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             enum_field("myRole", "Role")
         ])
         .serde_serialized_type("NonceSharesRequest", &[
-            base64("buyerOutputPeersPubKeyShare"), base64("sellerOutputPeersPubKeyShare")
+            base64("buyerOutputPeersPubKeyShare"), base64("sellerOutputPeersPubKeyShare"),
+            base64("peersMultisigScriptKey")
         ])
         .serde_serialized_type("NonceSharesMessage", &[
             base64("halfDepositPsbt"), base64("swapTxInputNonceShare"),
@@ -59,7 +60,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         // Add Serde serialization for musigrpc response types...
         .serde_serialized_type("PubKeySharesResponse", &[
-            base64("buyerOutputPubKeyShare"), base64("sellerOutputPubKeyShare")
+            base64("buyerOutputPubKeyShare"), base64("sellerOutputPubKeyShare"),
+            base64("multisigScriptKey")
         ])
         .serde_serialized_type("TxConfirmationStatus", &[
             hex("tx")

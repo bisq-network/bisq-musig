@@ -1,6 +1,6 @@
+use bdk_wallet::bitcoin::ScriptBuf;
 use bdk_wallet::bitcoin::hashes::Hash as _;
 use bdk_wallet::bitcoin::psbt::Psbt;
-use bdk_wallet::bitcoin::ScriptBuf;
 use protocol::protocol_musig_adaptor::{self as bmp_engine};
 use tonic::{Result, Status};
 

@@ -2,8 +2,8 @@ use std::sync::Arc;
 
 use anyhow::Result;
 use bdk_bitcoind_rpc::bitcoincore_rpc;
-use bdk_wallet::bitcoin::Amount;
 use bdk_wallet::Balance;
+use bdk_wallet::bitcoin::Amount;
 use futures_util::StreamExt as _;
 use rpc::wallet::{TxConfidence, WalletService, WalletServiceImpl};
 use testenv::TestEnv;
