@@ -1820,6 +1820,7 @@ dependencies = [
  "testenv",
  "thiserror",
  "tracing",
+ "wallet",
 ]
 
 [[package]]
@@ -2019,6 +2020,7 @@ dependencies = [
  "tonic-prost-build",
  "tracing",
  "unimock",
+ "wallet",
 ]
 
 [[package]]
@@ -2825,6 +2827,7 @@ dependencies = [
  "simple-semaphore",
  "tempfile",
  "testenv",
+ "thiserror",
  "tracing",
  "zeroize",
 ]

@@ -3,8 +3,9 @@ use std::sync::Mutex;
 
 use bdk_wallet::bitcoin::Amount;
 use protocol::protocol_musig_adaptor::{
-    BMPContext, BMPProtocol, MemWallet, ProtocolRole, Round1Parameter,
+    BMPContext, BMPProtocol, ProtocolRole, Round1Parameter,
 };
+use wallet::protocol_wallet_api::MemWallet;
 use protocol::wallet_service::WalletService;
 use testenv::TestEnv;
 use tonic::{Request, Response, Result, Status};

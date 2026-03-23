@@ -568,6 +568,8 @@ pub enum TransactionErrorKind {
     CreateTx(#[from] bdk_wallet::error::CreateTxError),
     Signer(#[from] bdk_wallet::signer::SignerError),
     Conversion(#[from] bdk_wallet::miniscript::descriptor::ConversionError),
+    Wallet(#[from] wallet::protocol_wallet_api::WalletErrorKind),
+    Anyhow(#[from] anyhow::Error),
 }
 
 impl From<ExtractTxError> for TransactionErrorKind {

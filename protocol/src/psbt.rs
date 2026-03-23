@@ -14,7 +14,7 @@ use bdk_wallet::miniscript::{Descriptor, ToPublicKey as _};
 use bdk_wallet::{KeychainKind, SignOptions, TxOrdering, Wallet};
 use rand::{RngCore, SeedableRng as _};
 use rand_chacha::ChaCha20Rng;
-
+use wallet::protocol_wallet_api::{MemWallet};
 use crate::receiver::Receiver;
 use crate::swap::Swap as _;
 use crate::transaction::{Result, TransactionErrorKind, TxOutput};
@@ -90,7 +90,7 @@ impl<Cs: Iterator<Item=TxOutput>, As: Iterator<Item=Address>> TradeWallet for Mo
             script_pubkey: half_deposit_placeholder_spk(rng),
         });
         output.extend(trade_fee_receivers.iter().map(TxOut::from));
-        // We should never normally use `new_address()` for change outputs, but this is just a mock:
+        // We should never normally use `new_address()` for change outputs, but this is justwallet. a mock:
         let mut change_output = TxOut { value: Amount::ZERO, script_pubkey: self.new_address()?.script_pubkey() };
 
         let mut cost_msat = Receiver::total_output_cost_msat(trade_fee_receivers, fee_rate, 2)?
@@ -204,7 +204,6 @@ fn signature_map(funding_coins: &[TxOutput], signatures: &[&'static str]) -> BTr
     });
     funding_coins.iter().map(|o| o.outpoint).zip(signatures).collect()
 }
-
 impl TradeWallet for Wallet {
     fn network(&self) -> Network { self.network() }
 
@@ -220,7 +219,7 @@ impl TradeWallet for Wallet {
             let index = self.reveal_next_address(KeychainKind::External).index;
 
             return Ok(ik.at_derivation_index(index)?.derive_public_key(&*LIBSECP256K1_CTX)?
-                .to_x_only_pubkey());
+                    .to_x_only_pubkey());
         }
         // TODO: Consider returning a dedicated error for this:
         Err(TransactionErrorKind::MissingAddress)
@@ -235,19 +234,19 @@ impl TradeWallet for Wallet {
     ) -> Result<Psbt> {
         let mut builder = self.build_tx();
         builder
-            .ordering(TxOrdering::Untouched)
-            .nlocktime(absolute::LockTime::ZERO)
-            .fee_rate(fee_rate)
-            .add_recipient(half_deposit_placeholder_spk(rng), deposit_amount);
+                .ordering(TxOrdering::Untouched)
+                .nlocktime(absolute::LockTime::ZERO)
+                .fee_rate(fee_rate)
+                .add_recipient(half_deposit_placeholder_spk(rng), deposit_amount);
         for receiver in trade_fee_receivers {
             builder.add_recipient(receiver.address.script_pubkey(), receiver.amount);
         }
         let mut psbt = builder.finish()?;
         // Calculate tx fee overpay unconditionally, as this performs additional checks on the PSBT:
         let overpay_msat: u64 = half_psbt_fee_overpay_msat(&psbt, fee_rate)
-            .ok_or(TransactionErrorKind::Overflow)?
-            .try_into()
-            .map_err(|_| TransactionErrorKind::InvalidPsbt)?;
+                .ok_or(TransactionErrorKind::Overflow)?
+                .try_into()
+                .map_err(|_| TransactionErrorKind::InvalidPsbt)?;
         let change_output_index = 1 + trade_fee_receivers.len();
         if psbt.unsigned_tx.output.len() > change_output_index {
             // Correct any tx fee overpay due to overly conservative input witness size estimation
@@ -273,6 +272,59 @@ impl TradeWallet for Wallet {
                 psbt.inputs[i].final_script_witness = psbt_copy.inputs[i].final_script_witness.take();
             }
         }
+        Ok(())
+    }
+}
+
+impl TradeWallet for MemWallet {
+    fn network(&self) -> Network { self.network() }
+
+    fn new_address(&mut self) -> Result<Address> {
+        // For privacy, always get fresh addresses for the trade protocol.
+        // FIXME: Need to find a way to prevent gaps of unused addresses from growing too large.
+        Ok(self.reveal_next_address())
+    }
+
+    fn new_internal_key(&mut self) -> Result<XOnlyPublicKey> {
+        MemWallet::new_internal_key(self).map_err(TransactionErrorKind::from)
+    }
+
+    fn create_half_deposit_psbt(
+        &mut self,
+        deposit_amount: Amount,
+        fee_rate: FeeRate,
+        trade_fee_receivers: &[Receiver],
+        rng: &mut dyn RngCore,
+    ) -> Result<Psbt> {
+        let mut res: Vec<(ScriptBuf, Amount)> = trade_fee_receivers
+                .iter()
+                .map(|receiver| (receiver.address.script_pubkey(), deposit_amount))
+                .collect();
+        res.push((half_deposit_placeholder_spk(rng), deposit_amount));
+        let mut psbt = self.create_psbt(res, fee_rate)?;
+        // Calculate tx fee overpay unconditionally, as this performs additional checks on the PSBT:
+        let overpay_msat: u64 = half_psbt_fee_overpay_msat(&psbt, fee_rate)
+            .ok_or(TransactionErrorKind::Overflow)?
+            .try_into()
+            .map_err(|_| TransactionErrorKind::InvalidPsbt)?;
+        let change_output_index = 1 + trade_fee_receivers.len();
+        if psbt.unsigned_tx.output.len() > change_output_index {
+            // Correct any tx fee overpay due to overly conservative input witness size estimation
+            // by BDK (as each witness is assumed to potentially have a non-default sighash type in
+            // the case of p2tr and not grind for low R in the case of p2wpkh), and also due to the
+            // fact that each would-be-signed half-deposit PSBT is 1 wu bigger than ideal.
+            let overpay = Amount::from_sat(overpay_msat / 1000);
+            psbt.unsigned_tx.output[change_output_index].value += overpay;
+        }
+        psbt.redact_sensitive_fields();
+        Ok(psbt)
+    }
+
+    fn sign_selected_inputs(&self, psbt: &mut Psbt, is_selected: &dyn Fn(&OutPoint) -> bool) -> Result<()> {
+        if !is_well_formed(psbt) {
+            return Err(TransactionErrorKind::InvalidPsbt);
+        }
+        self.sign_the_selected_inputs(psbt, is_selected)?;
         Ok(())
     }
 }

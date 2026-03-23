@@ -1,3 +1,5 @@
+use bdk_electrum::BdkElectrumClient;
+use bdk_electrum::electrum_client::Client;
 use bdk_wallet::bitcoin;
 use bitcoin::key::{Keypair, Secp256k1, TapTweak as _, TweakedKeypair, TweakedPublicKey};
 use bitcoin::secp256k1::Message;
@@ -5,10 +7,11 @@ use bitcoin::{Amount, TapSighashType};
 use bmp_tracing::tracing;
 use musig2::KeyAggContext;
 use musig2::secp::Point;
-use protocol::protocol_musig_adaptor::{BMPContext, BMPProtocol, MemWallet, ProtocolRole};
+use protocol::protocol_musig_adaptor::{BMPContext, BMPProtocol, ProtocolRole};
 use protocol::transaction::WithWitnesses as _;
 use protocol::wallet_service::WalletService;
 use testenv::TestEnv;
+use wallet::protocol_wallet_api::MemWallet;
 
 #[test]
 fn test_initial_tx_creation() -> anyhow::Result<()> {
@@ -18,10 +21,26 @@ fn test_initial_tx_creation() -> anyhow::Result<()> {
     Ok(())
 }
 
+pub fn funded_wallet(env: &TestEnv) -> MemWallet {
+    // TODO move this line to TestEnv
+    let client =
+            BdkElectrumClient::new(Client::new(&env.electrum_url()).unwrap());
+    let mut wallet = MemWallet::new(client).unwrap();
+    let address = wallet.next_unused_address();
+    let txid = env
+            .fund_address(&address, Amount::from_btc(10f64).unwrap())
+            .unwrap();
+    env.mine_block().unwrap();
+    env.wait_for_tx(txid).unwrap();
+    wallet.sync().unwrap();
+    wallet
+}
+
 fn initial_tx_creation(env: &TestEnv) -> anyhow::Result<(BMPProtocol, BMPProtocol)> {
     tracing::debug!("running...");
-    let alice_funds = MemWallet::funded_wallet(env);
-    let bob_funds = MemWallet::funded_wallet(env);
+
+    let alice_funds = funded_wallet(env);
+    let bob_funds = funded_wallet(env);
 
     let alice_service = WalletService::new().load(alice_funds);
     let bob_service = WalletService::new().load(bob_funds);
