@@ -2,10 +2,15 @@
 
 ## motivation
 
-The `SwapTx` will in most trades not be broadcasted to the blockchain. Therefore
-Alice (the Seller, which creates the `SwapTx`) may not want the buyer to learn
-the address used in the `SwapTx`. Since Bob (the buyer) needs to sign
-the `SwapTx` this can only be done by letting him
+The `SwapTx` is not needed for a happy trade. So it may never be published. Alice might even want to keep it hidden from Bob
+due to:
+
+- not revealing an address to Bob, which is not needed.
+- If Bob publishes it, he could secure its output from the danger of a WarningTx being issued at the expense of Alice.
+- or even if the own output is already secured, he could inflict unnecessary fees on Alice.
+
+Since Bob (the buyer) needs to sign
+the `SwapTx` this can be done by letting him
 blindly sign the transaction.
 
 ## basics of signing with key spends
