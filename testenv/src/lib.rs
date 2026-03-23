@@ -23,6 +23,7 @@ use secp::Scalar;
 use sha2::Sha256;
 use simple_semaphore::{Permit, Semaphore};
 use tempfile::{tempdir, TempDir};
+use tokio::net::TcpListener;
 
 /// Bitcoin regtest environment manager
 pub struct TestEnv {
@@ -497,9 +498,9 @@ impl TestEnv {
 
     /// Returns a `TcpListener` bound to an available port (port 0 lets OS assign).
     /// This avoids race conditions by keeping the port bound until used.
-    pub fn get_bound_port() -> Result<(u16, std::net::TcpListener)> {
-        let listener = std::net::TcpListener::bind("127.0.0.1:0")?;
-        let port = listener.local_addr()?.port();
+    pub async fn get_bound_port() -> Result<(u16, TcpListener)> {
+        let listener = TcpListener::bind("127.0.0.1:0").await?;
+        let port = listener.local_addr().unwrap().port();
         Ok((port, listener))
     }
 }
