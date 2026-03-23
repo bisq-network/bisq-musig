@@ -7,8 +7,8 @@ use std::time::Duration;
 use anyhow::{Context as _, Result};
 use bdk_bitcoind_rpc::bitcoincore_rpc;
 use bdk_bitcoind_rpc::bitcoincore_rpc::{Auth, RpcApi as _};
-use bdk_electrum::bdk_core::bitcoin::{KnownHrp, XOnlyPublicKey};
 use bdk_electrum::BdkElectrumClient;
+use bdk_electrum::bdk_core::bitcoin::{KnownHrp, XOnlyPublicKey};
 use bdk_wallet::bitcoin::address::NetworkChecked;
 use bdk_wallet::bitcoin::key::Secp256k1;
 use bdk_wallet::bitcoin::secp256k1::All;
@@ -16,13 +16,13 @@ use bdk_wallet::bitcoin::{Address, Amount, BlockHash, Network, Transaction, Txid
 use bmp_tracing::tracing;
 use electrsd::corepc_node::Node;
 use electrsd::electrum_client::{Client, ElectrumApi};
-use electrsd::{corepc_node, ElectrsD};
+use electrsd::{ElectrsD, corepc_node};
 use hmac::{Hmac, Mac as _};
 use rand::{Rng as _, RngCore as _};
 use secp::Scalar;
 use sha2::Sha256;
 use simple_semaphore::{Permit, Semaphore};
-use tempfile::{tempdir, TempDir};
+use tempfile::{TempDir, tempdir};
 use tokio::net::TcpListener;
 
 /// Bitcoin regtest environment manager
@@ -116,8 +116,8 @@ pub fn generate_rpcauth(username: &str, password: Option<&str>) -> (String, Stri
     let salt_hex = hex::encode(salt_bytes);
 
     // Compute HMAC-SHA256(salt, password)
-    let mut mac = HmacSha256::new_from_slice(salt_hex.as_bytes())
-            .expect("HMAC can take key of any size");
+    let mut mac =
+        HmacSha256::new_from_slice(salt_hex.as_bytes()).expect("HMAC can take key of any size");
     mac.update(pw.as_bytes());
     let hash_bytes = mac.finalize().into_bytes();
     let hash_hex = hex::encode(hash_bytes);
@@ -129,7 +129,10 @@ pub fn generate_rpcauth(username: &str, password: Option<&str>) -> (String, Stri
 }
 
 pub fn validate_rpcauth(rpcauth_line: &str, username: &str, password: &str) -> bool {
-    let line = rpcauth_line.trim().strip_prefix("rpcauth=").unwrap_or(rpcauth_line.trim());
+    let line = rpcauth_line
+        .trim()
+        .strip_prefix("rpcauth=")
+        .unwrap_or(rpcauth_line.trim());
 
     // Expected format: <user>:<salt_hex>$<hmac_hex>
     let Some((user_part, rest)) = line.split_once(':') else {
@@ -230,7 +233,10 @@ impl TestEnv {
         let electrsd = ElectrsD::with_conf(electrs_exe, &bitcoind, &config.electrsd)
             .with_context(|| "Starting electrsd failed...")?;
 
-        let client = Client::from_config(&electrsd.electrum_url, bdk_electrum::electrum_client::Config::default())?;
+        let client = Client::from_config(
+            &electrsd.electrum_url,
+            bdk_electrum::electrum_client::Config::default(),
+        )?;
         let bdk_electrum_client = BdkElectrumClient::new(client);
 
         // permit will be dropped when TestEnv is dropped
@@ -264,32 +270,47 @@ impl TestEnv {
         let listener = std::net::TcpListener::bind("127.0.0.1:0")?;
         let browser_port = listener.local_addr()?.port();
 
-        let electrum_port = self.electrsd.electrum_url.split(':').next_back()
-                .context("Failed to parse electrum port")?;
+        let electrum_port = self
+            .electrsd
+            .electrum_url
+            .split(':')
+            .next_back()
+            .context("Failed to parse electrum port")?;
 
         let container_name = format!("btc-explorer-{browser_port}");
 
         let mut container = std::process::Command::new("podman");
-        container.args(["run", "--rm",
-            "--name", &container_name,
-            "-p", &format!("{browser_port}:3002"),
+        container.args([
+            "run",
+            "--rm",
+            "--name",
+            &container_name,
+            "-p",
+            &format!("{browser_port}:3002"),
             "--add-host=host.containers.internal:host-gateway",
-            "-e", "BTCEXP_BITCOIND_HOST=host.containers.internal",
-            "-e", "BTCEXP_HOST=0.0.0.0",
-            "-e", &format!("BTCEXP_BITCOIND_PORT={bitcoind_rpc_port}"),
-            "-e", "BTCEXP_BITCOIND_USER=bitcoin",
-            "-e", &format!("BTCEXP_BITCOIND_PASS={}", self.bitcoin_rpc_pwd),
-            "-e", "BTCEXP_ADDRESS_API=electrum",
-            "-e", &format!("BTCEXP_ELECTRUM_SERVERS=tcp://host.containers.internal:{electrum_port}"),
+            "-e",
+            "BTCEXP_BITCOIND_HOST=host.containers.internal",
+            "-e",
+            "BTCEXP_HOST=0.0.0.0",
+            "-e",
+            &format!("BTCEXP_BITCOIND_PORT={bitcoind_rpc_port}"),
+            "-e",
+            "BTCEXP_BITCOIND_USER=bitcoin",
+            "-e",
+            &format!("BTCEXP_BITCOIND_PASS={}", self.bitcoin_rpc_pwd),
+            "-e",
+            "BTCEXP_ADDRESS_API=electrum",
+            "-e",
+            &format!("BTCEXP_ELECTRUM_SERVERS=tcp://host.containers.internal:{electrum_port}"),
             "docker.io/getumbrel/btc-rpc-explorer:v3.5.1",
         ]);
 
         // println!("Spawning container: {:?}", container);
         let child = container
-                .stdout(std::process::Stdio::null())
-                .stderr(std::process::Stdio::null())
-                .spawn()
-                .context("Failed to spawn rpc_proxy")?;
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .context("Failed to spawn rpc_proxy")?;
 
         self.explorer_process = Some(child);
         self.container_name = Some(container_name);
@@ -510,8 +531,8 @@ impl Drop for TestEnv {
         if let Some(name) = self.container_name.take() {
             tracing::info!("Stopping explorer container {name}...");
             let output = std::process::Command::new("podman")
-                    .args(["stop", &name])
-                    .output();
+                .args(["stop", &name])
+                .output();
             tracing::info!("explorer container returned {output:?}...");
         }
 
@@ -648,7 +669,9 @@ mod tests {
         // Verify ZMQ is configured by querying bitcoind
         let rpc = env.bitcoin_core_rpc_client()?;
         let notifications: serde_json::Value = rpc.call("getzmqnotifications", &[])?;
-        let types: Vec<&str> = notifications.as_array().unwrap()
+        let types: Vec<&str> = notifications
+            .as_array()
+            .unwrap()
             .iter()
             .map(|n| n["type"].as_str().unwrap())
             .collect();
