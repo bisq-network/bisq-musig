@@ -8,8 +8,8 @@ use tokio_stream::StreamExt as _;
 
 #[tokio::test]
 async fn test_stream_zmq_async_receives_broadcast_tx() -> Result<()> {
-    let mut env = TestEnv::enable_zmq()?;
-    env.start_explorer_in_container()?;
+    let env = TestEnv::enable_zmq()?;
+    // env.start_explorer_in_container()?;
 
     let connect_string = env.zmq_pub_raw_tx_socket().expect("zmq rawtx socket");
     let tx_stream = stream_unconfirmed_tx(&connect_string).await;
