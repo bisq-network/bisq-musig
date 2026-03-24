@@ -338,8 +338,6 @@ pub trait WalletApi {
 
     fn balance(&self) -> Amount;
 
-    fn decrypt(&self, password: &str) -> anyhow::Result<()>;
-
     fn persist(&mut self) -> anyhow::Result<bool>;
 
     fn build_tx(&mut self) -> TxBuilder<'_, AlwaysSpendImportedFirst>;
@@ -684,18 +682,6 @@ impl WalletApi for BMPWallet<Connection> {
 
     fn get_seed_phrase(&self) -> anyhow::Result<String> {
         Connection::get_seed_phrase(&self.db, Self::SEEDS_TABLE_NAME)
-    }
-
-    /// The decryption is done on the active connection which holds the decryption key in memory.
-    /// Without setting the right `pragma` value when connected to the database, an attacker
-    /// will not be able to access the database. Even when the active connection has decrypted the
-    /// file, on file system the database is still encrypted and can't be accessed.
-    /// The decryption is done only to the active connection
-    fn decrypt(&self, password: &str) -> anyhow::Result<()> {
-        let salt = get_salt(Self::DB_NAME)?;
-        let decrypt_key = derive_key_from_password(password, &salt)?;
-        self.db.pragma_update(None, "key", &decrypt_key)?;
-        Ok(())
     }
 
     fn drain_imported_balance(&mut self, fee_rate: FeeRate) -> anyhow::Result<Psbt> {
