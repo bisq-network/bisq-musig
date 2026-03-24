@@ -151,3 +151,4 @@ cargo test
 
 - **Linux/macOS**: Full support including signal handling
 - **Windows**: Limited signal support, core functionality works
+ 

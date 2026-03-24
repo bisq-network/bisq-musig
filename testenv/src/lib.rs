@@ -37,6 +37,7 @@ pub struct TestEnv {
     _tmp_dir: TempDir,
     explorer_process: Option<std::process::Child>,
     container_name: Option<String>,
+    explorer_port: Option<u16>,
     bitcoin_rpc_pwd: String,
 }
 
@@ -115,8 +116,8 @@ pub fn generate_rpcauth(username: &str, password: Option<&str>) -> (String, Stri
     let salt_hex = hex::encode(salt_bytes);
 
     // Compute HMAC-SHA256(salt, password)
-    let mut mac = HmacSha256::new_from_slice(salt_hex.as_bytes())
-            .expect("HMAC can take key of any size");
+    let mut mac =
+        HmacSha256::new_from_slice(salt_hex.as_bytes()).expect("HMAC can take key of any size");
     mac.update(pw.as_bytes());
     let hash_bytes = mac.finalize().into_bytes();
     let hash_hex = hex::encode(hash_bytes);
@@ -128,7 +129,10 @@ pub fn generate_rpcauth(username: &str, password: Option<&str>) -> (String, Stri
 }
 
 pub fn validate_rpcauth(rpcauth_line: &str, username: &str, password: &str) -> bool {
-    let line = rpcauth_line.trim().strip_prefix("rpcauth=").unwrap_or(rpcauth_line.trim());
+    let line = rpcauth_line
+        .trim()
+        .strip_prefix("rpcauth=")
+        .unwrap_or(rpcauth_line.trim());
 
     // Expected format: <user>:<salt_hex>$<hmac_hex>
     let Some((user_part, rest)) = line.split_once(':') else {
@@ -155,6 +159,30 @@ impl TestEnv {
     /// Create a new test environment with automatic executable downloads
     pub fn new() -> Result<Self> {
         Self::new_with_conf(Config::default())
+    }
+
+    /// Create a new test environment with ZMQ enabled on bitcoind.
+    ///
+    /// The ZMQ socket addresses are available via
+    /// [`zmq_pub_raw_tx_socket`](Self::zmq_pub_raw_tx_socket) and
+    /// [`zmq_pub_raw_block_socket`](Self::zmq_pub_raw_block_socket).
+    pub fn enable_zmq() -> Result<Self> {
+        let mut config = Config::default();
+        config.bitcoind.enable_zmq = true;
+        Self::new_with_conf(config)
+    }
+
+    /// ZMQ socket for raw transaction notifications (set when created via [`enable_zmq`](Self::enable_zmq)).
+    pub fn zmq_pub_raw_tx_socket(&self) -> Option<String> {
+        self.bitcoind
+            .params
+            .zmq_pub_raw_tx_socket
+            .map(|socket| format!("tcp://{socket}"))
+    }
+
+    /// ZMQ socket for raw block notifications (set when created via [`enable_zmq`](Self::enable_zmq)).
+    pub fn zmq_pub_raw_block_socket(&self) -> Option<SocketAddrV4> {
+        self.bitcoind.params.zmq_pub_raw_block_socket
     }
 
     /// create environment with automatic downloads
@@ -205,7 +233,10 @@ impl TestEnv {
         let electrsd = ElectrsD::with_conf(electrs_exe, &bitcoind, &config.electrsd)
             .with_context(|| "Starting electrsd failed...")?;
 
-        let client = Client::from_config(&electrsd.electrum_url, bdk_electrum::electrum_client::Config::default())?;
+        let client = Client::from_config(
+            &electrsd.electrum_url,
+            bdk_electrum::electrum_client::Config::default(),
+        )?;
         let bdk_electrum_client = BdkElectrumClient::new(client);
 
         // permit will be dropped when TestEnv is dropped
@@ -220,7 +251,8 @@ impl TestEnv {
             _tmp_dir: tmp_dir,
             explorer_process: None,
             container_name: None,
-            bitcoin_rpc_pwd
+            explorer_port: None,
+            bitcoin_rpc_pwd,
         };
         tracing::info!("Bitcoin regtest environment ready!");
         Ok(test_env)
@@ -238,35 +270,51 @@ impl TestEnv {
         let listener = std::net::TcpListener::bind("127.0.0.1:0")?;
         let browser_port = listener.local_addr()?.port();
 
-        let electrum_port = self.electrsd.electrum_url.split(':').next_back()
-                .context("Failed to parse electrum port")?;
+        let electrum_port = self
+            .electrsd
+            .electrum_url
+            .split(':')
+            .next_back()
+            .context("Failed to parse electrum port")?;
 
         let container_name = format!("btc-explorer-{browser_port}");
 
         let mut container = std::process::Command::new("podman");
-        container.args(["run", "--rm",
-            "--name", &container_name,
-            "-p", &format!("{browser_port}:3002"),
+        container.args([
+            "run",
+            "--rm",
+            "--name",
+            &container_name,
+            "-p",
+            &format!("{browser_port}:3002"),
             "--add-host=host.containers.internal:host-gateway",
-            "-e", "BTCEXP_BITCOIND_HOST=host.containers.internal",
-            "-e", "BTCEXP_HOST=0.0.0.0",
-            "-e", &format!("BTCEXP_BITCOIND_PORT={bitcoind_rpc_port}"),
-            "-e", "BTCEXP_BITCOIND_USER=bitcoin",
-            "-e", &format!("BTCEXP_BITCOIND_PASS={}", self.bitcoin_rpc_pwd),
-            "-e", "BTCEXP_ADDRESS_API=electrum",
-            "-e", &format!("BTCEXP_ELECTRUM_SERVERS=tcp://host.containers.internal:{electrum_port}"),
+            "-e",
+            "BTCEXP_BITCOIND_HOST=host.containers.internal",
+            "-e",
+            "BTCEXP_HOST=0.0.0.0",
+            "-e",
+            &format!("BTCEXP_BITCOIND_PORT={bitcoind_rpc_port}"),
+            "-e",
+            "BTCEXP_BITCOIND_USER=bitcoin",
+            "-e",
+            &format!("BTCEXP_BITCOIND_PASS={}", self.bitcoin_rpc_pwd),
+            "-e",
+            "BTCEXP_ADDRESS_API=electrum",
+            "-e",
+            &format!("BTCEXP_ELECTRUM_SERVERS=tcp://host.containers.internal:{electrum_port}"),
             "docker.io/getumbrel/btc-rpc-explorer:v3.5.1",
         ]);
 
         // println!("Spawning container: {:?}", container);
         let child = container
-                .stdout(std::process::Stdio::null())
-                .stderr(std::process::Stdio::null())
-                .spawn()
-                .context("Failed to spawn rpc_proxy")?;
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .context("Failed to spawn rpc_proxy")?;
 
         self.explorer_process = Some(child);
         self.container_name = Some(container_name);
+        self.explorer_port = Some(browser_port);
 
         // Drop the listener to free the port for the container
         drop(listener);
@@ -280,6 +328,12 @@ impl TestEnv {
             self.container_name.as_ref().unwrap()
         );
         Ok(())
+    }
+
+    pub fn debug_tx(&self, txid: Txid) {
+        if let Some(port) = self.explorer_port {
+            tracing::info!("explorer tx: http://127.0.0.1:{port}/tx/{txid}");
+        }
     }
 
     pub fn bitcoin_rpc_port(&self) -> u16 {
@@ -463,7 +517,7 @@ impl TestEnv {
         self.bitcoind.params.p2p_socket
     }
 
-    /// Returns a TcpListener bound to an available port (port 0 lets OS assign).
+    /// Returns a `TcpListener` bound to an available port (port 0 lets OS assign).
     /// This avoids race conditions by keeping the port bound until used.
     pub async fn get_bound_port() -> Result<(u16, TcpListener)> {
         let listener = TcpListener::bind("127.0.0.1:0").await?;
@@ -477,8 +531,8 @@ impl Drop for TestEnv {
         if let Some(name) = self.container_name.take() {
             tracing::info!("Stopping explorer container {name}...");
             let output = std::process::Command::new("podman")
-                    .args(["stop", &name])
-                    .output();
+                .args(["stop", &name])
+                .output();
             tracing::info!("explorer container returned {output:?}...");
         }
 
@@ -596,6 +650,34 @@ mod tests {
         env.start_explorer_in_container()?;
         env.mine_block()?;
         // put a breakpoint on the Ok statement so you inspect the blockchain before it is dropped
+        Ok(())
+    }
+
+    #[test]
+    fn test_enable_zmq() -> Result<()> {
+        let env = TestEnv::enable_zmq()?;
+
+        // Verify ZMQ sockets were assigned
+        let tx_socket = env.zmq_pub_raw_tx_socket().expect("zmq rawtx socket");
+        let block_socket = env.zmq_pub_raw_block_socket().expect("zmq rawblock socket");
+        tracing::info!("ZMQ rawtx={tx_socket}, rawblock={block_socket}");
+
+        // Verify the environment is fully functional with ZMQ enabled
+        assert!(env.block_count().is_ok());
+        env.mine_block()?;
+
+        // Verify ZMQ is configured by querying bitcoind
+        let rpc = env.bitcoin_core_rpc_client()?;
+        let notifications: serde_json::Value = rpc.call("getzmqnotifications", &[])?;
+        let types: Vec<&str> = notifications
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|n| n["type"].as_str().unwrap())
+            .collect();
+        assert!(types.contains(&"pubrawtx"));
+        assert!(types.contains(&"pubrawblock"));
+
         Ok(())
     }
 
