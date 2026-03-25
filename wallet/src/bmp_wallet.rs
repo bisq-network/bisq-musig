@@ -330,6 +330,11 @@ pub trait WalletApi {
     where
         Self: Sized;
 
+    /// Allow creating the wallet at the specified path
+    fn new_with_dir(path: &str, password: &str, network: Network) -> anyhow::Result<Self>
+    where
+        Self: Sized;
+
     fn load_wallet(network: Network, password: &str) -> anyhow::Result<Self>
     where
         Self: Sized;
@@ -645,6 +650,14 @@ impl WalletApi for BMPWallet<Connection> {
             signers_loaded: true,
             db,
         })
+    }
+
+    fn new_with_dir(path: &str, password: &str, network: Network) -> anyhow::Result<Self>
+    where
+        Self: Sized,
+    {
+        std::env::set_current_dir(path)?;
+        Self::new(password, network)
     }
 
     // For already created wallets this will load stored data
@@ -1162,6 +1175,30 @@ mod tests {
         assert_eq!(tx.output.len(), 1);
         assert_eq!(tx.output[0].value, Amount::from_str("1.99983150 BTC")?);
 
+        Ok(())
+    }
+
+    #[test]
+    fn test_wallet_with_path_creation() -> anyhow::Result<()> {
+        let _permit = SEMAPHORE.acquire();
+        let dir_one = TempDir::with_prefix("one-")?;
+        let dir_two = TempDir::with_prefix("two-")?;
+
+        let client = MockedBDKElectrum {};
+
+        tracing::debug!("Wallet path {:?}", dir_one);
+        tracing::debug!("Wallet 2 path {:?}", dir_two);
+
+        let mut w1 =
+            BMPWallet::new_with_dir(dir_one.path().to_str().unwrap(), "", Network::Regtest)?;
+        let w2 = BMPWallet::new_with_dir(dir_two.path().to_str().unwrap(), "", Network::Regtest)?;
+
+        tracing::debug!("Wallet one balance before syncing {}", w1.balance());
+        assert_eq!(w1.balance(), Amount::from_int_btc(0));
+        let _ = w1.sync_all(&client);
+
+        assert_eq!(w1.balance(), Amount::from_int_btc(1));
+        assert_eq!(w2.balance(), Amount::ZERO);
         Ok(())
     }
 }

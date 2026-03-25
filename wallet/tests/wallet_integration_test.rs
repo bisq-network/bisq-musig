@@ -401,3 +401,39 @@ async fn test_drain_wallet_no_balance() {
         .drain_imported_balance(FeeRate::from_sat_per_vb(10).unwrap())
         .unwrap();
 }
+
+#[test]
+fn test_multi_wallet_path() -> anyhow::Result<()> {
+    let env = TestEnv::new()?;
+    env.mine_block()?;
+
+    let client = env.bdk_electrum_client();
+
+    let dir_one = env.get_tmp_dir()?;
+    let dir_two = env.get_tmp_dir()?;
+
+    let mut w1 = BMPWallet::new_with_dir(dir_one.path().to_str().unwrap(), "", Network::Regtest)?;
+    let mut w2 = BMPWallet::new_with_dir(
+        dir_two.path().to_str().unwrap(),
+        "password",
+        Network::Regtest,
+    )?;
+
+    let amount_to_send_w1 = Amount::from_sat(100_000);
+    let amount_to_send_w2 = Amount::from_sat(80_000);
+
+    let addr_w1 = w1.next_unused_address(KeychainKind::External);
+    let addr_w2 = w2.next_unused_address(KeychainKind::External);
+
+    env.fund_address(&addr_w1, amount_to_send_w1)?;
+    env.fund_address(&addr_w2, amount_to_send_w2)?;
+
+    env.mine_block()?;
+
+    w1.sync_all(client)?;
+    w2.sync_all(client)?;
+
+    assert_eq!(w1.balance(), amount_to_send_w1);
+    assert_eq!(w2.balance(), amount_to_send_w2);
+    Ok(())
+}
