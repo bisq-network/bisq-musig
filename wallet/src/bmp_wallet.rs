@@ -479,7 +479,6 @@ impl WalletApi for BMPWallet<Connection> {
     }
 
     /// Sync the imported keys from protocol using CBF
-    /// @TODO: use a shared node connection between the different imported keys sync
     async fn sync_cbf_imported(
         &mut self,
         scan_type: ScanType,
@@ -491,20 +490,25 @@ impl WalletApi for BMPWallet<Connection> {
             .map(|s| s.base_point_mul().serialize_xonly())
             .collect::<Vec<_>>();
 
-        let mut req: Option<Requester> = None;
+        // Build all wallets and light clients upfront, then run all nodes concurrently
+        // so their peer connections overlap (gossip addresses from one benefit the others).
+        struct KeyEntry {
+            db: Connection,
+            wallet: PersistedWallet<Connection>,
+            update_subscriber: UpdateSubscriber,
+            requester: Requester,
+        }
 
-        let mut final_imported_balance = Balance::default();
-
-        for key in pubkeys {
+        let mut entries: Vec<KeyEntry> = Vec::with_capacity(pubkeys.len());
+        for key in &pubkeys {
             let db_path = format!("bmp_{}.db3", key.to_lower_hex_string());
             let mut db = Connection::open(db_path)?;
-
             let imported_wallet_opt = Wallet::load()
                 .check_network(self.wallet.network())
                 .extract_keys()
                 .load_wallet(&mut db)?;
-            let mut imported_wallet = match imported_wallet_opt {
-                Some(wallet) => wallet,
+            let wallet = match imported_wallet_opt {
+                Some(w) => w,
                 None => {
                     let descriptor = format!("tr({})", key.to_lower_hex_string());
                     Wallet::create_single(descriptor)
@@ -512,31 +516,33 @@ impl WalletApi for BMPWallet<Connection> {
                         .create_wallet(&mut db)?
                 }
             };
-
             let LightClient {
                 requester,
                 info_subscriber: _,
                 warning_subscriber: _,
-                mut update_subscriber,
+                update_subscriber,
                 node,
             } = Builder::new(self.network())
                 .add_peers(peers.clone())
-                .build_with_wallet(&imported_wallet, scan_type)?;
+                .build_with_wallet(&wallet, scan_type)?;
+            tokio::task::spawn(async move { node.run().await });
+            entries.push(KeyEntry { db, wallet, update_subscriber, requester });
+        }
 
-            tokio::task::spawn(async move { node.run().await.unwrap() });
-            let updates = update_subscriber.update().await?;
-            imported_wallet.apply_update(updates)?;
+        // Collect updates from all nodes while they are all running, then shut down together.
+        let mut final_imported_balance = Balance::default();
+        for entry in &mut entries {
+            let updates = entry.update_subscriber.update().await?;
+            entry.wallet.apply_update(updates)?;
+            entry.wallet.persist(&mut entry.db)?;
+            final_imported_balance = final_imported_balance + entry.wallet.balance();
+        }
 
-            imported_wallet.persist(&mut db)?;
-
-            final_imported_balance = final_imported_balance + imported_wallet.balance();
-
-            req.get_or_insert(requester);
+        for entry in entries {
+            let _ = entry.requester.shutdown();
         }
 
         self.imported_balance = final_imported_balance;
-
-        req.is_some().then(|| req.unwrap().shutdown());
 
         Ok(())
     }
