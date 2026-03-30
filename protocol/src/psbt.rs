@@ -14,7 +14,8 @@ use bdk_wallet::miniscript::{Descriptor, ToPublicKey as _};
 use bdk_wallet::{KeychainKind, SignOptions, TxOrdering, Wallet};
 use rand::{RngCore, SeedableRng as _};
 use rand_chacha::ChaCha20Rng;
-use wallet::protocol_wallet_api::{MemWallet};
+use wallet::protocol_wallet_api::MemWallet;
+
 use crate::receiver::Receiver;
 use crate::swap::Swap as _;
 use crate::transaction::{Result, TransactionErrorKind, TxOutput};
