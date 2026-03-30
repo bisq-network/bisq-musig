@@ -367,7 +367,7 @@ impl RedirectTx {
     }
 
     pub fn broadcast(&self, me: &BMPContext) -> anyhow::Result<Txid> {
-        Ok(me.funds.transaction_broadcast(self.builder.signed_tx()?)?)
+        me.funds.transaction_broadcast(self.builder.signed_tx()?)
     }
 
     /// sum of all f64 must be 1
@@ -429,7 +429,7 @@ impl ClaimTx {
     }
 
     pub fn broadcast(&self, me: &BMPContext) -> anyhow::Result<Txid> {
-        Ok(me.funds.transaction_broadcast(self.signed_tx()?)?)
+        me.funds.transaction_broadcast(self.signed_tx()?)
     }
 }
 
@@ -521,7 +521,7 @@ impl WarningTx {
     }
 
     pub fn broadcast(&self, me: &BMPContext) -> anyhow::Result<Txid> {
-        Ok(me.funds.transaction_broadcast(self.signed_tx()?)?)
+        me.funds.transaction_broadcast(self.signed_tx()?)
     }
 }
 
@@ -629,7 +629,7 @@ impl SwapTx {
     }
 
     pub fn broadcast(&self, me: &BMPContext) -> anyhow::Result<Txid> {
-        Ok(me.funds.transaction_broadcast(self.builder.signed_tx()?)?)
+        me.funds.transaction_broadcast(self.builder.signed_tx()?)
     }
 }
 

@@ -2,14 +2,12 @@ use std::collections::HashMap;
 use std::sync::Mutex;
 
 use bdk_wallet::bitcoin::Amount;
-use protocol::protocol_musig_adaptor::{
-    BMPContext, BMPProtocol, ProtocolRole, Round1Parameter,
-};
-use wallet::protocol_wallet_api::MemWallet;
+use protocol::protocol_musig_adaptor::{BMPContext, BMPProtocol, ProtocolRole, Round1Parameter};
 use protocol::wallet_service::WalletService;
 use testenv::TestEnv;
 use tonic::{Request, Response, Result, Status};
 use tracing::info;
+use wallet::protocol_wallet_api::MemWallet;
 
 use crate::pb::bmp_protocol::bmp_protocol_service_server::BmpProtocolService;
 use crate::pb::bmp_protocol::{self, InitializeRequest, InitializeResponse, Role};

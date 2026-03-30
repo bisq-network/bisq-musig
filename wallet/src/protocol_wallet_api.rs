@@ -1,19 +1,18 @@
-use std::io::Write;
-use std::sync::LazyLock;
-use bdk_electrum::bdk_core::bitcoin::{absolute, secp256k1, Transaction, Txid, XOnlyPublicKey};
-use bdk_electrum::bdk_core::bitcoin::bip32::Xpriv;
 use bdk_electrum::BdkElectrumClient;
+use bdk_electrum::bdk_core::bitcoin::bip32::Xpriv;
+use bdk_electrum::bdk_core::bitcoin::{Transaction, Txid, XOnlyPublicKey, absolute, secp256k1};
 use bdk_electrum::electrum_client::Client;
 use bdk_wallet::bitcoin::{Address, Amount, FeeRate, Network, OutPoint, Psbt, ScriptBuf};
+use bdk_wallet::descriptor::{Descriptor, ExtendedDescriptor};
+use bdk_wallet::miniscript::ToPublicKey;
+use bdk_wallet::miniscript::descriptor::ConversionError;
 use bdk_wallet::template::{Bip86, DescriptorTemplate};
 use bdk_wallet::{AddressInfo, KeychainKind, SignOptions, TxOrdering, Wallet};
-use bdk_wallet::descriptor::{Descriptor, ExtendedDescriptor};
-use bdk_wallet::miniscript::descriptor::ConversionError;
-use bdk_wallet::miniscript::ToPublicKey;
 use rand::RngCore;
 use secp::Scalar;
+use std::io::Write;
+use std::sync::LazyLock;
 use thiserror::Error;
-
 
 /// The Protocol Wallet API is used by the protocol to create and sign transactions.
 /// It's the part of functionality being exposed only to the protocol.
@@ -63,7 +62,9 @@ impl MemWallet {
     }
 
     pub fn reveal_next_address(&mut self) -> Address {
-        self.wallet.reveal_next_address(KeychainKind::External).address
+        self.wallet
+                .reveal_next_address(KeychainKind::External)
+                .address
     }
 
     pub fn public_descriptor(&self, chain: KeychainKind) -> &ExtendedDescriptor {
@@ -72,9 +73,14 @@ impl MemWallet {
     pub fn new_internal_key(&mut self) -> Result<XOnlyPublicKey, WalletErrorKind> {
         if let Descriptor::Tr(tr) = self.public_descriptor(KeychainKind::External) {
             let ik = tr.internal_key().clone();
-            let index = self.wallet.reveal_next_address(KeychainKind::External).index;
+            let index = self
+                    .wallet
+                    .reveal_next_address(KeychainKind::External)
+                    .index;
 
-            return Ok(ik.at_derivation_index(index)?.derive_public_key(&*LIBSECP256K1_CTX)?
+            return Ok(ik
+                    .at_derivation_index(index)?
+                    .derive_public_key(&*LIBSECP256K1_CTX)?
                     .to_x_only_pubkey());
         }
         Err(WalletErrorKind::NotTaprootAddress)
@@ -100,7 +106,13 @@ impl MemWallet {
         is_selected: &dyn Fn(&OutPoint) -> bool,
     ) -> anyhow::Result<()> {
         let mut psbt_copy = psbt.clone();
-        self.wallet.sign(&mut psbt_copy, SignOptions { trust_witness_utxo: true, ..SignOptions::default() })?;
+        self.wallet.sign(
+            &mut psbt_copy,
+            SignOptions {
+                trust_witness_utxo: true,
+                ..SignOptions::default()
+            },
+        )?;
 
         for i in 0..psbt.inputs.len() {
             if is_selected(&psbt.unsigned_tx.input[i].previous_output) {
@@ -111,7 +123,6 @@ impl MemWallet {
         }
         Ok(())
     }
-
 
     pub fn transaction_broadcast(&self, tx: &Transaction) -> anyhow::Result<Txid> {
         let result = self.client.transaction_broadcast(tx);
@@ -207,5 +218,6 @@ impl MemWallet {
 pub enum WalletErrorKind {
     #[error("not a Taproot address")]
     NotTaprootAddress,
-    ConversionError(#[from]ConversionError),
+    ConversionError(#[from] ConversionError),
 }
+

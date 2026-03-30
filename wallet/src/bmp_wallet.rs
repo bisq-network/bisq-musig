@@ -1,20 +1,20 @@
 use std::ops::{Deref, DerefMut};
 use std::{fs, vec};
 
-use base64::engine::general_purpose;
 use base64::Engine as _;
-use bdk_electrum::bdk_core::bitcoin::{absolute, Address, FeeRate, OutPoint};
-use bdk_kyoto::bip157::{tokio, Builder};
+use base64::engine::general_purpose;
+use bdk_electrum::bdk_core::bitcoin::{Address, FeeRate, OutPoint, absolute};
+use bdk_kyoto::bip157::{Builder, tokio};
 use bdk_kyoto::{BuilderExt as _, LightClient, Requester, ScanType, TrustedPeer, UpdateSubscriber};
 use bdk_wallet::bitcoin::bip32::Xpriv;
 use bdk_wallet::bitcoin::hex::DisplayHex as _;
 use bdk_wallet::bitcoin::{
-    psbt, Amount, Network, PrivateKey, Psbt, ScriptBuf, Sequence, Weight, XOnlyPublicKey,
+    Amount, Network, PrivateKey, Psbt, ScriptBuf, Sequence, Weight, XOnlyPublicKey, psbt,
 };
 use bdk_wallet::chain::Merge as _;
 use bdk_wallet::keys::bip39::Mnemonic;
 use bdk_wallet::miniscript::psbt::PsbtExt as _;
-use bdk_wallet::rusqlite::{self, named_params, Connection};
+use bdk_wallet::rusqlite::{self, Connection, named_params};
 use bdk_wallet::signer::{InputSigner as _, SignerContext, SignerError, SignerWrapper};
 use bdk_wallet::template::{Bip86, DescriptorTemplate as _};
 use bdk_wallet::{
@@ -234,8 +234,7 @@ impl BMPWallet<Connection> {
     fn imported_utxos(&self) -> Vec<WeightedUtxo> {
         let secp: &bdk_wallet::bitcoin::key::Secp256k1<bdk_wallet::bitcoin::secp256k1::All> =
             self.secp_ctx();
-        self
-            .tx_graph()
+        self.tx_graph()
             .floating_txouts()
             .map(|utxo| {
                 let output_script_pubkey = &utxo.1.script_pubkey;
@@ -767,7 +766,8 @@ impl WalletApi for BMPWallet<Connection> {
                     self.imported_balance = Balance::default();
 
                     tracing::debug!(
-                        "AMOUNT TO SEND {amount_to_send}, fees {fees}, imported balance {}", self.imported_balance
+                        "AMOUNT TO SEND {amount_to_send}, fees {fees}, imported balance {}",
+                        self.imported_balance
                     );
 
                     Ok(psbt)
@@ -799,18 +799,18 @@ mod tests {
 
     use bdk_kyoto::FeeRate;
     use bdk_wallet::bitcoin::hashes::Hash as _;
-    use bdk_wallet::bitcoin::{psbt, Address, AddressType, Amount, BlockHash, Network, Weight};
+    use bdk_wallet::bitcoin::{Address, AddressType, Amount, BlockHash, Network, Weight, psbt};
     use bdk_wallet::chain::{self, BlockId};
-    use bdk_wallet::test_utils::{receive_output_to_address, ReceiveTo};
+    use bdk_wallet::test_utils::{ReceiveTo, receive_output_to_address};
     use bdk_wallet::{AddressInfo, KeychainKind, SignOptions};
     use bmp_tracing::tracing;
     use rand::RngCore as _;
     use secp::Scalar;
     use simple_semaphore::{self, Semaphore};
-    use tempfile::{tempdir, TempDir};
+    use tempfile::{TempDir, tempdir};
 
     use crate::bmp_wallet::{BMPWallet, WalletApi as _};
-    use crate::test_utils::{derive_public_key, load_imported_wallet, MockedBDKElectrum};
+    use crate::test_utils::{MockedBDKElectrum, derive_public_key, load_imported_wallet};
 
     static SEMAPHORE: LazyLock<Arc<Semaphore>> = LazyLock::new(|| Semaphore::new(1));
 
@@ -1005,10 +1005,12 @@ mod tests {
 
         bmp_wallet.sign(&mut res_psbt, SignOptions::default())?;
 
-        assert!(res_psbt
-            .inputs
-            .iter()
-            .all(|i| i.final_script_witness.is_some()));
+        assert!(
+            res_psbt
+                .inputs
+                .iter()
+                .all(|i| i.final_script_witness.is_some())
+        );
 
         Ok(())
     }
@@ -1075,10 +1077,12 @@ mod tests {
 
         bmp_wallet.sign(&mut res_psbt, SignOptions::default())?;
 
-        assert!(res_psbt
-            .inputs
-            .iter()
-            .all(|i| i.final_script_witness.is_some()));
+        assert!(
+            res_psbt
+                .inputs
+                .iter()
+                .all(|i| i.final_script_witness.is_some())
+        );
 
         Ok(())
     }
@@ -1118,10 +1122,12 @@ mod tests {
 
         bmp_wallet.sign(&mut res_psbt, SignOptions::default())?;
 
-        assert!(res_psbt
-            .inputs
-            .iter()
-            .all(|i| i.final_script_witness.is_some()));
+        assert!(
+            res_psbt
+                .inputs
+                .iter()
+                .all(|i| i.final_script_witness.is_some())
+        );
 
         Ok(())
     }

@@ -3,11 +3,11 @@ use std::str::FromStr as _;
 use bdk_wallet::bitcoin::hashes::Hash as _;
 use bdk_wallet::bitcoin::hex::DisplayHex as _;
 use bdk_wallet::bitcoin::key::{Keypair, Secp256k1, TapTweak as _};
-use bdk_wallet::bitcoin::secp256k1::{schnorr, Message};
+use bdk_wallet::bitcoin::secp256k1::{Message, schnorr};
 use bdk_wallet::bitcoin::sighash::{Prevouts, SighashCache};
 use bdk_wallet::bitcoin::{
-    psbt, Amount, BlockHash, Network, OutPoint, PrivateKey, ScriptBuf, Sequence, TapSighashType,
-    Transaction, TxOut, Weight, Witness, XOnlyPublicKey,
+    Amount, BlockHash, Network, OutPoint, PrivateKey, ScriptBuf, Sequence, TapSighashType,
+    Transaction, TxOut, Weight, Witness, XOnlyPublicKey, psbt,
 };
 use bdk_wallet::chain::{BlockId, ChainPosition, ConfirmationBlockTime};
 use bdk_wallet::rusqlite::Connection;

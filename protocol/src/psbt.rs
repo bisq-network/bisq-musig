@@ -55,7 +55,9 @@ struct MockTradeWallet<Cs: Iterator<Item=TxOutput>, As: Iterator<Item=Address>> 
     internal_key: Option<XOnlyPublicKey>,
 }
 
-impl<Cs: Iterator<Item=TxOutput>, As: Iterator<Item=Address>> TradeWallet for MockTradeWallet<Cs, As> {
+impl<Cs: Iterator<Item = TxOutput>, As: Iterator<Item = Address>> TradeWallet
+    for MockTradeWallet<Cs, As>
+{
     fn network(&self) -> Network { Network::Regtest }
 
     fn new_address(&mut self) -> Result<Address> {
@@ -90,7 +92,7 @@ impl<Cs: Iterator<Item=TxOutput>, As: Iterator<Item=Address>> TradeWallet for Mo
             script_pubkey: half_deposit_placeholder_spk(rng),
         });
         output.extend(trade_fee_receivers.iter().map(TxOut::from));
-        // We should never normally use `new_address()` for change outputs, but this is justwallet. a mock:
+        // We should never normally use `new_address()` for change outputs, but this is just a mock:
         let mut change_output = TxOut { value: Amount::ZERO, script_pubkey: self.new_address()?.script_pubkey() };
 
         let mut cost_msat = Receiver::total_output_cost_msat(trade_fee_receivers, fee_rate, 2)?
@@ -204,6 +206,7 @@ fn signature_map(funding_coins: &[TxOutput], signatures: &[&'static str]) -> BTr
     });
     funding_coins.iter().map(|o| o.outpoint).zip(signatures).collect()
 }
+
 impl TradeWallet for Wallet {
     fn network(&self) -> Network { self.network() }
 
@@ -219,7 +222,7 @@ impl TradeWallet for Wallet {
             let index = self.reveal_next_address(KeychainKind::External).index;
 
             return Ok(ik.at_derivation_index(index)?.derive_public_key(&*LIBSECP256K1_CTX)?
-                    .to_x_only_pubkey());
+                .to_x_only_pubkey());
         }
         // TODO: Consider returning a dedicated error for this:
         Err(TransactionErrorKind::MissingAddress)
@@ -286,7 +289,7 @@ impl TradeWallet for MemWallet {
     }
 
     fn new_internal_key(&mut self) -> Result<XOnlyPublicKey> {
-        MemWallet::new_internal_key(self).map_err(TransactionErrorKind::from)
+        Self::new_internal_key(self).map_err(TransactionErrorKind::from)
     }
 
     fn create_half_deposit_psbt(

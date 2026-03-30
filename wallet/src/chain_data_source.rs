@@ -1,5 +1,5 @@
-use bdk_electrum::electrum_client::Client;
 use bdk_electrum::BdkElectrumClient;
+use bdk_electrum::electrum_client::Client;
 use bdk_wallet::PersistedWallet;
 
 use crate::bmp_wallet::BMPWalletPersister;
@@ -10,7 +10,7 @@ pub trait ChainDataSource {
     const STOP_GAP: usize;
 
     fn sync(&self, _persister: &mut PersistedWallet<impl BMPWalletPersister>)
-        -> anyhow::Result<()>;
+    -> anyhow::Result<()>;
 }
 
 impl ChainDataSource for BdkElectrumClient<Client> {

@@ -16,7 +16,7 @@ rand_chacha = { workspace = true }
 testenv = { path = "../testenv" }
 thiserror = { workspace = true }
 tracing = { workspace = true }
-wallet ={ path = "../wallet"}
+wallet = { path = "../wallet" }
 
 [dev-dependencies]
 bdk_wallet = { workspace = true, features = ["test-utils"] }
