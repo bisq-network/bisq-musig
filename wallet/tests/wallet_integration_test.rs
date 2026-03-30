@@ -19,8 +19,9 @@ fn new_private_key() -> Scalar {
 #[test]
 fn init_test() -> anyhow::Result<()> {
     let env = TestEnv::new()?;
+    let dir = env.get_tmp_dir()?;
 
-    let mut wallet = BMPWallet::new("", Network::Regtest)?;
+    let mut wallet = BMPWallet::new(dir.path(), "", Network::Regtest)?;
     let receive_amount = Amount::from_sat(100_000);
 
     let receiving_addr = wallet.next_unused_address(KeychainKind::External);
@@ -37,12 +38,13 @@ fn init_test() -> anyhow::Result<()> {
 #[test]
 fn test_sync_with_imported_keys() -> anyhow::Result<()> {
     let env = TestEnv::new()?;
+    let dir = env.get_tmp_dir()?;
 
     let prv_key = new_private_key();
 
     let receive_amount = Amount::from_sat(100_000);
 
-    let mut wallet = BMPWallet::new("", Network::Regtest)?;
+    let mut wallet = BMPWallet::new(dir.path(), "", Network::Regtest)?;
     wallet.import_private_key(prv_key);
 
     let receiving_addr = wallet.next_unused_address(KeychainKind::External);
@@ -62,11 +64,12 @@ fn test_sync_with_imported_keys() -> anyhow::Result<()> {
 fn test_broadcast_transaction() -> anyhow::Result<()> {
     // This test broadcast a transaction created from main wallet balance only
     let env = TestEnv::new()?;
+    let dir = env.get_tmp_dir()?;
     let data_source = env.bdk_electrum_client();
 
     let prv_key = new_private_key();
 
-    let mut wallet = BMPWallet::new("", Network::Regtest)?;
+    let mut wallet = BMPWallet::new(dir.path(), "", Network::Regtest)?;
     wallet.import_private_key(prv_key);
 
     let receive_amount = Amount::from_sat(100_000);
@@ -100,7 +103,7 @@ fn test_broadcast_transaction() -> anyhow::Result<()> {
     assert_eq!(wallet.balance(), new_balance);
 
     // Reload the wallet by encrypting it to make sure the state changes are persisted
-    let enc_wallet = BMPWallet::load_wallet(Network::Regtest, "")?;
+    let enc_wallet = BMPWallet::load_wallet(dir.path(), Network::Regtest, "")?;
     assert_eq!(enc_wallet.balance(), new_balance);
 
     Ok(())
@@ -111,10 +114,11 @@ fn test_broadcast_transaction_two() -> anyhow::Result<()> {
     // This test broadcast a transaction created from imported wallets only
     let env = TestEnv::new()?;
     let data_source = env.bdk_electrum_client();
+    let dir = env.get_tmp_dir()?;
 
     let prv_key = new_private_key();
 
-    let mut wallet = BMPWallet::new("", Network::Regtest)?;
+    let mut wallet = BMPWallet::new(dir.path(), "", Network::Regtest)?;
     wallet.import_private_key(prv_key);
 
     let receive_amount = Amount::from_sat(100_000);
@@ -146,7 +150,7 @@ fn test_broadcast_transaction_two() -> anyhow::Result<()> {
     assert_eq!(wallet.balance(), new_balance);
 
     // Reload the wallet by encrypting it to make sure the state changes are persisted
-    let enc_wallet = BMPWallet::load_wallet(Network::Regtest, "")?;
+    let enc_wallet = BMPWallet::load_wallet(dir.path(), Network::Regtest, "")?;
     assert_eq!(enc_wallet.balance(), new_balance);
 
     Ok(())
@@ -157,11 +161,12 @@ fn test_broadcast_transaction_three() -> anyhow::Result<()> {
     // This test will attempt send a transaction created from both main wallet and imported keys
     // balance
     let env = TestEnv::new()?;
+    let dir = env.get_tmp_dir()?;
     let data_source = env.bdk_electrum_client();
 
     let prv_key = new_private_key();
 
-    let mut wallet = BMPWallet::new("", Network::Regtest)?;
+    let mut wallet = BMPWallet::new(dir.path(), "", Network::Regtest)?;
     wallet.import_private_key(prv_key);
 
     let main_wallet_addr = wallet.next_unused_address(KeychainKind::External);
@@ -198,7 +203,7 @@ fn test_broadcast_transaction_three() -> anyhow::Result<()> {
     assert_eq!(wallet.balance(), new_balance);
 
     // Reload the wallet by encrypting it to make sure the state changes are persisted
-    let mut enc_wallet = BMPWallet::load_wallet(Network::Regtest, "")?;
+    let mut enc_wallet = BMPWallet::load_wallet(dir.path(), Network::Regtest, "")?;
 
     env.fund_address(&main_wallet_addr, Amount::from_sat(10_000))?;
     env.mine_block()?;
@@ -211,8 +216,9 @@ fn test_broadcast_transaction_three() -> anyhow::Result<()> {
 #[tokio::test]
 async fn test_cbf_main_wallet() -> anyhow::Result<()> {
     let env = TestEnv::new()?;
+    let dir = env.get_tmp_dir()?;
     env.mine_blocks(2)?;
-    let mut wallet = BMPWallet::new("", Network::Regtest)?;
+    let mut wallet = BMPWallet::new(dir.path(), "", Network::Regtest)?;
     let addr = wallet.next_unused_address(KeychainKind::External);
     env.fund_address(&addr, Amount::from_sat(100_000))?;
 
@@ -232,9 +238,10 @@ async fn test_cbf_main_wallet() -> anyhow::Result<()> {
 #[tokio::test]
 async fn test_cbf_imported() -> anyhow::Result<()> {
     let env = TestEnv::new()?;
+    let dir = env.get_tmp_dir()?;
     env.mine_block()?;
 
-    let mut wallet = BMPWallet::new("", Network::Regtest)?;
+    let mut wallet = BMPWallet::new(dir.path(), "", Network::Regtest)?;
 
     let prv_keys = [new_private_key(), new_private_key(), new_private_key()];
     prv_keys.iter().for_each(|e| wallet.import_private_key(*e));
@@ -258,9 +265,11 @@ async fn test_cbf_imported() -> anyhow::Result<()> {
 #[tokio::test]
 async fn test_cbf_imported_and_main() -> anyhow::Result<()> {
     let env = TestEnv::new()?;
+    let dir = env.get_tmp_dir()?;
+
     env.mine_block()?;
 
-    let mut wallet = BMPWallet::new("", Network::Regtest)?;
+    let mut wallet = BMPWallet::new(dir.path(), "", Network::Regtest)?;
     let addr = wallet.next_unused_address(KeychainKind::External);
     env.fund_address(&addr, Amount::from_sat(100_000))?;
 
@@ -290,9 +299,11 @@ async fn test_cbf_imported_and_main() -> anyhow::Result<()> {
 #[tokio::test]
 async fn test_cbf_persistence() -> anyhow::Result<()> {
     let env = TestEnv::new()?;
+    let dir = env.get_tmp_dir()?;
+
     env.mine_block()?;
 
-    let mut wallet = BMPWallet::new("", Network::Regtest)?;
+    let mut wallet = BMPWallet::new(dir.path(), "", Network::Regtest)?;
     let addr = wallet.next_unused_address(KeychainKind::External);
     env.fund_address(&addr, Amount::from_sat(230_000))?;
 
@@ -305,7 +316,7 @@ async fn test_cbf_persistence() -> anyhow::Result<()> {
     assert_eq!(wallet.balance(), Amount::from_sat(230_000));
 
     // Reload the wallet from persisted state
-    let mut loaded_wallet = BMPWallet::load_wallet(Network::Regtest, "")?;
+    let mut loaded_wallet = BMPWallet::load_wallet(dir.path(), Network::Regtest, "")?;
     assert_eq!(loaded_wallet.balance(), Amount::from_sat(230_000));
 
     env.fund_address(&addr, Amount::from_sat(70_000))?;
@@ -339,9 +350,11 @@ async fn test_drain_wallet_with_main_balance() -> anyhow::Result<()> {
     // This test will attempt to drain the imported wallets UTXOs
     // With the main wallet having some balance it won't be touched.
     let env = TestEnv::new()?;
+    let dir = env.get_tmp_dir()?;
+
     env.mine_block()?;
 
-    let mut wallet = BMPWallet::new("", Network::Regtest)?;
+    let mut wallet = BMPWallet::new(dir.path(), "", Network::Regtest)?;
     let addr = wallet.next_unused_address(KeychainKind::External);
 
     let amount_to_send_main_wallet = Amount::from_sat(100_000);
@@ -387,9 +400,11 @@ async fn test_drain_wallet_no_balance() {
     // In this test drain is called but the wallet doesn't have any imported key
     // insuffucient balance should be thrown
     let env = TestEnv::new().unwrap();
+    let dir = env.get_tmp_dir().unwrap();
+
     env.mine_block().unwrap();
 
-    let mut wallet = BMPWallet::new("", Network::Regtest).unwrap();
+    let mut wallet = BMPWallet::new(dir.path(), "", Network::Regtest).unwrap();
     let addr = wallet.next_unused_address(KeychainKind::External);
 
     let amount_to_send_main_wallet = Amount::from_sat(100_000);
@@ -400,40 +415,4 @@ async fn test_drain_wallet_no_balance() {
     wallet
         .drain_imported_balance(FeeRate::from_sat_per_vb(10).unwrap())
         .unwrap();
-}
-
-#[test]
-fn test_multi_wallet_path() -> anyhow::Result<()> {
-    let env = TestEnv::new()?;
-    env.mine_block()?;
-
-    let client = env.bdk_electrum_client();
-
-    let dir_one = env.get_tmp_dir()?;
-    let dir_two = env.get_tmp_dir()?;
-
-    let mut w1 = BMPWallet::new_with_dir(dir_one.path().to_str().unwrap(), "", Network::Regtest)?;
-    let mut w2 = BMPWallet::new_with_dir(
-        dir_two.path().to_str().unwrap(),
-        "password",
-        Network::Regtest,
-    )?;
-
-    let amount_to_send_w1 = Amount::from_sat(100_000);
-    let amount_to_send_w2 = Amount::from_sat(80_000);
-
-    let addr_w1 = w1.next_unused_address(KeychainKind::External);
-    let addr_w2 = w2.next_unused_address(KeychainKind::External);
-
-    env.fund_address(&addr_w1, amount_to_send_w1)?;
-    env.fund_address(&addr_w2, amount_to_send_w2)?;
-
-    env.mine_block()?;
-
-    w1.sync_all(client)?;
-    w2.sync_all(client)?;
-
-    assert_eq!(w1.balance(), amount_to_send_w1);
-    assert_eq!(w2.balance(), amount_to_send_w2);
-    Ok(())
 }

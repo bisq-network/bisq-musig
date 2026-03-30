@@ -1,3 +1,4 @@
+use std::path::Path;
 use std::str::FromStr as _;
 
 use bdk_wallet::bitcoin::hashes::Hash as _;
@@ -83,10 +84,11 @@ pub fn verify_signature(
     Ok(())
 }
 
-pub fn load_imported_wallet(key: &Scalar) -> anyhow::Result<PersistedWallet<Connection>> {
+pub fn load_imported_wallet(p: &Path, key: &Scalar) -> anyhow::Result<PersistedWallet<Connection>> {
     let pbk = key.base_point_mul();
     let pubk = pbk.serialize_xonly().to_lower_hex_string();
     let db_path = format!("bmp_{}.db3", pubk);
+    let db_path = p.join(db_path);
 
     let mut db = Connection::open(db_path)?;
     let imported_wallet_opt = Wallet::load()

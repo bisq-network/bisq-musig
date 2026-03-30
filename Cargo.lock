@@ -2989,7 +2989,7 @@ dependencies = [
  "simple-semaphore",
  "tempfile",
  "testenv",
- "thiserror",
+ "thiserror 2.0.18",
  "tracing",
  "zeroize",
 ]
