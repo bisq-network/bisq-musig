@@ -1,8 +1,8 @@
-use bdk_wallet::bitcoin::{key, Amount, FeeRate, Script};
+use bdk_wallet::WeightedUtxo;
+use bdk_wallet::bitcoin::{Amount, FeeRate, Script, key};
 use bdk_wallet::coin_selection::{
     CoinSelectionAlgorithm, CoinSelectionResult, DefaultCoinSelectionAlgorithm, InsufficientFunds,
 };
-use bdk_wallet::WeightedUtxo;
 
 #[derive(Debug)]
 pub struct AlwaysSpendImportedFirst(pub Vec<WeightedUtxo>);

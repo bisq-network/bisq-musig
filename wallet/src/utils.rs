@@ -1,8 +1,8 @@
 use std::fs;
 
 use argon2::{Argon2, Block, Params};
-use base64::engine::general_purpose;
 use base64::Engine as _;
+use base64::engine::general_purpose;
 use bdk_kyoto::bip157::tokio;
 use bdk_kyoto::{Info, Receiver, UnboundedReceiver, Warning};
 use zeroize::Zeroize as _;

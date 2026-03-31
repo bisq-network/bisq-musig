@@ -14,6 +14,7 @@ use bdk_wallet::miniscript::{Descriptor, ToPublicKey as _};
 use bdk_wallet::{KeychainKind, SignOptions, TxOrdering, Wallet};
 use rand::{RngCore, SeedableRng as _};
 use rand_chacha::ChaCha20Rng;
+use wallet::protocol_wallet_api::MemWallet;
 
 use crate::receiver::Receiver;
 use crate::swap::Swap as _;
@@ -55,7 +56,9 @@ struct MockTradeWallet<Cs: Iterator<Item=TxOutput>, As: Iterator<Item=Address>> 
     internal_key: Option<XOnlyPublicKey>,
 }
 
-impl<Cs: Iterator<Item=TxOutput>, As: Iterator<Item=Address>> TradeWallet for MockTradeWallet<Cs, As> {
+impl<Cs: Iterator<Item = TxOutput>, As: Iterator<Item = Address>> TradeWallet
+    for MockTradeWallet<Cs, As>
+{
     fn network(&self) -> Network { Network::Regtest }
 
     fn new_address(&mut self) -> Result<Address> {
@@ -235,19 +238,19 @@ impl TradeWallet for Wallet {
     ) -> Result<Psbt> {
         let mut builder = self.build_tx();
         builder
-            .ordering(TxOrdering::Untouched)
-            .nlocktime(absolute::LockTime::ZERO)
-            .fee_rate(fee_rate)
-            .add_recipient(half_deposit_placeholder_spk(rng), deposit_amount);
+                .ordering(TxOrdering::Untouched)
+                .nlocktime(absolute::LockTime::ZERO)
+                .fee_rate(fee_rate)
+                .add_recipient(half_deposit_placeholder_spk(rng), deposit_amount);
         for receiver in trade_fee_receivers {
             builder.add_recipient(receiver.address.script_pubkey(), receiver.amount);
         }
         let mut psbt = builder.finish()?;
         // Calculate tx fee overpay unconditionally, as this performs additional checks on the PSBT:
         let overpay_msat: u64 = half_psbt_fee_overpay_msat(&psbt, fee_rate)
-            .ok_or(TransactionErrorKind::Overflow)?
-            .try_into()
-            .map_err(|_| TransactionErrorKind::InvalidPsbt)?;
+                .ok_or(TransactionErrorKind::Overflow)?
+                .try_into()
+                .map_err(|_| TransactionErrorKind::InvalidPsbt)?;
         let change_output_index = 1 + trade_fee_receivers.len();
         if psbt.unsigned_tx.output.len() > change_output_index {
             // Correct any tx fee overpay due to overly conservative input witness size estimation
@@ -273,6 +276,59 @@ impl TradeWallet for Wallet {
                 psbt.inputs[i].final_script_witness = psbt_copy.inputs[i].final_script_witness.take();
             }
         }
+        Ok(())
+    }
+}
+
+impl TradeWallet for MemWallet {
+    fn network(&self) -> Network { self.network() }
+
+    fn new_address(&mut self) -> Result<Address> {
+        // For privacy, always get fresh addresses for the trade protocol.
+        // FIXME: Need to find a way to prevent gaps of unused addresses from growing too large.
+        Ok(self.reveal_next_address())
+    }
+
+    fn new_internal_key(&mut self) -> Result<XOnlyPublicKey> {
+        Self::new_internal_key(self).map_err(TransactionErrorKind::from)
+    }
+
+    fn create_half_deposit_psbt(
+        &mut self,
+        deposit_amount: Amount,
+        fee_rate: FeeRate,
+        trade_fee_receivers: &[Receiver],
+        rng: &mut dyn RngCore,
+    ) -> Result<Psbt> {
+        let mut res: Vec<(ScriptBuf, Amount)> = trade_fee_receivers
+                .iter()
+                .map(|receiver| (receiver.address.script_pubkey(), deposit_amount))
+                .collect();
+        res.push((half_deposit_placeholder_spk(rng), deposit_amount));
+        let mut psbt = self.create_psbt(res, fee_rate)?;
+        // Calculate tx fee overpay unconditionally, as this performs additional checks on the PSBT:
+        let overpay_msat: u64 = half_psbt_fee_overpay_msat(&psbt, fee_rate)
+            .ok_or(TransactionErrorKind::Overflow)?
+            .try_into()
+            .map_err(|_| TransactionErrorKind::InvalidPsbt)?;
+        let change_output_index = 1 + trade_fee_receivers.len();
+        if psbt.unsigned_tx.output.len() > change_output_index {
+            // Correct any tx fee overpay due to overly conservative input witness size estimation
+            // by BDK (as each witness is assumed to potentially have a non-default sighash type in
+            // the case of p2tr and not grind for low R in the case of p2wpkh), and also due to the
+            // fact that each would-be-signed half-deposit PSBT is 1 wu bigger than ideal.
+            let overpay = Amount::from_sat(overpay_msat / 1000);
+            psbt.unsigned_tx.output[change_output_index].value += overpay;
+        }
+        psbt.redact_sensitive_fields();
+        Ok(psbt)
+    }
+
+    fn sign_selected_inputs(&self, psbt: &mut Psbt, is_selected: &dyn Fn(&OutPoint) -> bool) -> Result<()> {
+        if !is_well_formed(psbt) {
+            return Err(TransactionErrorKind::InvalidPsbt);
+        }
+        self.sign_the_selected_inputs(psbt, is_selected)?;
         Ok(())
     }
 }

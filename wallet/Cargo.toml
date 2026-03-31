@@ -16,10 +16,12 @@ rusqlite = { workspace = true }
 secp = { workspace = true }
 tracing = { workspace = true }
 zeroize = { workspace = true }
+thiserror =  { workspace = true }
+
+testenv = { path = "../testenv" }
 
 [dev-dependencies]
 bdk_wallet = { workspace = true, features = ["test-utils"] }
 bmp_tracing = { workspace = true }
 simple-semaphore = { workspace = true }
 tempfile = { workspace = true }
-testenv = { path = "../testenv"}

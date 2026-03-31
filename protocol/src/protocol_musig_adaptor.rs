@@ -1,61 +1,19 @@
-use std::io::Write as _;
 use std::str::FromStr as _;
 
-use bdk_electrum::BdkElectrumClient;
-use bdk_electrum::electrum_client::Client;
-use bdk_wallet::bitcoin::bip32::Xpriv;
 use bdk_wallet::bitcoin::{
     Address, Amount, FeeRate, Network, OutPoint, Psbt, Script, ScriptBuf, Transaction, TxOut, Txid,
     relative,
 };
-use bdk_wallet::template::{Bip86, DescriptorTemplate as _};
-use bdk_wallet::{AddressInfo, KeychainKind, SignOptions, Wallet};
 use musig2::secp::{MaybeScalar, Point};
 use musig2::{PartialSignature, PubNonce};
-use rand::RngCore as _;
-use testenv::TestEnv;
 
+use wallet::protocol_wallet_api::MemWallet;
 use crate::multisig::{KeyCtx, SigCtx};
 use crate::receiver::{Receiver, ReceiverList};
 use crate::transaction::{
     DepositTxBuilder, ForwardingTxBuilder, RedirectTxBuilder, WarningTxBuilder, WithWitnesses as _,
 };
 use crate::wallet_service::WalletService;
-
-pub struct MemWallet {
-    wallet: Wallet,
-    client: BdkElectrumClient<Client>,
-}
-
-impl MemWallet {
-    pub fn transaction_broadcast(&self, tx: &Transaction) -> anyhow::Result<Txid> {
-        let result = self.client.transaction_broadcast(tx);
-
-        if let Err(e) = result {
-            if e.to_string().contains("Transaction already in block chain") {
-                return Ok(tx.compute_txid());
-            }
-            return Err(e.into());
-        }
-
-        Ok(result?)
-    }
-
-    pub fn funded_wallet(env: &TestEnv) -> Self {
-        // TODO move this line to TestEnv
-        let client =
-            BdkElectrumClient::new(Client::new(&env.electrum_url()).unwrap());
-        let mut wallet = Self::new(client).unwrap();
-        let address = wallet.next_unused_address();
-        let txid = env
-            .fund_address(&address, Amount::from_btc(10f64).unwrap())
-            .unwrap();
-        env.mine_block().unwrap();
-        env.wait_for_tx(txid).unwrap();
-        wallet.sync().unwrap();
-        wallet
-    }
-}
 
 #[derive(PartialEq, Eq, Clone, Copy, Debug)]
 #[expect(clippy::exhaustive_enums)]
@@ -70,94 +28,6 @@ impl ProtocolRole {
             Self::Seller => Self::Buyer,
             Self::Buyer => Self::Seller,
         }
-    }
-}
-
-// TODO think about stop_gap and batch_size
-const STOP_GAP: usize = 50;
-const BATCH_SIZE: usize = 5;
-
-impl MemWallet {
-    pub fn new(client: BdkElectrumClient<Client>) -> anyhow::Result<Self> {
-        let mut seed: [u8; 32] = [0u8; 32];
-        rand::rng().fill_bytes(&mut seed);
-
-        let network: Network = Network::Regtest;
-        let xprv: Xpriv = Xpriv::new_master(network, &seed)?;
-        tracing::info!(
-            "Generated Master Private Key:\n{xprv}\nWarning: be very careful with private \
-            keys when using MainNet! We are logging these values for convenience only because this \
-            is an example on RegTest.\n"
-        );
-
-        let (descriptor, external_map, _) = Bip86(xprv, KeychainKind::External)
-            .build(network)
-            .expect("Failed to build external descriptor");
-
-        let (change_descriptor, internal_map, _) = Bip86(xprv, KeychainKind::Internal)
-            .build(network)
-            .expect("Failed to build internal descriptor");
-
-        let wallet = Wallet::create(descriptor, change_descriptor)
-            .network(network)
-            .keymap(KeychainKind::External, external_map)
-            .keymap(KeychainKind::Internal, internal_map)
-            .create_wallet_no_persist()?;
-
-        Ok(Self { wallet, client })
-    }
-
-    pub fn sync(&mut self) -> anyhow::Result<()> {
-        // Populate the electrum client's transaction cache so it doesn't re-download transaction we
-        // already have.
-        self.client
-            .populate_tx_cache(self.wallet.tx_graph().full_txs().map(|tx_node| tx_node.tx));
-
-        let request = self.wallet.start_full_scan().inspect({
-            let mut stdout = std::io::stdout();
-            // let mut once = HashSet::<KeychainKind>::new();
-            move |_k, _spk_i, _| {
-                // if once.insert(k) {
-                //     print!("\nScanning keychain [{:?}]", k);
-                // }
-                // print!(" {:<3}", spk_i);
-                stdout.flush().expect("must flush");
-            }
-        });
-        tracing::info!("requesting update...");
-        let update = self
-            .client
-            .full_scan(request, STOP_GAP, BATCH_SIZE, false)?;
-        self.wallet.apply_update(update)?;
-        Ok(())
-    }
-
-    pub fn balance(&self) -> Amount {
-        self.wallet.balance().trusted_spendable()
-    }
-
-    pub fn next_unused_address(&mut self) -> AddressInfo {
-        // FIXME: `next_unused_address` just returns the same unused address over and over. It has
-        //  to either be marked as used (which change isn't staged and therefore presumably never
-        //  persisted) or a fresh address requested with `reveal_next_address`.
-        self.wallet.next_unused_address(KeychainKind::External)
-    }
-
-    fn _transfer_to_address(
-        &mut self,
-        address: &AddressInfo,
-        amount: Amount,
-    ) -> anyhow::Result<Txid> {
-        let mut tx_builder = self.wallet.build_tx();
-        tx_builder.add_recipient(address.script_pubkey(), amount);
-
-        let mut psbt = tx_builder.finish()?;
-        let finalized = self.wallet.sign(&mut psbt, SignOptions::default())?;
-        assert!(finalized);
-
-        let tx = psbt.extract_tx()?;
-        self.client.transaction_broadcast(&tx)?;
-        Ok(tx.compute_txid())
     }
 }
 
@@ -497,7 +367,7 @@ impl RedirectTx {
     }
 
     pub fn broadcast(&self, me: &BMPContext) -> anyhow::Result<Txid> {
-        Ok(me.funds.client.transaction_broadcast(self.builder.signed_tx()?)?)
+        me.funds.transaction_broadcast(self.builder.signed_tx()?)
     }
 
     /// sum of all f64 must be 1
@@ -559,7 +429,7 @@ impl ClaimTx {
     }
 
     pub fn broadcast(&self, me: &BMPContext) -> anyhow::Result<Txid> {
-        Ok(me.funds.client.transaction_broadcast(self.signed_tx()?)?)
+        me.funds.transaction_broadcast(self.signed_tx()?)
     }
 }
 
@@ -651,7 +521,7 @@ impl WarningTx {
     }
 
     pub fn broadcast(&self, me: &BMPContext) -> anyhow::Result<Txid> {
-        Ok(me.funds.client.transaction_broadcast(self.signed_tx()?)?)
+        me.funds.transaction_broadcast(self.signed_tx()?)
     }
 }
 
@@ -759,7 +629,7 @@ impl SwapTx {
     }
 
     pub fn broadcast(&self, me: &BMPContext) -> anyhow::Result<Txid> {
-        Ok(me.funds.client.transaction_broadcast(self.builder.signed_tx()?)?)
+        me.funds.transaction_broadcast(self.builder.signed_tx()?)
     }
 }
 
@@ -785,11 +655,11 @@ impl DepositTx {
 
         let psbt = if ctx.am_buyer() {
             self.builder
-                .init_buyers_half_psbt(&mut ctx.funds.wallet, &mut rand::rng())?
+                    .init_buyers_half_psbt(&mut ctx.funds, &mut rand::rng())?
                 .buyers_half_psbt()?
         } else {
             self.builder
-                .init_sellers_half_psbt(&mut ctx.funds.wallet, &mut rand::rng())?
+                    .init_sellers_half_psbt(&mut ctx.funds, &mut rand::rng())?
                 .sellers_half_psbt()?
         };
         Ok(psbt.clone())
@@ -810,9 +680,9 @@ impl DepositTx {
 
     fn sign(&mut self, ctx: &mut BMPContext) -> anyhow::Result<()> {
         if ctx.am_buyer() {
-            self.builder.sign_buyer_inputs(&ctx.funds.wallet)?;
+            self.builder.sign_buyer_inputs(&ctx.funds)?;
         } else {
-            self.builder.sign_seller_inputs(&ctx.funds.wallet)?;
+            self.builder.sign_seller_inputs(&ctx.funds)?;
         }
         Ok(())
     }
