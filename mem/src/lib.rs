@@ -1,8 +1,9 @@
-use bdk_wallet::bitcoin::{consensus, Transaction};
 use std::time::Duration;
+
+use bdk_wallet::bitcoin::{Transaction, consensus};
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
-use zeromq::{Socket, SocketRecv, SubSocket};
+use zeromq::{Socket as _, SocketRecv as _, SubSocket};
 
 pub async fn stream_unconfirmed_tx(zmq_connect: &str) -> ReceiverStream<Transaction> {
     // Subscribe to raw transactions via ZMQ

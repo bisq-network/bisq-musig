@@ -161,6 +161,12 @@ impl TestEnv {
         Self::new_with_conf(Config::default())
     }
 
+    /// Generate a new temporary directory
+    pub fn get_tmp_dir(&self) -> anyhow::Result<TempDir> {
+        let dir = TempDir::new()?;
+        Ok(dir)
+    }
+
     /// Create a new test environment with ZMQ enabled on bitcoind.
     ///
     /// The ZMQ socket addresses are available via
