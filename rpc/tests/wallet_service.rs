@@ -11,7 +11,7 @@ use tokio::time::{self, Duration};
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn test_wallet_service_mine_single_tx() -> Result<()> {
-    let testenv = TestEnv::new()?;
+    let mut testenv = TestEnv::new()?;
     // testenv.start_explorer_in_container()?;
 
     let rpc_client = testenv.bitcoin_core_rpc_client()?;

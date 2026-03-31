@@ -29,8 +29,8 @@ impl BmpProtocolService for BmpServiceImpl {
         info!("Received initialize request: {req:?}");
 
         //todo retrieve the actual wallet
-        let env = TestEnv::new().unwrap(); // TODO move Wallet loading
-        let mock_wallet = MemWallet::funded_wallet(&env);
+        let mut env = TestEnv::new().unwrap(); // TODO move Wallet loading
+        let mock_wallet = MemWallet::funded_wallet(&mut env);
         let wallet_service = WalletService::new().load(mock_wallet);
 
         let role =

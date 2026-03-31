@@ -198,7 +198,7 @@ impl MemWallet {
         self.wallet.next_unused_address(KeychainKind::External)
     }
 
-    pub fn funded_wallet(env: &testenv::TestEnv) -> Self {
+    pub fn funded_wallet(env: &mut testenv::TestEnv) -> Self {
         let client = BdkElectrumClient::new(Client::new(&env.electrum_url()).unwrap());
         let mut wallet = Self::new(client).unwrap();
         let address = wallet.next_unused_address();
@@ -220,4 +220,3 @@ pub enum WalletErrorKind {
     NotTaprootAddress,
     ConversionError(#[from] ConversionError),
 }
-
