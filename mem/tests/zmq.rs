@@ -1,7 +1,7 @@
 use std::time::Duration;
 
 use anyhow::Result;
-use bdk_wallet::bitcoin::{consensus, Amount, Transaction};
+use bdk_wallet::bitcoin::{Amount, Transaction, consensus};
 use mem::stream_unconfirmed_tx;
 use testenv::TestEnv;
 use tokio_stream::StreamExt as _;
@@ -17,7 +17,7 @@ async fn test_stream_zmq_async_receives_broadcast_tx() -> Result<()> {
     let address = env.new_address()?;
     let amount = Amount::from_sat(50_000);
     let txid = env.fund_address(&address, amount)?;
-    env.debug_tx(txid); // output link to inspect the transaction iff esplorer is running.
+    env.debug_tx(txid); // output link to inspect the transaction iff esplora is running.
 
     let zmq_tx = tokio::time::timeout(
         Duration::from_secs(5),

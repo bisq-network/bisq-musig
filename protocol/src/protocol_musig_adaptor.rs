@@ -6,8 +6,8 @@ use bdk_wallet::bitcoin::{
 };
 use musig2::secp::{MaybeScalar, Point};
 use musig2::{PartialSignature, PubNonce};
-
 use wallet::protocol_wallet_api::MemWallet;
+
 use crate::multisig::{KeyCtx, SigCtx};
 use crate::receiver::{Receiver, ReceiverList};
 use crate::transaction::{
@@ -67,10 +67,10 @@ pub struct Round2Parameter {
 #[derive(Debug)]
 pub struct Round3Parameter {
     // DepositTx --------
-    pub deposit_txid: Txid, // only for verification / fast fail
+    // only for verification / fast fail
+    pub deposit_txid: Txid,
     // SwapTx --------------
     // aggregated adaptive signature for SwapTx,
-
     pub swap_part_sig: PartialSignature,
     pub p_part_peer: PartialSignature,
     pub q_part_peer: PartialSignature,
@@ -314,7 +314,8 @@ impl BMPProtocol {
 /// can raise the fees with CPFP to get it mined before `ClaimTx` can be broadcast.
 ///
 /// `RedirectTx` Bob spends from `WarningTx` Alice, that's important.
-/// Sending funds to the DAO is done by having a list of addresses (from contributors) and percentages. (must add up to 100%)
+/// Sending funds to the DAO is done by having a list of addresses (from contributors) and
+/// percentages. (must add up to 100%)
 #[derive(Default)]
 pub struct RedirectTx {
     pub sig: SigCtx,
@@ -544,8 +545,8 @@ impl SwapTx {
         self.swap_spend.clone()
     }
 
-    /// even though only the seller gets a `SwapTx` transaction, both parties are constructing the transaction
-    /// and only the buyer will send the seller the signature.
+    /// even though only the seller gets a `SwapTx` transaction, both parties are constructing the
+    /// transaction and only the buyer will send the seller the signature.
     fn new(role: ProtocolRole) -> Self {
         Self {
             role,
@@ -655,11 +656,11 @@ impl DepositTx {
 
         let psbt = if ctx.am_buyer() {
             self.builder
-                    .init_buyers_half_psbt(&mut ctx.funds, &mut rand::rng())?
+                .init_buyers_half_psbt(&mut ctx.funds, &mut rand::rng())?
                 .buyers_half_psbt()?
         } else {
             self.builder
-                    .init_sellers_half_psbt(&mut ctx.funds, &mut rand::rng())?
+                .init_sellers_half_psbt(&mut ctx.funds, &mut rand::rng())?
                 .sellers_half_psbt()?
         };
         Ok(psbt.clone())
@@ -687,8 +688,10 @@ impl DepositTx {
         Ok(())
     }
 
-    fn transfer_sig_and_broadcast(&mut self, ctx: &mut BMPContext,
-                                  psbt_bob: Psbt,   // bobs psbt should be same as mine but have bob's sig
+    fn transfer_sig_and_broadcast(
+        &mut self,
+        ctx: &mut BMPContext,
+        psbt_bob: Psbt, // bobs psbt should be same as mine but have bob's sig
     ) -> anyhow::Result<Txid> {
         self.builder.combine_psbts(psbt_bob)?;
 
