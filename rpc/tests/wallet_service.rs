@@ -12,7 +12,7 @@ use tokio::time::{self, Duration};
 // TODO fix this test, I guess we need to rewrite it, may be the whole streaming of transaction
 // events.
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
-#[ignore = "needs to be fixedy"]
+#[ignore = "needs to be fixed"]
 async fn test_wallet_service_mine_single_tx() -> Result<()> {
     let mut testenv = TestEnv::new()?;
     // testenv.start_explorer_in_container()?;
