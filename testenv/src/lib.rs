@@ -39,6 +39,7 @@ pub struct TestEnv {
     container_name: Option<String>,
     explorer_port: Option<u16>,
     bitcoin_rpc_pwd: String,
+    mempool: Vec<Txid>,
 }
 
 /// Configuration parameters.
@@ -259,14 +260,16 @@ impl TestEnv {
             container_name: None,
             explorer_port: None,
             bitcoin_rpc_pwd,
+            mempool: Vec::new(),
         };
         tracing::info!("Bitcoin regtest environment ready!");
         Ok(test_env)
     }
 
-    pub fn broadcast(&self, tx: &Transaction) -> Result<Txid> {
+    pub fn broadcast(&mut self, tx: &Transaction) -> Result<Txid> {
         let txid = self.bdk_electrum_client.transaction_broadcast(tx)?;
         let _ = self.wait_for_tx(txid);
+        self.mempool.push(txid);
         Ok(txid)
     }
 
@@ -380,11 +383,18 @@ impl TestEnv {
     }
 
     /// Mine blocks using bitcoind RPC
-    pub fn mine_blocks(&self, count: usize) -> Result<Vec<BlockHash>> {
+    pub fn mine_blocks(&mut self, count: usize) -> Result<Vec<BlockHash>> {
         let block_hashes = self
             .bitcoind
             .client
             .generate_to_address(count, &self.new_address()?)?;
+
+        self.wait_for_block()?;
+
+        for txid in self.mempool.iter() {
+            let _ = self.wait_for_tx(*txid);
+        }
+        self.mempool.clear();
 
         // Convert to BlockHash format
         block_hashes
@@ -395,13 +405,12 @@ impl TestEnv {
     }
 
     /// Mine a single block
-    pub fn mine_block(&self) -> Result<BlockHash> {
+    pub fn mine_block(&mut self) -> Result<BlockHash> {
         let hashes = self.mine_blocks(1)?;
-        self.wait_for_block()?;
         Ok(hashes[0])
     }
 
-    pub fn fund_from_prv_key(&self, key: &Scalar, amount: Amount) -> Result<Txid> {
+    pub fn fund_from_prv_key(&mut self, key: &Scalar, amount: Amount) -> Result<Txid> {
         let xonly_pubkey = key.base_point_mul().serialize_xonly();
         let pbk = XOnlyPublicKey::from_slice(&xonly_pubkey)?;
         let address = Address::p2tr(&self.ctx, pbk, None, KnownHrp::Regtest);
@@ -409,7 +418,11 @@ impl TestEnv {
     }
 
     /// Fund an address using bitcoind RPC
-    pub fn fund_address(&self, address: &Address<NetworkChecked>, amount: Amount) -> Result<Txid> {
+    pub fn fund_address(
+        &mut self,
+        address: &Address<NetworkChecked>,
+        amount: Amount,
+    ) -> Result<Txid> {
         // First ensure we have some coins by mining blocks if needed
         let balance = self.bitcoind.client.get_balance()?.balance()?;
 
@@ -429,6 +442,7 @@ impl TestEnv {
             .client
             .send_to_address(address, amount)?
             .txid()?;
+        self.mempool.push(txid);
         Ok(txid)
     }
 
@@ -585,7 +599,7 @@ mod tests {
 
     #[test]
     fn test_mining() -> Result<()> {
-        let env = TestEnv::new()?;
+        let mut env = TestEnv::new()?;
         let initial_count = env.block_count()?;
 
         env.mine_block()?;
@@ -598,7 +612,7 @@ mod tests {
 
     #[test]
     fn test_address_operations() -> Result<()> {
-        let env = TestEnv::new()?;
+        let mut env = TestEnv::new()?;
 
         // Create new address
         let address = env.new_address()?;
@@ -661,7 +675,7 @@ mod tests {
 
     #[test]
     fn test_enable_zmq() -> Result<()> {
-        let env = TestEnv::enable_zmq()?;
+        let mut env = TestEnv::enable_zmq()?;
 
         // Verify ZMQ sockets were assigned
         let tx_socket = env.zmq_pub_raw_tx_socket().expect("zmq rawtx socket");

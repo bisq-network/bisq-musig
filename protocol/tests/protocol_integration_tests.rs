@@ -15,13 +15,13 @@ use wallet::protocol_wallet_api::MemWallet;
 
 #[test]
 fn test_initial_tx_creation() -> anyhow::Result<()> {
-    let env = TestEnv::new()?;
+    let mut env = TestEnv::new()?;
     // env.start_explorer_in_container()?;
-    let (_, _) = initial_tx_creation(&env)?;
+    let (_, _) = initial_tx_creation(&mut env)?;
     Ok(())
 }
 
-pub fn funded_wallet(env: &TestEnv) -> MemWallet {
+pub fn funded_wallet(env: &mut TestEnv) -> MemWallet {
     // TODO move this line to TestEnv
     let client =
             BdkElectrumClient::new(Client::new(&env.electrum_url()).unwrap());
@@ -36,7 +36,7 @@ pub fn funded_wallet(env: &TestEnv) -> MemWallet {
     wallet
 }
 
-fn initial_tx_creation(env: &TestEnv) -> anyhow::Result<(BMPProtocol, BMPProtocol)> {
+fn initial_tx_creation(env: &mut TestEnv) -> anyhow::Result<(BMPProtocol, BMPProtocol)> {
     tracing::debug!("running...");
 
     let alice_funds = funded_wallet(env);
@@ -84,11 +84,11 @@ fn initial_tx_creation(env: &TestEnv) -> anyhow::Result<(BMPProtocol, BMPProtoco
 
 #[test]
 fn test_swap() -> anyhow::Result<()> {
-    let env = TestEnv::new()?;
+    let mut env = TestEnv::new()?;
     // env.start_explorer_in_container()?;
 
     // create all transaction and Broadcast DepositTx already
-    let (mut alice, mut bob) = initial_tx_creation(&env)?;
+    let (mut alice, mut bob) = initial_tx_creation(&mut env)?;
     dbg!(alice.swap_tx.unsigned_tx()?);
     dbg!(bob.swap_tx.unsigned_tx()?);
 
@@ -114,11 +114,11 @@ fn test_swap() -> anyhow::Result<()> {
 
 #[test]
 fn test_warning() -> anyhow::Result<()> {
-    let env = TestEnv::new()?;
+    let mut env = TestEnv::new()?;
     // env.start_explorer_in_container()?;
 
     // create all transaction and Broadcast DepositTx already
-    let (alice, _bob) = initial_tx_creation(&env)?;
+    let (alice, _bob) = initial_tx_creation(&mut env)?;
     dbg!(alice.warning_tx_me.signed_tx()?);
     // alice broadcasts WarningTx
     dbg!(alice.warning_tx_me.broadcast(&alice.ctx)?);
@@ -128,11 +128,11 @@ fn test_warning() -> anyhow::Result<()> {
 
 #[test]
 fn test_claim() -> anyhow::Result<()> {
-    let env = TestEnv::new()?;
+    let mut env = TestEnv::new()?;
     // env.start_explorer_in_container()?;
 
     // create all transaction and Broadcast DepositTx already
-    let (alice, _bob) = initial_tx_creation(&env)?;
+    let (alice, _bob) = initial_tx_creation(&mut env)?;
     // alice broadcasts WarningTx
     alice.warning_tx_me.broadcast(&alice.ctx)?;
     env.mine_block()?;
@@ -157,11 +157,11 @@ fn test_claim() -> anyhow::Result<()> {
 
 #[test]
 fn test_claim_too_early() -> anyhow::Result<()> {
-    let env = TestEnv::new()?;
+    let mut env = TestEnv::new()?;
     // env.start_explorer_in_container()?;
 
     // create all transaction and Broadcast DepositTx already
-    let (alice, _bob) = initial_tx_creation(&env)?;
+    let (alice, _bob) = initial_tx_creation(&mut env)?;
     alice.warning_tx_me.broadcast(&alice.ctx)?;
     // env.mine_block()?;
     env.mine_block()?; // we have set time-delay t2 to 2 Blocks
@@ -183,11 +183,11 @@ fn test_claim_too_early() -> anyhow::Result<()> {
 
 #[test]
 fn test_redirect() -> anyhow::Result<()> {
-    let env = TestEnv::new()?;
+    let mut env = TestEnv::new()?;
     // env.start_explorer_in_container()?;
 
     // create all transaction and Broadcast DepositTx already
-    let (alice, bob) = initial_tx_creation(&env)?;
+    let (alice, bob) = initial_tx_creation(&mut env)?;
     // alice broadcasts WarningTx
     let bob_warn_id = bob.warning_tx_me.broadcast(&bob.ctx)?;
     env.mine_block()?;
@@ -201,11 +201,11 @@ fn test_redirect() -> anyhow::Result<()> {
 
 #[test]
 fn test_q_tik() -> anyhow::Result<()> {
-    let env = TestEnv::new()?;
+    let mut env = TestEnv::new()?;
     // env.start_explorer_in_container()?;
 
     // create all transaction and Broadcast DepositTx already
-    let (mut alice, bob) = initial_tx_creation(&env)?;
+    let (mut alice, bob) = initial_tx_creation(&mut env)?;
 
     // message
     let sighash = bob.swap_tx.builder.input_sighash()?;

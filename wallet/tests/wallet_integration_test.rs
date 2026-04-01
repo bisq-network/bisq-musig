@@ -18,7 +18,7 @@ fn new_private_key() -> Scalar {
 
 #[test]
 fn init_test() -> anyhow::Result<()> {
-    let env = TestEnv::new()?;
+    let mut env = TestEnv::new()?;
     let dir = env.get_tmp_dir()?;
 
     let mut wallet = BMPWallet::new(dir.path(), "", Network::Regtest)?;
@@ -37,7 +37,7 @@ fn init_test() -> anyhow::Result<()> {
 
 #[test]
 fn test_sync_with_imported_keys() -> anyhow::Result<()> {
-    let env = TestEnv::new()?;
+    let mut env = TestEnv::new()?;
     let dir = env.get_tmp_dir()?;
 
     let prv_key = new_private_key();
@@ -63,9 +63,8 @@ fn test_sync_with_imported_keys() -> anyhow::Result<()> {
 
 fn test_broadcast_transaction() -> anyhow::Result<()> {
     // This test broadcast a transaction created from main wallet balance only
-    let env = TestEnv::new()?;
+    let mut env = TestEnv::new()?;
     let dir = env.get_tmp_dir()?;
-    let data_source = env.bdk_electrum_client();
 
     let prv_key = new_private_key();
 
@@ -81,7 +80,7 @@ fn test_broadcast_transaction() -> anyhow::Result<()> {
     env.fund_address(&receiving_addr, receive_amount)?;
     env.mine_block()?;
 
-    wallet.sync_all(data_source)?;
+    wallet.sync_all(env.bdk_electrum_client())?;
 
     let mut tx_builder = wallet.build_tx();
     let send_amount = Amount::from_sat(1_000);
@@ -97,7 +96,7 @@ fn test_broadcast_transaction() -> anyhow::Result<()> {
     env.mine_block()?;
 
     // Rescan the wallet to apply balance changes
-    wallet.sync_all(data_source)?;
+    wallet.sync_all(env.bdk_electrum_client())?;
 
     let new_balance = receive_amount - send_amount - fee;
     assert_eq!(wallet.balance(), new_balance);
@@ -112,8 +111,7 @@ fn test_broadcast_transaction() -> anyhow::Result<()> {
 #[test]
 fn test_broadcast_transaction_two() -> anyhow::Result<()> {
     // This test broadcast a transaction created from imported wallets only
-    let env = TestEnv::new()?;
-    let data_source = env.bdk_electrum_client();
+    let mut env = TestEnv::new()?;
     let dir = env.get_tmp_dir()?;
 
     let prv_key = new_private_key();
@@ -128,7 +126,7 @@ fn test_broadcast_transaction_two() -> anyhow::Result<()> {
     env.fund_from_prv_key(&prv_key, receive_amount)?;
     env.mine_block()?;
 
-    wallet.sync_all(data_source)?;
+    wallet.sync_all(env.bdk_electrum_client())?;
 
     let mut tx_builder = wallet.build_tx();
     let send_amount = Amount::from_sat(1_000);
@@ -144,7 +142,7 @@ fn test_broadcast_transaction_two() -> anyhow::Result<()> {
     env.mine_block()?;
 
     // Rescan the wallet to apply balance changes
-    wallet.sync_all(data_source)?;
+    wallet.sync_all(env.bdk_electrum_client())?;
 
     let new_balance = receive_amount - send_amount - fee;
     assert_eq!(wallet.balance(), new_balance);
@@ -160,9 +158,8 @@ fn test_broadcast_transaction_two() -> anyhow::Result<()> {
 fn test_broadcast_transaction_three() -> anyhow::Result<()> {
     // This test will attempt send a transaction created from both main wallet and imported keys
     // balance
-    let env = TestEnv::new()?;
+    let mut env = TestEnv::new()?;
     let dir = env.get_tmp_dir()?;
-    let data_source = env.bdk_electrum_client();
 
     let prv_key = new_private_key();
 
@@ -180,7 +177,7 @@ fn test_broadcast_transaction_three() -> anyhow::Result<()> {
 
     env.mine_block()?;
 
-    wallet.sync_all(data_source)?;
+    wallet.sync_all(env.bdk_electrum_client())?;
 
     let mut tx_builder = wallet.build_tx();
     let send_amount = Amount::from_sat(100_000);
@@ -197,7 +194,7 @@ fn test_broadcast_transaction_three() -> anyhow::Result<()> {
     env.mine_block()?;
 
     // Rescan the wallet to apply balance changes
-    wallet.sync_all(data_source)?;
+    wallet.sync_all(env.bdk_electrum_client())?;
 
     let new_balance = (receive_amount + receive_amount) - send_amount - fee;
     assert_eq!(wallet.balance(), new_balance);
@@ -207,7 +204,7 @@ fn test_broadcast_transaction_three() -> anyhow::Result<()> {
 
     env.fund_address(&main_wallet_addr, Amount::from_sat(10_000))?;
     env.mine_block()?;
-    enc_wallet.sync_all(data_source)?;
+    enc_wallet.sync_all(env.bdk_electrum_client())?;
     assert_eq!(enc_wallet.balance(), new_balance + Amount::from_sat(10_000));
 
     Ok(())
@@ -215,7 +212,7 @@ fn test_broadcast_transaction_three() -> anyhow::Result<()> {
 
 #[tokio::test]
 async fn test_cbf_main_wallet() -> anyhow::Result<()> {
-    let env = TestEnv::new()?;
+    let mut env = TestEnv::new()?;
     let dir = env.get_tmp_dir()?;
     env.mine_blocks(2)?;
     let mut wallet = BMPWallet::new(dir.path(), "", Network::Regtest)?;
@@ -237,7 +234,7 @@ async fn test_cbf_main_wallet() -> anyhow::Result<()> {
 
 #[tokio::test]
 async fn test_cbf_imported() -> anyhow::Result<()> {
-    let env = TestEnv::new()?;
+    let mut env = TestEnv::new()?;
     let dir = env.get_tmp_dir()?;
     env.mine_block()?;
 
@@ -264,7 +261,7 @@ async fn test_cbf_imported() -> anyhow::Result<()> {
 
 #[tokio::test]
 async fn test_cbf_imported_and_main() -> anyhow::Result<()> {
-    let env = TestEnv::new()?;
+    let mut env = TestEnv::new()?;
     let dir = env.get_tmp_dir()?;
 
     env.mine_block()?;
@@ -298,7 +295,7 @@ async fn test_cbf_imported_and_main() -> anyhow::Result<()> {
 
 #[tokio::test]
 async fn test_cbf_persistence() -> anyhow::Result<()> {
-    let env = TestEnv::new()?;
+    let mut env = TestEnv::new()?;
     let dir = env.get_tmp_dir()?;
 
     env.mine_block()?;
@@ -349,7 +346,7 @@ async fn test_cbf_persistence() -> anyhow::Result<()> {
 async fn test_drain_wallet_with_main_balance() -> anyhow::Result<()> {
     // This test will attempt to drain the imported wallets UTXOs
     // With the main wallet having some balance it won't be touched.
-    let env = TestEnv::new()?;
+    let mut env = TestEnv::new()?;
     let dir = env.get_tmp_dir()?;
 
     env.mine_block()?;
@@ -399,7 +396,7 @@ async fn test_drain_wallet_with_main_balance() -> anyhow::Result<()> {
 async fn test_drain_wallet_no_balance() {
     // In this test drain is called but the wallet doesn't have any imported key
     // insuffucient balance should be thrown
-    let env = TestEnv::new().unwrap();
+    let mut env = TestEnv::new().unwrap();
     let dir = env.get_tmp_dir().unwrap();
 
     env.mine_block().unwrap();
