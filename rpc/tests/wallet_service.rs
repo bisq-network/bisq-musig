@@ -15,7 +15,6 @@ use tokio::time::{self, Duration};
 #[ignore = "needs to be fixed"]
 async fn test_wallet_service_mine_single_tx() -> Result<()> {
     let mut testenv = TestEnv::new()?;
-    // testenv.start_explorer_in_container()?;
 
     let rpc_client = testenv.bitcoin_core_rpc_client()?;
 
