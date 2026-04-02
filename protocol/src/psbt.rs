@@ -542,6 +542,17 @@ pub(crate) fn set_payouts_and_shuffle(psbt: &mut Psbt, buyer_payout: &mut TxOutp
     [buyer_payout.outpoint.txid, seller_payout.outpoint.txid] = [txid; 2];
 }
 
+pub(crate) fn extract_signed_tx(psbt: &Psbt) -> Result<Transaction> {
+    if !is_well_formed(psbt) || psbt.inputs.iter().any(|input| input.final_script_sig.is_some()) {
+        return Err(TransactionErrorKind::InvalidPsbt);
+    }
+    if psbt.inputs.iter().any(|input| input.final_script_witness.is_none()) {
+        return Err(TransactionErrorKind::MissingSignature);
+    }
+    // TODO: Report undocumented panics in `Psbt::extract_tx` & `Psbt::fee` if the PSBT is malformed.
+    Ok(psbt.clone().extract_tx()?)
+}
+
 #[cfg(test)]
 mod tests {
     use bdk_wallet::psbt::PsbtUtils as _;

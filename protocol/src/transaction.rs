@@ -15,8 +15,8 @@ use relative::LockTime;
 use thiserror::Error;
 
 use crate::psbt::{
-    TradeWallet, check_placeholder_output, check_receiver_outputs, merge_psbt_halves, prevout_set,
-    set_payouts_and_shuffle,
+    TradeWallet, check_placeholder_output, check_receiver_outputs, extract_signed_tx,
+    merge_psbt_halves, prevout_set, set_payouts_and_shuffle,
 };
 use crate::receiver::ReceiverList;
 
@@ -311,12 +311,11 @@ impl DepositTxBuilder {
     }
 
     pub fn combine_psbts(&mut self, other: Psbt) -> Result<&mut Self> {
-        // TODO: We may need to do some validation of the provided PSBT.
         self.psbt.as_mut().ok_or(TransactionErrorKind::MissingTransaction)?.combine(other)?;
         Ok(self)
     }
 
-    pub fn signed_tx(&self) -> Result<Transaction> { Ok(self.psbt()?.clone().extract_tx()?) }
+    pub fn signed_tx(&self) -> Result<Transaction> { extract_signed_tx(self.psbt()?) }
 }
 
 #[derive(Default)]
