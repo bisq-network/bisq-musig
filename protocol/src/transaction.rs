@@ -808,18 +808,30 @@ mod tests {
     //noinspection SpellCheckingInspection
     #[test]
     fn test_custom_payout_tx_builder() -> Result<()> {
-        let buyer_trade_wallet = bdk_wallet::test_utils::get_funded_wallet_single(
+        let fake_buyer_trade_wallet = bdk_wallet::test_utils::get_funded_wallet_single(
             "tr(cPZzKuNmpuUjD1e8jUU4PVzy2b5LngbSip8mBsxf4e7rSFZVb4Uh)").0;
-        let seller_trade_wallet = bdk_wallet::test_utils::get_funded_wallet_single(
+        let fake_seller_trade_wallet = bdk_wallet::test_utils::get_funded_wallet_single(
             "tr(cNaQCDwmmh4dS9LzCgVtyy1e1xjCJ21GUDHe9K98nzb689JvinGV)").0;
 
-        let mut builder = filled_unsigned_custom_payout_tx_builder(
+        let mut builder0 = filled_unsigned_custom_payout_tx_builder(
             &filled_deposit_tx_builder(true)?)?;
-        let signed_tx = builder
-            .sign_partial(&buyer_trade_wallet)?
-            .sign_partial(&seller_trade_wallet)?
-            .signed_tx()?;
+        let mut builder1 = filled_unsigned_custom_payout_tx_builder(
+            &filled_deposit_tx_builder(true)?)?;
 
+        // Check that signing with the mock buyer/seller wallets has exactly the same effect as
+        // signing with the above fake BDK trade wallets (with the particular params chosen)...
+
+        builder0.sign_partial(&fake_buyer_trade_wallet)?;
+        builder1.sign_partial(&mock_buyer_trade_wallet())?;
+        assert_eq!(builder0.psbt()?, builder1.psbt()?);
+
+        builder0.sign_partial(&fake_seller_trade_wallet)?;
+        builder1.sign_partial(&mock_seller_trade_wallet())?;
+        assert_eq!(builder0.psbt()?, builder1.psbt()?);
+
+        // Now check the final signed tx...
+
+        let signed_tx = builder0.signed_tx()?;
         assert_eq!(SIGNED_CUSTOM_PAYOUT_TX_WEIGHT, signed_tx.weight());
         Ok(())
     }

@@ -56,6 +56,7 @@ struct MockTradeWallet<Cs: Iterator<Item=TxOutput>, As: Iterator<Item=Address>> 
     new_addresses: As,
     signature_map: BTreeMap<OutPoint, Signature>,
     internal_key: Option<XOnlyPublicKey>,
+    script_sigs: BTreeMap<XOnlyPublicKey, Vec<Signature>>,
 }
 
 impl<Cs: Iterator<Item=TxOutput>, As: Iterator<Item=Address>> TradeWallet for MockTradeWallet<Cs, As> {
@@ -140,12 +141,38 @@ impl<Cs: Iterator<Item=TxOutput>, As: Iterator<Item=Address>> TradeWallet for Mo
     }
 
     fn sign_selected_inputs(&self, psbt: &mut Psbt, is_selected: &dyn Fn(&OutPoint) -> bool) -> Result<()> {
+        let mut script_sigs = self.script_sigs.clone();
+
         for (input, TxIn { previous_output, .. })
         in psbt.inputs.iter_mut().zip(&psbt.unsigned_tx.input) {
             if is_selected(previous_output) {
-                let signature = self.signature_map.get(previous_output)
-                    .ok_or(TransactionErrorKind::MissingSignature)?;
-                input.final_script_witness = Some(Witness::p2tr_key_spend(signature));
+                for (key, (leaf_hashes, _)) in &input.tap_key_origins {
+                    if let Some(sig) = script_sigs.get_mut(key).and_then(Vec::pop) {
+                        for leaf_hash in leaf_hashes {
+                            input.tap_script_sigs.insert((*key, *leaf_hash), sig);
+                        }
+                    }
+                }
+                if let Some(signature) = self.signature_map.get(previous_output) {
+                    // Mock keyspend:
+                    input.final_script_witness = Some(Witness::p2tr_key_spend(signature));
+                    input.redact_sensitive_fields();
+                } else if input.tap_key_origins.len() == input.tap_script_sigs.len() + 1 {
+                    // Mock script spend (assumes only one path):
+                    if let Some((control_block, (script, _))) = input.tap_scripts.first_key_value() {
+                        let mut wit = Witness::new();
+                        // For the purpose of the mock, assume that (pubkey, leaf-hash) -> signature
+                        // mappings occur in the opposite order that the signatures need to be added
+                        // to the witness. This won't be true in general.
+                        for sig in input.tap_script_sigs.values().rev() {
+                            wit.push(sig.serialize());
+                        }
+                        wit.push(script.as_bytes());
+                        wit.push(control_block.serialize());
+                        input.final_script_witness = Some(wit);
+                        input.redact_sensitive_fields();
+                    }
+                }
             }
         }
         Ok(())
@@ -169,9 +196,15 @@ pub fn mock_buyer_trade_wallet() -> impl TradeWallet {
     ].map(|a| a.parse::<Address<_>>()
         .expect("hardcoded addresses should be valid").assume_checked()).into_iter();
     let internal_key =
-        "0000000000000000000000000000000000000000000000000000000000000001".parse().ok();
+        "51494dc22e24a32fe9dcfbd7e85faf345fa1df296fb49d156e859ef345201295".parse().ok();
+    let script_sigs = script_sigs(internal_key.as_slice(), &[
+        "5564448d3c5f024eaf2c65024a0c6e7a9066eb0390f8ffaeee2feacde310fabf\
+         87f3a8d8ad7fb125d7a6f68a282cfab8cd3178262a1fd0c2d06a598c8c454af8",
+        "652d0abaa3b4f8c7dd85ac9d523d44f768c8e1541aded79165c3cdfb3ba35d62\
+         eef114e89becb490a80cfdab946d2d91748ccea501ceb4f08655dcc2868c0463",
+    ]);
 
-    MockTradeWallet { funding_coins, new_addresses, signature_map, internal_key }
+    MockTradeWallet { funding_coins, new_addresses, signature_map, internal_key, script_sigs }
 }
 
 //noinspection SpellCheckingInspection
@@ -195,17 +228,30 @@ pub fn mock_seller_trade_wallet() -> impl TradeWallet {
     ].map(|a| a.parse::<Address<_>>()
         .expect("hardcoded addresses should be valid").assume_checked()).into_iter();
     let internal_key =
-        "0000000000000000000000000000000000000000000000000000000000000002".parse().ok();
+        "fcba7ecf41bc7e1be4ee122d9d22e3333671eb0a3a87b5cdf099d59874e1940f".parse().ok();
+    let script_sigs = script_sigs(internal_key.as_slice(), &[
+        "87790f7eb3e98eb1b4dadc55ff5762275c4e3c02c6491abb26c8eabfada55b4b\
+         3f2627f627919d667be8f191a1b275b01549ab24e5eeda0019f83c658840500e",
+        "52fe2e44a4789a0f9bc406da144dcacca2621d2c1286e2d8f9913425c9927288\
+         13d658a3334a4070ce585cb907a67604fc74578e84e714c38c6547377fac133e",
+    ]);
 
-    MockTradeWallet { funding_coins, new_addresses, signature_map, internal_key }
+    MockTradeWallet { funding_coins, new_addresses, signature_map, internal_key, script_sigs }
+}
+
+fn signature_vec(signatures: &[&'static str]) -> Vec<Signature> {
+    signatures.iter().map(|s| Signature {
+        signature: s.parse().expect("hardcoded signatures should be valid"),
+        sighash_type: TapSighashType::Default,
+    }).collect()
 }
 
 fn signature_map(funding_coins: &[TxOutput], signatures: &[&'static str]) -> BTreeMap<OutPoint, Signature> {
-    let signatures = signatures.iter().map(|s| Signature {
-        signature: s.parse().expect("hardcoded signatures should be valid"),
-        sighash_type: TapSighashType::Default,
-    });
-    funding_coins.iter().map(|o| o.outpoint).zip(signatures).collect()
+    funding_coins.iter().map(|o| o.outpoint).zip(signature_vec(signatures)).collect()
+}
+
+fn script_sigs(iks: &[XOnlyPublicKey], signatures: &[&'static str]) -> BTreeMap<XOnlyPublicKey, Vec<Signature>> {
+    iks.iter().map(|k| (*k, signature_vec(signatures))).collect()
 }
 
 impl TradeWallet for Wallet {
@@ -355,6 +401,7 @@ impl Redact for psbt::Input {
     fn redact_sensitive_fields(&mut self) {
         self.tap_key_origins.clear();
         self.tap_scripts.clear();
+        self.tap_script_sigs.clear();
         self.tap_internal_key = None;
         self.tap_merkle_root = None;
     }
