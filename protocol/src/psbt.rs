@@ -1,4 +1,5 @@
 use std::collections::{BTreeMap, BTreeSet};
+use std::mem;
 use std::sync::LazyLock;
 
 use bdk_wallet::bitcoin::amount::CheckedSum as _;
@@ -10,6 +11,7 @@ use bdk_wallet::bitcoin::{
     Address, Amount, FeeRate, Network, OutPoint, Psbt, ScriptBuf, Sequence, TapSighashType,
     Transaction, TxIn, TxOut, Weight, Witness, XOnlyPublicKey, absolute, psbt, script, secp256k1,
 };
+use bdk_wallet::miniscript::psbt::PsbtExt as _;
 use bdk_wallet::miniscript::{Descriptor, ToPublicKey as _};
 use bdk_wallet::{KeychainKind, SignOptions, TxOrdering, Wallet};
 use rand::{RngCore, SeedableRng as _};
@@ -272,6 +274,13 @@ impl TradeWallet for Wallet {
             if is_selected(&psbt.unsigned_tx.input[i].previous_output) {
                 psbt.inputs[i].final_script_sig = psbt_copy.inputs[i].final_script_sig.take();
                 psbt.inputs[i].final_script_witness = psbt_copy.inputs[i].final_script_witness.take();
+                psbt.inputs[i].tap_script_sigs = mem::take(&mut psbt_copy.inputs[i].tap_script_sigs);
+
+                if !psbt.inputs[i].tap_script_sigs.is_empty() {
+                    // BDK couldn't finalize the selected input. Try to finalize it ourselves using
+                    // the `miniscript` lib, ignoring any errors that might occur.
+                    let _ = psbt.finalize_inp_mut(&*LIBSECP256K1_CTX, i);
+                }
             }
         }
         Ok(())
@@ -461,7 +470,7 @@ pub(crate) fn merge_psbt_halves(
     fn re<T: Clone>(dest: &mut Vec<T>, src: &[T]) -> Vec<T> {
         let mut cloned_src = Vec::with_capacity(src.len() + dest.len());
         cloned_src.extend(src.iter().cloned());
-        std::mem::replace(dest, cloned_src)
+        mem::replace(dest, cloned_src)
     }
     use std::convert::identity as id;
 

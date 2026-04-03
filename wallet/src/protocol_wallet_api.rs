@@ -9,6 +9,7 @@ use bdk_wallet::bitcoin::{Address, Amount, FeeRate, Network, OutPoint, Psbt, Scr
 use bdk_wallet::descriptor::{Descriptor, ExtendedDescriptor};
 use bdk_wallet::miniscript::ToPublicKey;
 use bdk_wallet::miniscript::descriptor::ConversionError;
+use bdk_wallet::miniscript::psbt::PsbtExt as _;
 use bdk_wallet::template::{Bip86, DescriptorTemplate};
 use bdk_wallet::{AddressInfo, KeychainKind, SignOptions, TxOrdering, Wallet};
 use rand::RngCore;
@@ -122,6 +123,14 @@ impl MemWallet {
                 psbt.inputs[i].final_script_sig = psbt_copy.inputs[i].final_script_sig.take();
                 psbt.inputs[i].final_script_witness =
                     psbt_copy.inputs[i].final_script_witness.take();
+                psbt.inputs[i].tap_script_sigs =
+                    std::mem::take(&mut psbt_copy.inputs[i].tap_script_sigs);
+
+                if !psbt.inputs[i].tap_script_sigs.is_empty() {
+                    // BDK couldn't finalize the selected input. Try to finalize it ourselves using
+                    // the `miniscript` lib, ignoring any errors that might occur.
+                    let _ = psbt.finalize_inp_mut(&*LIBSECP256K1_CTX, i);
+                }
             }
         }
         Ok(())

@@ -9,6 +9,8 @@ use bdk_wallet::bitcoin::{
     Address, Amount, FeeRate, Network, OutPoint, Psbt, Sequence, TapSighash, TapSighashType,
     Transaction, TxIn, TxOut, Txid, Weight, Witness, absolute, relative, script,
 };
+use bdk_wallet::miniscript::DefiniteDescriptorKey;
+use bdk_wallet::miniscript::psbt::PsbtInputExt as _;
 use paste::paste;
 use rand::RngCore;
 use relative::LockTime;
@@ -35,6 +37,7 @@ pub const ANCHOR_AMOUNT: Amount = Amount::from_sat(330);
 pub const SIGNED_FORWARDING_TX_WEIGHT: Weight = Weight::from_wu(444);
 pub const SIGNED_WARNING_TX_WEIGHT: Weight = Weight::from_wu(846);
 pub const SIGNED_REDIRECT_TX_BASE_WEIGHT: Weight = SIGNED_FORWARDING_TX_WEIGHT;
+pub const SIGNED_CUSTOM_PAYOUT_TX_WEIGHT: Weight = Weight::from_wu(1182);
 
 pub trait NetworkParams {
     fn warning_lock_time(&self) -> LockTime;
@@ -358,7 +361,7 @@ impl WarningTxBuilder {
     pub fn compute_unsigned_tx(&mut self) -> Result<&mut Self> {
         let escrow_output = TxOut {
             value: Self::escrow_amount(
-                [self.buyer_input()?.prevout.value, self.seller_input()?.prevout.value],
+                self.inputs()?.map(|input| input.prevout.value),
                 *self.fee_rate()?)?,
             script_pubkey: self.escrow_address()?.script_pubkey(),
         };
@@ -528,6 +531,95 @@ impl WithFixedInputs<1> for ForwardingTxBuilder {
     fn inputs(&self) -> Result<[&TxOutput; 1]> { Ok([self.input()?]) }
 }
 
+type Descriptor = bdk_wallet::miniscript::Descriptor<DefiniteDescriptorKey>;
+
+#[derive(Default)]
+pub struct CustomPayoutTxBuilder {
+    // Supplied fields:
+    buyer_input: Option<TxOutput>,
+    seller_input: Option<TxOutput>,
+    buyer_input_descriptor: Option<Descriptor>,
+    seller_input_descriptor: Option<Descriptor>,
+    buyer_payout_address: Option<Address>,
+    seller_payout_address: Option<Address>,
+    seller_payout_amount_excluding_fee: Option<Amount>,
+    fee_rate: Option<FeeRate>,
+    // Derived fields:
+    psbt: Option<Psbt>,
+}
+
+impl CustomPayoutTxBuilder {
+    make_getter_setter!(buyer_input: TxOutput);
+    make_getter_setter!(seller_input: TxOutput);
+    make_getter_setter!(buyer_input_descriptor: Descriptor);
+    make_getter_setter!(seller_input_descriptor: Descriptor);
+    make_getter_setter!(buyer_payout_address: Address);
+    make_getter_setter!(seller_payout_address: Address);
+    make_getter_setter!(seller_payout_amount_excluding_fee: Amount);
+    make_getter_setter!(fee_rate: FeeRate);
+    make_getter!(psbt: Psbt: Transaction);
+
+    // FIXME: We need to enforce dust limits and prevent fee over/underpayment due to non-P2TR payout addresses.
+    fn payout_amounts(
+        input_amounts: impl IntoIterator<Item=Amount>,
+        seller_payout_amount_excluding_fee: Amount,
+        fee_rate: FeeRate,
+    ) -> Option<[Amount; 2]> {
+        let total_fee = fee_rate.checked_mul_by_weight(SIGNED_CUSTOM_PAYOUT_TX_WEIGHT)?;
+        let seller_payout = seller_payout_amount_excluding_fee
+            .checked_sub(total_fee / 2)?;
+        let buyer_payout = input_amounts.into_iter().checked_sum()?.checked_sub(seller_payout)?
+            .checked_sub(total_fee)?;
+        Some([buyer_payout, seller_payout])
+    }
+
+    pub fn compute_unsigned_tx(&mut self) -> Result<&mut Self> {
+        let [buyer_payout_amount, seller_payout_amount] = Self::payout_amounts(
+            self.inputs()?.map(|input| input.prevout.value),
+            *self.seller_payout_amount_excluding_fee()?,
+            *self.fee_rate()?,
+        ).ok_or(TransactionErrorKind::Overflow)?;
+        let buyer_payout = TxOut {
+            value: buyer_payout_amount,
+            script_pubkey: self.buyer_payout_address()?.script_pubkey(),
+        };
+        let seller_payout = TxOut {
+            value: seller_payout_amount,
+            script_pubkey: self.seller_payout_address()?.script_pubkey(),
+        };
+        let tx = Transaction {
+            version: Version::TWO,
+            lock_time: absolute::LockTime::ZERO,
+            input: self.tx_ins(LockTime::ZERO)?.to_vec(),
+            output: vec![buyer_payout, seller_payout],
+        };
+        let mut psbt = Psbt::from_unsigned_tx(tx).expect("tx is unsigned by construction");
+        psbt.inputs[0].witness_utxo = Some(self.buyer_input()?.prevout.clone());
+        psbt.inputs[1].witness_utxo = Some(self.seller_input()?.prevout.clone());
+        psbt.inputs[0].update_with_descriptor_unchecked(self.buyer_input_descriptor()?)?;
+        psbt.inputs[1].update_with_descriptor_unchecked(self.seller_input_descriptor()?)?;
+        self.psbt = Some(psbt);
+        Ok(self)
+    }
+
+    pub fn sign_partial(&mut self, trade_wallet: &(impl TradeWallet + ?Sized)) -> Result<&mut Self> {
+        let psbt = self.psbt.as_mut().ok_or(TransactionErrorKind::MissingTransaction)?;
+        trade_wallet.sign_selected_inputs(psbt, &|_| true)?;
+        Ok(self)
+    }
+
+    pub fn combine_psbts(&mut self, other: Psbt) -> Result<&mut Self> {
+        self.psbt.as_mut().ok_or(TransactionErrorKind::MissingTransaction)?.combine(other)?;
+        Ok(self)
+    }
+
+    pub fn signed_tx(&self) -> Result<Transaction> { extract_signed_tx(self.psbt()?) }
+}
+
+impl WithFixedInputs<2> for CustomPayoutTxBuilder {
+    fn inputs(&self) -> Result<[&TxOutput; 2]> { Ok([self.buyer_input()?, self.seller_input()?]) }
+}
+
 pub type Result<T, E = TransactionErrorKind> = std::result::Result<T, E>;
 
 #[derive(Error, Debug)]
@@ -538,6 +630,8 @@ pub enum TransactionErrorKind {
     MissingLockTime,
     #[error("missing tx output")]
     MissingTxOutput,
+    #[error("missing descriptor")]
+    MissingDescriptor,
     #[error("missing address")]
     MissingAddress,
     #[error("missing BTC amount")]
@@ -588,6 +682,7 @@ mod tests {
     use super::*;
     use crate::psbt::{mock_buyer_trade_wallet, mock_seller_trade_wallet};
     use crate::receiver::Receiver;
+    use crate::script_paths::deposit_payout_descriptor;
 
     // Valid signed txs pulled from an integration test run. We should be able to rebuild them exactly...
 
@@ -665,7 +760,7 @@ mod tests {
 
     #[test]
     fn test_deposit_tx_builder() -> Result<()> {
-        let builder = filled_deposit_tx_builder()?;
+        let builder = filled_deposit_tx_builder(false)?;
         let signed_tx = builder.signed_tx()?;
 
         assert_eq!(tx(SIGNED_DEPOSIT_TX), signed_tx);
@@ -674,7 +769,7 @@ mod tests {
 
     #[test]
     fn test_swap_tx_builder() -> Result<()> {
-        let builder = filled_swap_tx_builder(&filled_deposit_tx_builder()?)?;
+        let builder = filled_swap_tx_builder(&filled_deposit_tx_builder(false)?)?;
         let signed_tx = builder.signed_tx()?;
 
         assert_eq!(&tx(SIGNED_SWAP_TX), signed_tx);
@@ -683,7 +778,7 @@ mod tests {
 
     #[test]
     fn test_warning_tx_builder() -> Result<()> {
-        let builder = filled_warning_tx_builder(&filled_deposit_tx_builder()?)?;
+        let builder = filled_warning_tx_builder(&filled_deposit_tx_builder(false)?)?;
         let signed_tx = builder.signed_tx()?;
 
         assert_eq!(&tx(SIGNED_SELLERS_WARNING_TX), signed_tx);
@@ -693,7 +788,7 @@ mod tests {
     #[test]
     fn test_redirect_tx_builder() -> Result<()> {
         let builder = filled_redirect_tx_builder(
-            &filled_warning_tx_builder(&filled_deposit_tx_builder()?)?)?;
+            &filled_warning_tx_builder(&filled_deposit_tx_builder(false)?)?)?;
         let signed_tx = builder.signed_tx()?;
 
         assert_eq!(&tx(SIGNED_BUYERS_REDIRECT_TX), signed_tx);
@@ -703,10 +798,29 @@ mod tests {
     #[test]
     fn test_claim_tx_builder() -> Result<()> {
         let builder = filled_claim_tx_builder(
-            &filled_warning_tx_builder(&filled_deposit_tx_builder()?)?)?;
+            &filled_warning_tx_builder(&filled_deposit_tx_builder(false)?)?)?;
         let signed_tx = builder.signed_tx()?;
 
         assert_eq!(&tx(SIGNED_SELLERS_CLAIM_TX), signed_tx);
+        Ok(())
+    }
+
+    //noinspection SpellCheckingInspection
+    #[test]
+    fn test_custom_payout_tx_builder() -> Result<()> {
+        let buyer_trade_wallet = bdk_wallet::test_utils::get_funded_wallet_single(
+            "tr(cPZzKuNmpuUjD1e8jUU4PVzy2b5LngbSip8mBsxf4e7rSFZVb4Uh)").0;
+        let seller_trade_wallet = bdk_wallet::test_utils::get_funded_wallet_single(
+            "tr(cNaQCDwmmh4dS9LzCgVtyy1e1xjCJ21GUDHe9K98nzb689JvinGV)").0;
+
+        let mut builder = filled_unsigned_custom_payout_tx_builder(
+            &filled_deposit_tx_builder(true)?)?;
+        let signed_tx = builder
+            .sign_partial(&buyer_trade_wallet)?
+            .sign_partial(&seller_trade_wallet)?
+            .signed_tx()?;
+
+        assert_eq!(SIGNED_CUSTOM_PAYOUT_TX_WEIGHT, signed_tx.weight());
         Ok(())
     }
 
@@ -715,11 +829,15 @@ mod tests {
     fn sig(hex: &str) -> Signature { Signature::from_slice(&hex!(hex)).unwrap() }
 
     //noinspection SpellCheckingInspection
-    fn filled_deposit_tx_builder() -> Result<DepositTxBuilder> {
-        let buyer_payout_address = "bcrt1p2zhgww7pvedvm2rg7d0zqh96crfhuudd9s0l3yc09ncaaxmuzvds5zhh8t"
-            .parse::<Address<_>>()?.require_network(Network::Regtest)?;
-        let seller_payout_address = "bcrt1pvenudpqy5j9n96uq5ng30ktvsvgx6qk2pk8ue446qdy24t854gnq5sp2l6"
-            .parse::<Address<_>>()?.require_network(Network::Regtest)?;
+    fn filled_deposit_tx_builder(for_custom_payout: bool) -> Result<DepositTxBuilder> {
+        let [buyer_payout_address, seller_payout_address] = if for_custom_payout {
+            ["bcrt1ppavdcmx98s6xg86csr9t5nkul746kvhpplkveylsfeg7g88csm3qfyegr3"; 2]
+        } else {
+            [
+                "bcrt1p2zhgww7pvedvm2rg7d0zqh96crfhuudd9s0l3yc09ncaaxmuzvds5zhh8t",
+                "bcrt1pvenudpqy5j9n96uq5ng30ktvsvgx6qk2pk8ue446qdy24t854gnq5sp2l6",
+            ]
+        }.map(|addr| addr.parse::<Address<_>>().unwrap().assume_checked());
 
         // The RNG seed determines the shuffling of the deposit inputs & outputs. The byte 0x96 is
         // the smallest (of the two) array fill values which happen to give the correct shuffling.
@@ -820,6 +938,41 @@ mod tests {
             .compute_unsigned_tx()?
             .set_input_signature(sig(SELLERS_CLAIM_TX_SIGNATURE))
             .compute_signed_tx()?;
+        Ok(builder)
+    }
+
+    //noinspection SpellCheckingInspection
+    fn filled_unsigned_custom_payout_tx_builder(deposit_tx_builder: &DepositTxBuilder) -> Result<CustomPayoutTxBuilder> {
+        let buyer_input_internal_key =
+            "b511bd5771e47ee27558b1765e87b541668304ec567721c7b880edc0a010da55".parse().unwrap();
+        let seller_input_internal_key =
+            "b511bd5771e47ee27558b1765e87b541668304ec567721c7b880edc0a010da55".parse().unwrap();
+        let buyer_pub_key =
+            "51494dc22e24a32fe9dcfbd7e85faf345fa1df296fb49d156e859ef345201295".parse().unwrap();
+        let seller_pub_key =
+            "fcba7ecf41bc7e1be4ee122d9d22e3333671eb0a3a87b5cdf099d59874e1940f".parse().unwrap();
+
+        let buyer_input_descriptor = deposit_payout_descriptor(
+            &buyer_input_internal_key, &buyer_pub_key, &seller_pub_key);
+        let seller_input_descriptor = deposit_payout_descriptor(
+            &seller_input_internal_key, &buyer_pub_key, &seller_pub_key);
+
+        let buyer_payout_address = "bcrt1p2zhgww7pvedvm2rg7d0zqh96crfhuudd9s0l3yc09ncaaxmuzvds5zhh8t"
+            .parse::<Address<_>>()?.require_network(Network::Regtest)?;
+        let seller_payout_address = "bcrt1pvenudpqy5j9n96uq5ng30ktvsvgx6qk2pk8ue446qdy24t854gnq5sp2l6"
+            .parse::<Address<_>>()?.require_network(Network::Regtest)?;
+
+        let mut builder = CustomPayoutTxBuilder::default();
+        builder
+            .set_buyer_input(deposit_tx_builder.buyer_payout()?.clone())
+            .set_seller_input(deposit_tx_builder.seller_payout()?.clone())
+            .set_buyer_input_descriptor(buyer_input_descriptor)
+            .set_seller_input_descriptor(seller_input_descriptor)
+            .set_buyer_payout_address(buyer_payout_address)
+            .set_seller_payout_address(seller_payout_address)
+            .set_seller_payout_amount_excluding_fee(Amount::from_sat(30_000_000))
+            .set_fee_rate(FeeRate::from_sat_per_vb_unchecked(15))
+            .compute_unsigned_tx()?;
         Ok(builder)
     }
 }
