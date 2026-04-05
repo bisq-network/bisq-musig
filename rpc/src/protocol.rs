@@ -13,8 +13,8 @@ use protocol::psbt::{self, TradeWallet};
 use protocol::receiver::{Receiver, ReceiverList};
 use protocol::script_paths;
 use protocol::transaction::{
-    DepositTxBuilder, ForwardingTxBuilder, NetworkParams as _, RedirectTxBuilder, WarningTxBuilder,
-    WithWitnesses as _,
+    CustomPayoutTxBuilder, DepositTxBuilder, ForwardingTxBuilder, NetworkParams as _,
+    RedirectTxBuilder, WarningTxBuilder, WithWitnesses as _,
 };
 use thiserror::Error;
 
@@ -48,6 +48,7 @@ pub struct TradeModel {
     keys: Keys,
     deposit_tx: DepositTx,
     swap_tx: SwapTx,
+    custom_payout_tx: CustomPayoutTx,
     buyer_txs: ArbitrationTxs,
     seller_txs: ArbitrationTxs,
 }
@@ -105,6 +106,11 @@ struct RedirectTx {
 struct ClaimTx {
     builder: ForwardingTxBuilder,
     input_sig_ctx: SigCtx,
+}
+
+#[derive(Default)]
+struct CustomPayoutTx {
+    builder: CustomPayoutTxBuilder,
 }
 
 pub struct ExchangedKeys<'a, S: Storage> {
@@ -262,16 +268,22 @@ impl TradeModel {
         self.keys.seller_payout_ctx.aggregate_pub_key_shares()?;
 
         let [buyer_pub_key, seller_pub_key] = self.keys.multisig_script_keys()?;
+        let [buyer_internal_key, seller_internal_key] = self.keys.internal_keys()?;
+
         let deposit_merkle_root = script_paths::deposit_payout_merkle_root(buyer_pub_key, seller_pub_key);
         let buyer_payout_tweaked_key_ctx = self.keys.buyer_payout_ctx.with_taproot_tweak(
             Some(&deposit_merkle_root))?;
         let seller_payout_tweaked_key_ctx = self.keys.seller_payout_ctx.with_taproot_tweak(
             Some(&deposit_merkle_root))?;
 
-        let buyer_payout_address = buyer_payout_tweaked_key_ctx.p2tr_address(network);
-        let seller_payout_address = seller_payout_tweaked_key_ctx.p2tr_address(network);
-        self.deposit_tx.builder.set_buyer_payout_address(buyer_payout_address);
-        self.deposit_tx.builder.set_seller_payout_address(seller_payout_address);
+        self.deposit_tx.builder
+            .set_buyer_payout_address(buyer_payout_tweaked_key_ctx.p2tr_address(network))
+            .set_seller_payout_address(seller_payout_tweaked_key_ctx.p2tr_address(network));
+        self.custom_payout_tx.builder
+            .set_buyer_input_descriptor(script_paths::deposit_payout_descriptor(
+                &buyer_internal_key, buyer_pub_key, seller_pub_key))
+            .set_seller_input_descriptor(script_paths::deposit_payout_descriptor(
+                &seller_internal_key, buyer_pub_key, seller_pub_key));
 
         self.buyer_txs.warning.buyer_input_sig_ctx.set_tweaked_key_ctx(buyer_payout_tweaked_key_ctx.clone());
         self.seller_txs.warning.buyer_input_sig_ctx.set_tweaked_key_ctx(buyer_payout_tweaked_key_ctx);
@@ -361,10 +373,14 @@ impl TradeModel {
         let seller_payout = self.deposit_tx.builder.seller_payout()?;
 
         for txs in [&mut self.buyer_txs, &mut self.seller_txs] {
-            txs.warning.builder.set_buyer_input(buyer_payout.clone());
-            txs.warning.builder.set_seller_input(seller_payout.clone());
+            txs.warning.builder
+                .set_buyer_input(buyer_payout.clone())
+                .set_seller_input(seller_payout.clone());
         }
         self.swap_tx.builder.set_input(seller_payout.clone());
+        self.custom_payout_tx.builder
+            .set_buyer_input(buyer_payout.clone())
+            .set_seller_input(seller_payout.clone());
         Ok(())
     }
 
@@ -663,6 +679,40 @@ impl TradeModel {
         }
         Ok(())
     }
+
+    pub fn set_custom_payout_tx_fee_rate(&mut self, fee_rate: FeeRate) {
+        self.custom_payout_tx.builder.set_fee_rate(fee_rate);
+    }
+
+    pub fn set_sellers_custom_payout_amount_excluding_fee(&mut self, amount: Amount) {
+        self.custom_payout_tx.builder.set_seller_payout_amount_excluding_fee(amount);
+    }
+
+    pub fn compute_custom_payout_tx(&mut self) -> Result<()> {
+        self.custom_payout_tx.builder
+            .set_buyer_payout_address(self.buyer_txs.claim.builder.payout_address()?.clone())
+            .set_seller_payout_address(self.seller_txs.claim.builder.payout_address()?.clone())
+            .compute_unsigned_tx()?;
+        Ok(())
+    }
+
+    pub fn sign_custom_payout_psbt(&mut self) -> Result<()> {
+        self.custom_payout_tx.builder.sign_partial(&*self.trade_wallet()?)?;
+        Ok(())
+    }
+
+    pub fn get_custom_payout_psbt(&self) -> Option<&Psbt> {
+        self.custom_payout_tx.builder.psbt().ok()
+    }
+
+    pub fn combine_custom_payout_psbts(&mut self, other: Psbt) -> Result<()> {
+        self.custom_payout_tx.builder.combine_psbts(other)?;
+        Ok(())
+    }
+
+    pub fn get_signed_custom_payout_tx(&self) -> Option<Transaction> {
+        self.custom_payout_tx.builder.signed_tx().ok()
+    }
 }
 
 impl Keys {
@@ -696,6 +746,11 @@ impl Keys {
         } else {
             [self.peers_multisig_script_key.as_ref()?, self.my_multisig_script_key.as_ref()?]
         }))().ok_or(ProtocolErrorKind::MissingScriptKey)
+    }
+
+    fn internal_keys(&self) -> Result<[XOnlyPublicKey; 2]> {
+        Ok([self.buyer_payout_ctx.aggregated_key()?, self.seller_payout_ctx.aggregated_key()?]
+            .map(|p| p.pub_key().to_public_key().into()))
     }
 }
 

@@ -26,7 +26,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         // Add Serde serialization for musigrpc request types...
         .serde_serialized_types(&[
             "ReceiverAddressAndAmount", "PartialSignaturesRequest", "DepositTxSignatureRequest",
-            "PublishDepositTxRequest", "SubscribeTxConfirmationStatusRequest", "ContractualTxIds"
+            "PublishDepositTxRequest", "SubscribeTxConfirmationStatusRequest", "ContractualTxIds",
+            "CustomPayoutPsbtRequest"
         ])
         .serde_serialized_type("PubKeySharesRequest", &[
             enum_field("myRole", "Role")
@@ -56,6 +57,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .serde_serialized_type("CloseTradeRequest", &[
             opt_base64("myOutputPeersPrvKeyShare"), opt_hex("swapTx")
         ])
+        .serde_serialized_type("CustomCloseTradeRequest", &[
+            base64("peersCustomPayoutPsbt")
+        ])
         .serde_serialized_enum("Role")
 
         // Add Serde serialization for musigrpc response types...
@@ -71,6 +75,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         ])
         .serde_serialized_type("CloseTradeResponse", &[
             base64("peerOutputPrvKeyShare")
+        ])
+        .serde_serialized_type("CustomPayoutPsbt", &[
+            base64("psbt")
+        ])
+        .serde_serialized_type("CustomCloseTradeResponse", &[
+            hex("customPayoutTx")
         ])
 
         // Now compile all the protos...
