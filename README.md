@@ -73,23 +73,10 @@ setting `RUST_LOG=off`.
 
 ## running the tests
 
-to run the test you need a work regtest environment as provided by nigiri. You may need to
-for whatever reason I nigiri isn't fully operable unless you stop and start it again.
-Once after start-up I need to run this:
+The tests spin up bitcoind, Electrs and other servers as needed, so you may need quite some RAM and patience.
 
 ```bash
-
-nigiri stop
-nigiri start
-```
-
-then to run the tests:
-
-```bash
-
-cd protocol
-cargo test --package protocol --lib --tests -- --nocapture
-
+cargo test
 ```
 
 ## reading the Markdown files
