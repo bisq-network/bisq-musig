@@ -1,4 +1,5 @@
 use std::collections::{BTreeMap, BTreeSet};
+use std::mem;
 use std::sync::LazyLock;
 
 use bdk_wallet::bitcoin::amount::CheckedSum as _;
@@ -10,6 +11,7 @@ use bdk_wallet::bitcoin::{
     Address, Amount, FeeRate, Network, OutPoint, Psbt, ScriptBuf, Sequence, TapSighashType,
     Transaction, TxIn, TxOut, Weight, Witness, XOnlyPublicKey, absolute, psbt, script, secp256k1,
 };
+use bdk_wallet::miniscript::psbt::PsbtExt as _;
 use bdk_wallet::miniscript::{Descriptor, ToPublicKey as _};
 use bdk_wallet::{KeychainKind, SignOptions, TxOrdering, Wallet};
 use rand::{RngCore, SeedableRng as _};
@@ -54,11 +56,10 @@ struct MockTradeWallet<Cs: Iterator<Item=TxOutput>, As: Iterator<Item=Address>> 
     new_addresses: As,
     signature_map: BTreeMap<OutPoint, Signature>,
     internal_key: Option<XOnlyPublicKey>,
+    script_sigs: BTreeMap<XOnlyPublicKey, Vec<Signature>>,
 }
 
-impl<Cs: Iterator<Item = TxOutput>, As: Iterator<Item = Address>> TradeWallet
-    for MockTradeWallet<Cs, As>
-{
+impl<Cs: Iterator<Item=TxOutput>, As: Iterator<Item=Address>> TradeWallet for MockTradeWallet<Cs, As> {
     fn network(&self) -> Network { Network::Regtest }
 
     fn new_address(&mut self) -> Result<Address> {
@@ -140,12 +141,38 @@ impl<Cs: Iterator<Item = TxOutput>, As: Iterator<Item = Address>> TradeWallet
     }
 
     fn sign_selected_inputs(&self, psbt: &mut Psbt, is_selected: &dyn Fn(&OutPoint) -> bool) -> Result<()> {
+        let mut script_sigs = self.script_sigs.clone();
+
         for (input, TxIn { previous_output, .. })
         in psbt.inputs.iter_mut().zip(&psbt.unsigned_tx.input) {
             if is_selected(previous_output) {
-                let signature = self.signature_map.get(previous_output)
-                    .ok_or(TransactionErrorKind::MissingSignature)?;
-                input.final_script_witness = Some(Witness::p2tr_key_spend(signature));
+                for (key, (leaf_hashes, _)) in &input.tap_key_origins {
+                    if let Some(sig) = script_sigs.get_mut(key).and_then(Vec::pop) {
+                        for leaf_hash in leaf_hashes {
+                            input.tap_script_sigs.insert((*key, *leaf_hash), sig);
+                        }
+                    }
+                }
+                if let Some(signature) = self.signature_map.get(previous_output) {
+                    // Mock keyspend:
+                    input.final_script_witness = Some(Witness::p2tr_key_spend(signature));
+                    input.redact_sensitive_fields();
+                } else if input.tap_key_origins.len() == input.tap_script_sigs.len() + 1 {
+                    // Mock script spend (assumes only one path):
+                    if let Some((control_block, (script, _))) = input.tap_scripts.first_key_value() {
+                        let mut wit = Witness::new();
+                        // For the purpose of the mock, assume that (pubkey, leaf-hash) -> signature
+                        // mappings occur in the opposite order that the signatures need to be added
+                        // to the witness. This won't be true in general.
+                        for sig in input.tap_script_sigs.values().rev() {
+                            wit.push(sig.serialize());
+                        }
+                        wit.push(script.as_bytes());
+                        wit.push(control_block.serialize());
+                        input.final_script_witness = Some(wit);
+                        input.redact_sensitive_fields();
+                    }
+                }
             }
         }
         Ok(())
@@ -169,9 +196,15 @@ pub fn mock_buyer_trade_wallet() -> impl TradeWallet {
     ].map(|a| a.parse::<Address<_>>()
         .expect("hardcoded addresses should be valid").assume_checked()).into_iter();
     let internal_key =
-        "0000000000000000000000000000000000000000000000000000000000000001".parse().ok();
+        "51494dc22e24a32fe9dcfbd7e85faf345fa1df296fb49d156e859ef345201295".parse().ok();
+    let script_sigs = script_sigs(internal_key.as_slice(), &[
+        "5564448d3c5f024eaf2c65024a0c6e7a9066eb0390f8ffaeee2feacde310fabf\
+         87f3a8d8ad7fb125d7a6f68a282cfab8cd3178262a1fd0c2d06a598c8c454af8",
+        "652d0abaa3b4f8c7dd85ac9d523d44f768c8e1541aded79165c3cdfb3ba35d62\
+         eef114e89becb490a80cfdab946d2d91748ccea501ceb4f08655dcc2868c0463",
+    ]);
 
-    MockTradeWallet { funding_coins, new_addresses, signature_map, internal_key }
+    MockTradeWallet { funding_coins, new_addresses, signature_map, internal_key, script_sigs }
 }
 
 //noinspection SpellCheckingInspection
@@ -195,17 +228,30 @@ pub fn mock_seller_trade_wallet() -> impl TradeWallet {
     ].map(|a| a.parse::<Address<_>>()
         .expect("hardcoded addresses should be valid").assume_checked()).into_iter();
     let internal_key =
-        "0000000000000000000000000000000000000000000000000000000000000002".parse().ok();
+        "fcba7ecf41bc7e1be4ee122d9d22e3333671eb0a3a87b5cdf099d59874e1940f".parse().ok();
+    let script_sigs = script_sigs(internal_key.as_slice(), &[
+        "87790f7eb3e98eb1b4dadc55ff5762275c4e3c02c6491abb26c8eabfada55b4b\
+         3f2627f627919d667be8f191a1b275b01549ab24e5eeda0019f83c658840500e",
+        "52fe2e44a4789a0f9bc406da144dcacca2621d2c1286e2d8f9913425c9927288\
+         13d658a3334a4070ce585cb907a67604fc74578e84e714c38c6547377fac133e",
+    ]);
 
-    MockTradeWallet { funding_coins, new_addresses, signature_map, internal_key }
+    MockTradeWallet { funding_coins, new_addresses, signature_map, internal_key, script_sigs }
+}
+
+fn signature_vec(signatures: &[&'static str]) -> Vec<Signature> {
+    signatures.iter().map(|s| Signature {
+        signature: s.parse().expect("hardcoded signatures should be valid"),
+        sighash_type: TapSighashType::Default,
+    }).collect()
 }
 
 fn signature_map(funding_coins: &[TxOutput], signatures: &[&'static str]) -> BTreeMap<OutPoint, Signature> {
-    let signatures = signatures.iter().map(|s| Signature {
-        signature: s.parse().expect("hardcoded signatures should be valid"),
-        sighash_type: TapSighashType::Default,
-    });
-    funding_coins.iter().map(|o| o.outpoint).zip(signatures).collect()
+    funding_coins.iter().map(|o| o.outpoint).zip(signature_vec(signatures)).collect()
+}
+
+fn script_sigs(iks: &[XOnlyPublicKey], signatures: &[&'static str]) -> BTreeMap<XOnlyPublicKey, Vec<Signature>> {
+    iks.iter().map(|k| (*k, signature_vec(signatures))).collect()
 }
 
 impl TradeWallet for Wallet {
@@ -238,19 +284,19 @@ impl TradeWallet for Wallet {
     ) -> Result<Psbt> {
         let mut builder = self.build_tx();
         builder
-                .ordering(TxOrdering::Untouched)
-                .nlocktime(absolute::LockTime::ZERO)
-                .fee_rate(fee_rate)
-                .add_recipient(half_deposit_placeholder_spk(rng), deposit_amount);
+            .ordering(TxOrdering::Untouched)
+            .nlocktime(absolute::LockTime::ZERO)
+            .fee_rate(fee_rate)
+            .add_recipient(half_deposit_placeholder_spk(rng), deposit_amount);
         for receiver in trade_fee_receivers {
             builder.add_recipient(receiver.address.script_pubkey(), receiver.amount);
         }
         let mut psbt = builder.finish()?;
         // Calculate tx fee overpay unconditionally, as this performs additional checks on the PSBT:
         let overpay_msat: u64 = half_psbt_fee_overpay_msat(&psbt, fee_rate)
-                .ok_or(TransactionErrorKind::Overflow)?
-                .try_into()
-                .map_err(|_| TransactionErrorKind::InvalidPsbt)?;
+            .ok_or(TransactionErrorKind::Overflow)?
+            .try_into()
+            .map_err(|_| TransactionErrorKind::InvalidPsbt)?;
         let change_output_index = 1 + trade_fee_receivers.len();
         if psbt.unsigned_tx.output.len() > change_output_index {
             // Correct any tx fee overpay due to overly conservative input witness size estimation
@@ -274,6 +320,13 @@ impl TradeWallet for Wallet {
             if is_selected(&psbt.unsigned_tx.input[i].previous_output) {
                 psbt.inputs[i].final_script_sig = psbt_copy.inputs[i].final_script_sig.take();
                 psbt.inputs[i].final_script_witness = psbt_copy.inputs[i].final_script_witness.take();
+                psbt.inputs[i].tap_script_sigs = mem::take(&mut psbt_copy.inputs[i].tap_script_sigs);
+
+                if !psbt.inputs[i].tap_script_sigs.is_empty() {
+                    // BDK couldn't finalize the selected input. Try to finalize it ourselves using
+                    // the `miniscript` lib, ignoring any errors that might occur.
+                    let _ = psbt.finalize_inp_mut(&*LIBSECP256K1_CTX, i);
+                }
             }
         }
         Ok(())
@@ -301,9 +354,9 @@ impl TradeWallet for MemWallet {
         rng: &mut dyn RngCore,
     ) -> Result<Psbt> {
         let mut res: Vec<(ScriptBuf, Amount)> = trade_fee_receivers
-                .iter()
-                .map(|receiver| (receiver.address.script_pubkey(), deposit_amount))
-                .collect();
+            .iter()
+            .map(|receiver| (receiver.address.script_pubkey(), deposit_amount))
+            .collect();
         res.push((half_deposit_placeholder_spk(rng), deposit_amount));
         let mut psbt = self.create_psbt(res, fee_rate)?;
         // Calculate tx fee overpay unconditionally, as this performs additional checks on the PSBT:
@@ -348,6 +401,7 @@ impl Redact for psbt::Input {
     fn redact_sensitive_fields(&mut self) {
         self.tap_key_origins.clear();
         self.tap_scripts.clear();
+        self.tap_script_sigs.clear();
         self.tap_internal_key = None;
         self.tap_merkle_root = None;
     }
@@ -463,7 +517,7 @@ pub(crate) fn merge_psbt_halves(
     fn re<T: Clone>(dest: &mut Vec<T>, src: &[T]) -> Vec<T> {
         let mut cloned_src = Vec::with_capacity(src.len() + dest.len());
         cloned_src.extend(src.iter().cloned());
-        std::mem::replace(dest, cloned_src)
+        mem::replace(dest, cloned_src)
     }
     use std::convert::identity as id;
 
@@ -542,6 +596,17 @@ pub(crate) fn set_payouts_and_shuffle(psbt: &mut Psbt, buyer_payout: &mut TxOutp
 
     let txid = psbt.unsigned_tx.compute_txid();
     [buyer_payout.outpoint.txid, seller_payout.outpoint.txid] = [txid; 2];
+}
+
+pub(crate) fn extract_signed_tx(psbt: &Psbt) -> Result<Transaction> {
+    if !is_well_formed(psbt) || psbt.inputs.iter().any(|input| input.final_script_sig.is_some()) {
+        return Err(TransactionErrorKind::InvalidPsbt);
+    }
+    if psbt.inputs.iter().any(|input| input.final_script_witness.is_none()) {
+        return Err(TransactionErrorKind::MissingSignature);
+    }
+    // TODO: Report undocumented panics in `Psbt::extract_tx` & `Psbt::fee` if the PSBT is malformed.
+    Ok(psbt.clone().extract_tx()?)
 }
 
 #[cfg(test)]

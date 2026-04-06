@@ -9,13 +9,13 @@ anyhow = { workspace = true }
 bdk_bitcoind_rpc = { workspace = true }
 bdk_electrum = { workspace = true }
 bdk_wallet = { workspace = true, features = ["test-utils"] }
+bmp_tracing = { workspace = true }
 hex = { workspace = true }
 rand = { workspace = true }
 secp = { workspace = true }
 simple-semaphore = { workspace = true }
 tempfile = { workspace = true }
 tokio = { workspace = true, features = ["net"] }
-bmp_tracing = { workspace = true }
 
 electrsd = { version = "0.36.1", features = [
 "esplora_a33e97e1",

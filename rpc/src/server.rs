@@ -16,7 +16,8 @@ use tracing::{Span, debug, error, info, instrument, trace};
 use crate::pb::convert::{CheckInSignedRange as _, TryProtoInto};
 pub use crate::pb::musigrpc::musig_server::MusigServer;
 use crate::pb::musigrpc::{
-    CloseTradeRequest, CloseTradeResponse, DepositPsbt, DepositTxSignatureRequest,
+    CloseTradeRequest, CloseTradeResponse, CustomCloseTradeRequest, CustomCloseTradeResponse,
+    CustomPayoutPsbt, CustomPayoutPsbtRequest, DepositPsbt, DepositTxSignatureRequest,
     NonceSharesMessage, NonceSharesRequest, PartialSignaturesMessage, PartialSignaturesRequest,
     PubKeySharesRequest, PubKeySharesResponse, PublishDepositTxRequest,
     SubscribeTxConfirmationStatusRequest, SwapTxSignatureRequest, SwapTxSignatureResponse,
@@ -215,12 +216,52 @@ impl musig_server::Musig for MusigImpl {
                 trade_model.aggregate_private_keys_for_my_output()?;
             } else {
                 // Peer unresponsive -- force-close our trade by publishing the swap tx. For seller only.
+                trade_model.get_signed_swap_tx()
+                    .ok_or_else(|| Status::internal("missing signed swap tx"))?;
+
                 info!("*** BROADCAST SWAP TX ***"); // TODO: Implement broadcast.
             }
             let my_prv_key_share = trade_model.get_my_private_key_share_for_peer_output()
                 .ok_or_else(|| Status::internal("missing private key share"))?;
 
             Ok(CloseTradeResponse { peer_output_prv_key_share: my_prv_key_share.serialize().into() })
+        })
+    }
+
+    #[instrument(skip_all)]
+    async fn sign_custom_payout_tx(&self, request: Request<CustomPayoutPsbtRequest>) -> Result<Response<CustomPayoutPsbt>> {
+        handle_musig_request(request, move |request, trade_model| {
+            trade_model.set_sellers_custom_payout_amount_excluding_fee(
+                Amount::from_sat(request.sellers_payout_amount_excluding_fee.check_in_signed_range()?));
+            trade_model.set_custom_payout_tx_fee_rate(
+                FeeRate::from_sat_per_kwu(request.fee_rate.check_in_signed_range()?));
+            trade_model.compute_custom_payout_tx()?;
+            trade_model.sign_custom_payout_psbt()?;
+            let psbt = trade_model.get_custom_payout_psbt()
+                .ok_or_else(|| Status::internal("missing custom payout PSBT"))?;
+
+            Ok(CustomPayoutPsbt {
+                psbt: psbt.serialize(),
+                txid: psbt.unsigned_tx.compute_txid().to_string(),
+                buyers_payout_amount_including_fee: psbt.unsigned_tx.output[0].value.to_sat(),
+                sellers_payout_amount_including_fee: psbt.unsigned_tx.output[1].value.to_sat(),
+            })
+        })
+    }
+
+    #[instrument(skip_all)]
+    async fn custom_close_trade(&self, request: Request<CustomCloseTradeRequest>) -> Result<Response<CustomCloseTradeResponse>> {
+        handle_musig_request(request, move |request, trade_model| {
+            let peers_psbt = request.peers_custom_payout_psbt.try_proto_into()?;
+            trade_model.combine_custom_payout_psbts(peers_psbt)?;
+            // Sign custom payout PSBT again to finalize it:
+            trade_model.sign_custom_payout_psbt()?;
+            let custom_payout_tx = trade_model.get_signed_custom_payout_tx()
+                .ok_or_else(|| Status::internal("missing signed custom payout tx"))?;
+
+            info!("*** BROADCAST CUSTOM PAYOUT TX ***"); // TODO: Implement broadcast.
+
+            Ok(CustomCloseTradeResponse { custom_payout_tx: consensus::serialize(&custom_payout_tx) })
         })
     }
 }
@@ -352,6 +393,8 @@ impl_musig_req!(PublishDepositTxRequest);
 impl_musig_req!(SubscribeTxConfirmationStatusRequest);
 impl_musig_req!(SwapTxSignatureRequest);
 impl_musig_req!(CloseTradeRequest);
+impl_musig_req!(CustomPayoutPsbtRequest);
+impl_musig_req!(CustomCloseTradeRequest);
 
 // TODO: These wrapper fns don't work with async handlers, and should eventually be changed to do so:
 

@@ -1,6 +1,7 @@
 use bdk_wallet::bitcoin::opcodes::all::{OP_CHECKSIG, OP_CHECKSIGVERIFY, OP_CSV};
 use bdk_wallet::bitcoin::taproot::TaprootBuilder;
 use bdk_wallet::bitcoin::{ScriptBuf, TapNodeHash, XOnlyPublicKey, relative, script};
+use bdk_wallet::miniscript::{DefiniteDescriptorKey, Descriptor};
 
 use crate::transaction::NetworkParams;
 
@@ -10,6 +11,15 @@ pub fn deposit_payout_merkle_root(buyer_pub_key: &XOnlyPublicKey, seller_pub_key
 
 pub fn warning_escrow_merkle_root(claim_pub_key: &XOnlyPublicKey, network: impl NetworkParams + Copy) -> TapNodeHash {
     single_path_merkle_root(claim_script(claim_pub_key, network.claim_lock_time()))
+}
+
+// FIXME: Can panic; improve:
+pub fn deposit_payout_descriptor(
+    internal_key: &XOnlyPublicKey,
+    buyer_pub_key: &XOnlyPublicKey,
+    seller_pub_key: &XOnlyPublicKey,
+) -> Descriptor<DefiniteDescriptorKey> {
+    format!("tr({internal_key},and_v(v:pk({buyer_pub_key}),pk({seller_pub_key})))").parse().unwrap()
 }
 
 fn single_path_merkle_root(script: ScriptBuf) -> TapNodeHash {

@@ -1,3 +1,6 @@
+use std::io::Write;
+use std::sync::LazyLock;
+
 use bdk_electrum::BdkElectrumClient;
 use bdk_electrum::bdk_core::bitcoin::bip32::Xpriv;
 use bdk_electrum::bdk_core::bitcoin::{Transaction, Txid, XOnlyPublicKey, absolute, secp256k1};
@@ -6,12 +9,11 @@ use bdk_wallet::bitcoin::{Address, Amount, FeeRate, Network, OutPoint, Psbt, Scr
 use bdk_wallet::descriptor::{Descriptor, ExtendedDescriptor};
 use bdk_wallet::miniscript::ToPublicKey;
 use bdk_wallet::miniscript::descriptor::ConversionError;
+use bdk_wallet::miniscript::psbt::PsbtExt as _;
 use bdk_wallet::template::{Bip86, DescriptorTemplate};
 use bdk_wallet::{AddressInfo, KeychainKind, SignOptions, TxOrdering, Wallet};
 use rand::RngCore;
 use secp::Scalar;
-use std::io::Write;
-use std::sync::LazyLock;
 use thiserror::Error;
 
 /// The Protocol Wallet API is used by the protocol to create and sign transactions.
@@ -49,6 +51,7 @@ pub struct MemWallet {
     wallet: Wallet,
     client: BdkElectrumClient<Client>,
 }
+
 // TODO think about stop_gap and batch_size
 const STOP_GAP: usize = 50;
 const BATCH_SIZE: usize = 5;
@@ -63,25 +66,26 @@ impl MemWallet {
 
     pub fn reveal_next_address(&mut self) -> Address {
         self.wallet
-                .reveal_next_address(KeychainKind::External)
-                .address
+            .reveal_next_address(KeychainKind::External)
+            .address
     }
 
     pub fn public_descriptor(&self, chain: KeychainKind) -> &ExtendedDescriptor {
         self.wallet.public_descriptor(chain)
     }
+
     pub fn new_internal_key(&mut self) -> Result<XOnlyPublicKey, WalletErrorKind> {
         if let Descriptor::Tr(tr) = self.public_descriptor(KeychainKind::External) {
             let ik = tr.internal_key().clone();
             let index = self
-                    .wallet
-                    .reveal_next_address(KeychainKind::External)
-                    .index;
+                .wallet
+                .reveal_next_address(KeychainKind::External)
+                .index;
 
             return Ok(ik
-                    .at_derivation_index(index)?
-                    .derive_public_key(&*LIBSECP256K1_CTX)?
-                    .to_x_only_pubkey());
+                .at_derivation_index(index)?
+                .derive_public_key(&*LIBSECP256K1_CTX)?
+                .to_x_only_pubkey());
         }
         Err(WalletErrorKind::NotTaprootAddress)
     }
@@ -93,10 +97,10 @@ impl MemWallet {
     ) -> anyhow::Result<Psbt> {
         let mut builder = self.wallet.build_tx();
         builder
-                .ordering(TxOrdering::Untouched)
-                .nlocktime(absolute::LockTime::ZERO)
-                .fee_rate(fee_rate)
-                .set_recipients(recipients);
+            .ordering(TxOrdering::Untouched)
+            .nlocktime(absolute::LockTime::ZERO)
+            .fee_rate(fee_rate)
+            .set_recipients(recipients);
         Ok(builder.finish()?)
     }
 
@@ -118,7 +122,15 @@ impl MemWallet {
             if is_selected(&psbt.unsigned_tx.input[i].previous_output) {
                 psbt.inputs[i].final_script_sig = psbt_copy.inputs[i].final_script_sig.take();
                 psbt.inputs[i].final_script_witness =
-                        psbt_copy.inputs[i].final_script_witness.take();
+                    psbt_copy.inputs[i].final_script_witness.take();
+                psbt.inputs[i].tap_script_sigs =
+                    std::mem::take(&mut psbt_copy.inputs[i].tap_script_sigs);
+
+                if !psbt.inputs[i].tap_script_sigs.is_empty() {
+                    // BDK couldn't finalize the selected input. Try to finalize it ourselves using
+                    // the `miniscript` lib, ignoring any errors that might occur.
+                    let _ = psbt.finalize_inp_mut(&*LIBSECP256K1_CTX, i);
+                }
             }
         }
         Ok(())
@@ -150,18 +162,18 @@ impl MemWallet {
         );
 
         let (descriptor, external_map, _) = Bip86(xprv, KeychainKind::External)
-                .build(network)
-                .expect("Failed to build external descriptor");
+            .build(network)
+            .expect("Failed to build external descriptor");
 
         let (change_descriptor, internal_map, _) = Bip86(xprv, KeychainKind::Internal)
-                .build(network)
-                .expect("Failed to build internal descriptor");
+            .build(network)
+            .expect("Failed to build internal descriptor");
 
         let wallet = Wallet::create(descriptor, change_descriptor)
-                .network(network)
-                .keymap(KeychainKind::External, external_map)
-                .keymap(KeychainKind::Internal, internal_map)
-                .create_wallet_no_persist()?;
+            .network(network)
+            .keymap(KeychainKind::External, external_map)
+            .keymap(KeychainKind::Internal, internal_map)
+            .create_wallet_no_persist()?;
 
         Ok(Self { wallet, client })
     }
@@ -170,7 +182,7 @@ impl MemWallet {
         // Populate the electrum client's transaction cache so it doesn't re-download transaction we
         // already have.
         self.client
-                .populate_tx_cache(self.wallet.tx_graph().full_txs().map(|tx_node| tx_node.tx));
+            .populate_tx_cache(self.wallet.tx_graph().full_txs().map(|tx_node| tx_node.tx));
 
         let request = self.wallet.start_full_scan().inspect({
             let mut stdout = std::io::stdout();
@@ -181,8 +193,8 @@ impl MemWallet {
         });
         tracing::info!("requesting update...");
         let update = self
-                .client
-                .full_scan(request, STOP_GAP, BATCH_SIZE, false)?;
+            .client
+            .full_scan(request, STOP_GAP, BATCH_SIZE, false)?;
         self.wallet.apply_update(update)?;
         Ok(())
     }

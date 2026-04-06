@@ -31,6 +31,7 @@ public class TradeProtocolClient {
             client.testMusigService_twoParties(1, TradeType.TAKER_IS_BUYER, ClosureType.UNCOOPERATIVE);
             client.testMusigService_twoParties(2, TradeType.TAKER_IS_SELLER, ClosureType.COOPERATIVE);
             client.testMusigService_twoParties(3, TradeType.TAKER_IS_SELLER, ClosureType.UNCOOPERATIVE);
+            client.testMusigService_twoParties(4, TradeType.TAKER_IS_BUYER, ClosureType.MEDIATED);
         } finally {
             channel.shutdown();
         }
@@ -44,7 +45,7 @@ public class TradeProtocolClient {
      * Clean (unmediated) closure types.
      **/
     private enum ClosureType {
-        COOPERATIVE, UNCOOPERATIVE
+        COOPERATIVE, UNCOOPERATIVE, MEDIATED
     }
 
     private void testMusigService_twoParties(int tradeNum, TradeType tradeType, ClosureType closureType) {
@@ -258,6 +259,11 @@ public class TradeProtocolClient {
     }
 
     private void doRestOfTrade(String buyerTradeId, String sellerTradeId, ClosureType closureType) {
+        if (closureType == ClosureType.MEDIATED) {
+            doMediatedTradeClosure(buyerTradeId, sellerTradeId);
+            return;
+        }
+
         // DELAY: Buyer makes fiat payment.
 
         // (Buyer calls 'GetPartialSignatures' a second time, this time with the ready-to-release flag set, so that his
@@ -332,6 +338,38 @@ public class TradeProtocolClient {
             System.out.println("Got reply: " + buyersCloseTradeResponse);
             // **************************
         }
+    }
+
+    private void doMediatedTradeClosure(String buyerTradeId, String sellerTradeId) {
+        // DELAY: Buyer accepts solution from mediator (cancelled trade, 50% buyer security deposit penalty).
+
+        var buyersCustomPayoutPsbt = stub.signCustomPayoutTx(CustomPayoutPsbtRequest.newBuilder()
+                .setTradeId(buyerTradeId)
+                .setSellersPayoutAmountExcludingFee(245_000)
+                .setFeeRate(3_750) // 15.0 sats per vbyte
+                .build());
+        System.out.println("Got reply: " + buyersCustomPayoutPsbt);
+
+        // Buyer sends Custom Payout PSBT to seller.
+
+        // DELAY: Seller accepts solution from mediator.
+
+        var sellersCustomPayoutPsbt = stub.signCustomPayoutTx(CustomPayoutPsbtRequest.newBuilder()
+                .setTradeId(sellerTradeId)
+                .setSellersPayoutAmountExcludingFee(245_000)
+                .setFeeRate(3_750) // 15.0 sats per vbyte
+                .build());
+        System.out.println("Got reply: " + sellersCustomPayoutPsbt);
+
+        // *** SELLER CUSTOM-CLOSES TRADE ***
+        var sellersCustomCloseTradeResponse = stub.customCloseTrade(CustomCloseTradeRequest.newBuilder()
+                .setTradeId(sellerTradeId)
+                .setPeersCustomPayoutPsbt(buyersCustomPayoutPsbt.getPsbt())
+                .build());
+        System.out.println("Got reply: " + sellersCustomCloseTradeResponse);
+        // **********************************
+
+        // (Buyer picks up Custom Payout Tx from bitcoin network, closing his trade.)
     }
 
     @SuppressWarnings("SpellCheckingInspection")

@@ -163,7 +163,7 @@ impl TestEnv {
     }
 
     /// Generate a new temporary directory
-    pub fn get_tmp_dir(&self) -> anyhow::Result<TempDir> {
+    pub fn get_tmp_dir(&self) -> Result<TempDir> {
         let dir = TempDir::new()?;
         Ok(dir)
     }
@@ -179,7 +179,8 @@ impl TestEnv {
         Self::new_with_conf(config)
     }
 
-    /// ZMQ socket for raw transaction notifications (set when created via [`enable_zmq`](Self::enable_zmq)).
+    /// ZMQ socket for raw transaction notifications (set when created via
+    /// [`enable_zmq`](Self::enable_zmq)).
     pub fn zmq_pub_raw_tx_socket(&self) -> Option<String> {
         self.bitcoind
             .params
@@ -187,7 +188,8 @@ impl TestEnv {
             .map(|socket| format!("tcp://{socket}"))
     }
 
-    /// ZMQ socket for raw block notifications (set when created via [`enable_zmq`](Self::enable_zmq)).
+    /// ZMQ socket for raw block notifications (set when created via
+    /// [`enable_zmq`](Self::enable_zmq)).
     pub fn zmq_pub_raw_block_socket(&self) -> Option<SocketAddrV4> {
         self.bitcoind.params.zmq_pub_raw_block_socket
     }
@@ -289,28 +291,18 @@ impl TestEnv {
         let container_name = format!("btc-explorer-{browser_port}");
 
         let mut container = std::process::Command::new("podman");
-        container.args([
-            "run",
-            "--rm",
-            "--name",
-            &container_name,
-            "-p",
-            &format!("{browser_port}:3002"),
+        #[rustfmt::skip]
+        container.args(["run", "--rm",
+            "--name", &container_name,
+            "-p", &format!("{browser_port}:3002"),
             "--add-host=host.containers.internal:host-gateway",
-            "-e",
-            "BTCEXP_BITCOIND_HOST=host.containers.internal",
-            "-e",
-            "BTCEXP_HOST=0.0.0.0",
-            "-e",
-            &format!("BTCEXP_BITCOIND_PORT={bitcoind_rpc_port}"),
-            "-e",
-            "BTCEXP_BITCOIND_USER=bitcoin",
-            "-e",
-            &format!("BTCEXP_BITCOIND_PASS={}", self.bitcoin_rpc_pwd),
-            "-e",
-            "BTCEXP_ADDRESS_API=electrum",
-            "-e",
-            &format!("BTCEXP_ELECTRUM_SERVERS=tcp://host.containers.internal:{electrum_port}"),
+            "-e", "BTCEXP_BITCOIND_HOST=host.containers.internal",
+            "-e", "BTCEXP_HOST=0.0.0.0",
+            "-e", &format!("BTCEXP_BITCOIND_PORT={bitcoind_rpc_port}"),
+            "-e", "BTCEXP_BITCOIND_USER=bitcoin",
+            "-e", &format!("BTCEXP_BITCOIND_PASS={}", self.bitcoin_rpc_pwd),
+            "-e", "BTCEXP_ADDRESS_API=electrum",
+            "-e", &format!("BTCEXP_ELECTRUM_SERVERS=tcp://host.containers.internal:{electrum_port}"),
             "docker.io/getumbrel/btc-rpc-explorer:v3.5.1",
         ]);
 

@@ -555,7 +555,7 @@ impl WalletApi for BMPWallet<Connection> {
         for key in &pubkeys {
             let path_str = self.db.path().expect("DB path should not be empty").replace(Self::DB_NAME, "");
             let db_path = Path::new(&path_str).join(format!("bmp_{}.db3", key.to_lower_hex_string()));
-            
+
             let mut db = Connection::open(db_path)?;
             let imported_wallet_opt = Wallet::load()
                 .check_network(self.wallet.network())
@@ -760,6 +760,7 @@ impl DerefMut for BMPWallet<Connection> {
 #[cfg(test)]
 mod tests {
     use std::str::FromStr;
+
     use bdk_kyoto::FeeRate;
     use bdk_wallet::bitcoin::hashes::Hash as _;
     use bdk_wallet::bitcoin::{Address, AddressType, Amount, BlockHash, Network, Weight, psbt};
@@ -769,13 +770,13 @@ mod tests {
     use bmp_tracing::tracing;
     use rand::RngCore as _;
     use secp::Scalar;
-    use tempfile::{tempdir, TempDir};
+    use tempfile::{TempDir, tempdir};
 
     use crate::bmp_wallet::{BMPWallet, WalletApi as _};
     use crate::test_utils::{MockedBDKElectrum, derive_public_key, load_imported_wallet};
 
     fn get_dir() -> TempDir {
-         tempdir().unwrap()
+        tempdir().unwrap()
     }
 
     fn new_private_key() -> Scalar {

@@ -9,8 +9,7 @@ use rpc::wallet::{TxConfidence, WalletService, WalletServiceImpl};
 use testenv::TestEnv;
 use tokio::time::{self, Duration};
 
-// TODO fix this test, I guess we need to rewrite it, may be the whole streaming of transaction
-// events.
+// TODO fix this test, I guess we need to rewrite it, may be the whole streaming of transaction events.
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 #[ignore = "needs to be fixed"]
 async fn test_wallet_service_mine_single_tx() -> Result<()> {
@@ -66,8 +65,7 @@ async fn test_wallet_service_mine_single_tx() -> Result<()> {
 }
 
 async fn start_wallet_service(rpc_client: bitcoincore_rpc::Client) -> Arc<impl WalletService> {
-    let wallet_service = Arc::new(WalletServiceImpl::create_with_rpc_params(
-        rpc_client));
+    let wallet_service = Arc::new(WalletServiceImpl::create_with_rpc_params(rpc_client));
     assert_eq!(wallet_service.balance(), Balance::default());
 
     wallet_service.clone().spawn_connection();
