@@ -1,7 +1,6 @@
 //! Bitcoin regtest environment using electrsd with automatic executable downloads
 
 use std::net::SocketAddrV4;
-use std::sync::{Arc, LazyLock};
 use std::time::Duration;
 
 use anyhow::{Context as _, Result};
@@ -21,7 +20,6 @@ use hmac::{Hmac, Mac as _};
 use rand::{Rng as _, RngCore as _};
 use secp::Scalar;
 use sha2::Sha256;
-use simple_semaphore::{Permit, Semaphore};
 use tempfile::{TempDir, tempdir};
 use tokio::net::TcpListener;
 
@@ -33,8 +31,7 @@ pub struct TestEnv {
     delay: Duration,
     bdk_electrum_client: BdkElectrumClient<Client>,
     ctx: Secp256k1<All>,
-    _permit: Permit,
-    _tmp_dir: TempDir,
+    //  _permit: Permit,
     explorer_process: Option<std::process::Child>,
     container_name: Option<String>,
     explorer_port: Option<u16>,
@@ -85,7 +82,6 @@ impl Default for Config<'_> {
 }
 
 const NETWORK: Network = Network::Regtest;
-static SEMAPHORE: LazyLock<Arc<Semaphore>> = LazyLock::new(|| Semaphore::new(1));
 
 // Type alias for Hmac-Sha256
 type HmacSha256 = Hmac<Sha256>;
@@ -196,7 +192,8 @@ impl TestEnv {
 
     /// create environment with automatic downloads
     pub fn new_with_conf(config: Config) -> Result<Self> {
-        let permit = SEMAPHORE.acquire(); // have testenvs single threaded because of bitcoind and electrs references.
+        // let permit = SEMAPHORE.acquire(); // have testenvs single threaded because of bitcoind
+        // and electrs references.
         let tmp_dir = tempdir().expect("failed to create temporary directory");
         std::env::set_current_dir(tmp_dir.path()).expect("failed to set current directory");
 
@@ -256,8 +253,7 @@ impl TestEnv {
             delay: config.delay,
             bdk_electrum_client,
             ctx: Secp256k1::new(),
-            _permit: permit,
-            _tmp_dir: tmp_dir,
+            // _permit: permit,
             explorer_process: None,
             container_name: None,
             explorer_port: None,
