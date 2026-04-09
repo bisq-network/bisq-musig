@@ -20,7 +20,7 @@ use hmac::{Hmac, Mac as _};
 use rand::{Rng as _, RngCore as _};
 use secp::Scalar;
 use sha2::Sha256;
-use tempfile::{TempDir, tempdir};
+use tempfile::TempDir;
 use tokio::net::TcpListener;
 
 /// Bitcoin regtest environment manager
@@ -31,7 +31,6 @@ pub struct TestEnv {
     delay: Duration,
     bdk_electrum_client: BdkElectrumClient<Client>,
     ctx: Secp256k1<All>,
-    //  _permit: Permit,
     explorer_process: Option<std::process::Child>,
     container_name: Option<String>,
     explorer_port: Option<u16>,
@@ -192,11 +191,6 @@ impl TestEnv {
 
     /// create environment with automatic downloads
     pub fn new_with_conf(config: Config) -> Result<Self> {
-        // let permit = SEMAPHORE.acquire(); // have testenvs single threaded because of bitcoind
-        // and electrs references.
-        let tmp_dir = tempdir().expect("failed to create temporary directory");
-        std::env::set_current_dir(tmp_dir.path()).expect("failed to set current directory");
-
         // Try to start bitcoind (from environment or downloads)
         tracing::info!("Starting bitcoind...");
         // rpcauth for each bitcoind and save the pwd
@@ -245,7 +239,6 @@ impl TestEnv {
         )?;
         let bdk_electrum_client = BdkElectrumClient::new(client);
 
-        // permit will be dropped when TestEnv is dropped
         let test_env = Self {
             bitcoind,
             electrsd,
@@ -253,7 +246,6 @@ impl TestEnv {
             delay: config.delay,
             bdk_electrum_client,
             ctx: Secp256k1::new(),
-            // _permit: permit,
             explorer_process: None,
             container_name: None,
             explorer_port: None,
