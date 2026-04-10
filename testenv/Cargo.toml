@@ -13,7 +13,6 @@ bmp_tracing = { workspace = true }
 hex = { workspace = true }
 rand = { workspace = true }
 secp = { workspace = true }
-simple-semaphore = { workspace = true }
 tempfile = { workspace = true }
 tokio = { workspace = true, features = ["net"] }
 

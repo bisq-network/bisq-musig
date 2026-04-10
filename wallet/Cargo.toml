@@ -23,5 +23,4 @@ testenv = { path = "../testenv" }
 [dev-dependencies]
 bdk_wallet = { workspace = true, features = ["test-utils"] }
 bmp_tracing = { workspace = true }
-simple-semaphore = { workspace = true }
 tempfile = { workspace = true }

@@ -1,6 +1,7 @@
 //! Bitcoin regtest environment using electrsd with automatic executable downloads
 
 use std::net::SocketAddrV4;
+use std::sync::{Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
 use anyhow::{Context as _, Result};
@@ -24,7 +25,7 @@ use tempfile::TempDir;
 use tokio::net::TcpListener;
 
 /// Bitcoin regtest environment manager
-pub struct TestEnv {
+pub struct TestEnv<'a> {
     bitcoind: Node,
     electrsd: ElectrsD,
     timeout: Duration,
@@ -36,6 +37,7 @@ pub struct TestEnv {
     explorer_port: Option<u16>,
     bitcoin_rpc_pwd: String,
     mempool: Vec<Txid>,
+    _guard: Option<MutexGuard<'a, ()>>,
 }
 
 /// Configuration parameters.
@@ -47,6 +49,7 @@ pub struct Config<'a> {
     pub electrsd: electrsd::Conf<'a>,
     pub timeout: Duration,
     pub delay: Duration,
+    pub runmultithreaded: bool,
 }
 
 impl Default for Config<'_> {
@@ -76,6 +79,7 @@ impl Default for Config<'_> {
             },
             timeout: Duration::from_secs(5),
             delay: Duration::from_millis(200),
+            runmultithreaded: "true" == std::env::var("TEST_MULTITHREADED").unwrap_or_else(|_| "false".to_string()).trim().to_lowercase()
         }
     }
 }
@@ -150,8 +154,9 @@ pub fn validate_rpcauth(rpcauth_line: &str, username: &str, password: &str) -> b
     // but you can use `subtle` crate if you want constant-time equality.
     hmac_hex_actual.eq_ignore_ascii_case(hmac_hex_expected)
 }
+static TESTENV_LOCK: Mutex<()> = Mutex::new(());
 
-impl TestEnv {
+impl<'a> TestEnv<'a> {
     /// Create a new test environment with automatic executable downloads
     pub fn new() -> Result<Self> {
         Self::new_with_conf(Config::default())
@@ -191,6 +196,12 @@ impl TestEnv {
 
     /// create environment with automatic downloads
     pub fn new_with_conf(config: Config) -> Result<Self> {
+        let _guard = if config.runmultithreaded {
+            None
+        } else {
+            // can recover because unit type won't corrupt
+            Some(TESTENV_LOCK.lock().unwrap_or_else(PoisonError::into_inner))
+        };
         // Try to start bitcoind (from environment or downloads)
         tracing::info!("Starting bitcoind...");
         // rpcauth for each bitcoind and save the pwd
@@ -251,6 +262,7 @@ impl TestEnv {
             explorer_port: None,
             bitcoin_rpc_pwd,
             mempool: Vec::new(),
+            _guard,
         };
         tracing::info!("Bitcoin regtest environment ready!");
         Ok(test_env)
@@ -526,7 +538,7 @@ impl TestEnv {
     }
 }
 
-impl Drop for TestEnv {
+impl<'a> Drop for TestEnv<'a> {
     fn drop(&mut self) {
         if let Some(name) = self.container_name.take() {
             tracing::info!("Stopping explorer container {name}...");
