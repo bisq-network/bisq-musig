@@ -177,6 +177,7 @@ impl BMPWalletPersister for Connection {
     }
 }
 
+const STOP_GAP: usize = 50;
 #[allow(unused)]
 pub struct BMPWallet<P: BMPWalletPersister> {
     wallet: PersistedWallet<P>,
@@ -188,13 +189,19 @@ pub struct BMPWallet<P: BMPWalletPersister> {
 
 impl BMPWallet<Connection> {
     pub fn next_address(&mut self, key_chain: KeychainKind) -> anyhow::Result<AddressInfo> {
-        // FIXME: `next_unused_address` just returns the same unused address over and over. It has
-        //  to either be marked as used (which change isn't staged and therefore presumably never
-        //  persisted) or a fresh address requested with `reveal_next_address`.
-        let addr = self.wallet.next_unused_address(key_chain);
+        let unused = self.list_unused_addresses(key_chain).collect::<Vec<_>>();
+
+        let addr = if unused.len() >= STOP_GAP {
+            unused
+                .first()
+                .expect("Unused addresses should not be empty")
+                .clone()
+        } else {
+            self.next_unused_address(key_chain)
+        };
+
         // Persist the revealed address to avoid address reuse
         self.persist()?;
-
         Ok(addr)
     }
 
