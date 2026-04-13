@@ -2,13 +2,15 @@ use std::error::Error as _;
 use std::fs::File;
 use std::io;
 use std::path::PathBuf;
+use std::sync::{Mutex, PoisonError};
 
+pub use tracing;
+pub use tracing_subscriber;
 use tracing_subscriber::filter::EnvFilter;
 use tracing_subscriber::layer::SubscriberExt as _;
 use tracing_subscriber::registry::LookupSpan;
 use tracing_subscriber::util::SubscriberInitExt as _;
 use tracing_subscriber::{Layer, fmt};
-pub use {tracing, tracing_subscriber};
 
 #[derive(Debug, Clone)]
 #[expect(clippy::exhaustive_enums)]
@@ -49,8 +51,12 @@ pub fn init(default_level: &str) {
     init_with_config(default_level, LogConfig::Stdout);
 }
 
+static TRACE_INIT: Mutex<()> = Mutex::new(());
+
 /// Initialize tracing with custom output configuration.
 pub fn init_with_config(default_level: &str, config: LogConfig) {
+    // ignoring the error from lock with unit type is safe
+    let _lock = TRACE_INIT.lock().unwrap_or_else(PoisonError::into_inner);
     if tracing::dispatcher::has_been_set() {
         return;
     }

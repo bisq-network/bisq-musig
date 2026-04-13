@@ -63,7 +63,7 @@ exposes a single initialization function that all binaries and test
 environments should call once at startup.  The API is intentionally
 minimal:
 
-```rust
+```
 bmp_tracing::init("info");
 ```
 
@@ -78,6 +78,16 @@ The tests spin up bitcoind, Electrs and other servers as needed, so you may need
 ```bash
 cargo test
 ```
+
+the test are run as single threaded by default, because in the multithreaded case they are flaky.
+due to some timing issue not addressed yet.
+If you want to speed up the tests use
+
+```bash
+TEST_MULTITHREADED=true cargo test
+```
+
+If they run through, everything is good, if not start the test as single threaded again.
 
 ## reading the Markdown files
 

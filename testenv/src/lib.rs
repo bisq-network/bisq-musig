@@ -1,7 +1,7 @@
 //! Bitcoin regtest environment using electrsd with automatic executable downloads
 
 use std::net::SocketAddrV4;
-use std::sync::{Arc, LazyLock};
+use std::sync::{Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
 use anyhow::{Context as _, Result};
@@ -21,25 +21,23 @@ use hmac::{Hmac, Mac as _};
 use rand::{Rng as _, RngCore as _};
 use secp::Scalar;
 use sha2::Sha256;
-use simple_semaphore::{Permit, Semaphore};
-use tempfile::{TempDir, tempdir};
+use tempfile::TempDir;
 use tokio::net::TcpListener;
 
 /// Bitcoin regtest environment manager
-pub struct TestEnv {
+pub struct TestEnv<'a> {
     bitcoind: Node,
     electrsd: ElectrsD,
     timeout: Duration,
     delay: Duration,
     bdk_electrum_client: BdkElectrumClient<Client>,
     ctx: Secp256k1<All>,
-    _permit: Permit,
-    _tmp_dir: TempDir,
     explorer_process: Option<std::process::Child>,
     container_name: Option<String>,
     explorer_port: Option<u16>,
     bitcoin_rpc_pwd: String,
     mempool: Vec<Txid>,
+    _guard: Option<MutexGuard<'a, ()>>,
 }
 
 /// Configuration parameters.
@@ -51,6 +49,7 @@ pub struct Config<'a> {
     pub electrsd: electrsd::Conf<'a>,
     pub timeout: Duration,
     pub delay: Duration,
+    pub runmultithreaded: bool,
 }
 
 impl Default for Config<'_> {
@@ -80,12 +79,12 @@ impl Default for Config<'_> {
             },
             timeout: Duration::from_secs(5),
             delay: Duration::from_millis(200),
+            runmultithreaded: "true" == std::env::var("TEST_MULTITHREADED").unwrap_or_else(|_| "false".to_string()).trim().to_lowercase()
         }
     }
 }
 
 const NETWORK: Network = Network::Regtest;
-static SEMAPHORE: LazyLock<Arc<Semaphore>> = LazyLock::new(|| Semaphore::new(1));
 
 // Type alias for Hmac-Sha256
 type HmacSha256 = Hmac<Sha256>;
@@ -155,8 +154,9 @@ pub fn validate_rpcauth(rpcauth_line: &str, username: &str, password: &str) -> b
     // but you can use `subtle` crate if you want constant-time equality.
     hmac_hex_actual.eq_ignore_ascii_case(hmac_hex_expected)
 }
+static TESTENV_LOCK: Mutex<()> = Mutex::new(());
 
-impl TestEnv {
+impl<'a> TestEnv<'a> {
     /// Create a new test environment with automatic executable downloads
     pub fn new() -> Result<Self> {
         Self::new_with_conf(Config::default())
@@ -196,10 +196,12 @@ impl TestEnv {
 
     /// create environment with automatic downloads
     pub fn new_with_conf(config: Config) -> Result<Self> {
-        let permit = SEMAPHORE.acquire(); // have testenvs single threaded because of bitcoind and electrs references.
-        let tmp_dir = tempdir().expect("failed to create temporary directory");
-        std::env::set_current_dir(tmp_dir.path()).expect("failed to set current directory");
-
+        let _guard = if config.runmultithreaded {
+            None
+        } else {
+            // can recover because unit type won't corrupt
+            Some(TESTENV_LOCK.lock().unwrap_or_else(PoisonError::into_inner))
+        };
         // Try to start bitcoind (from environment or downloads)
         tracing::info!("Starting bitcoind...");
         // rpcauth for each bitcoind and save the pwd
@@ -248,7 +250,6 @@ impl TestEnv {
         )?;
         let bdk_electrum_client = BdkElectrumClient::new(client);
 
-        // permit will be dropped when TestEnv is dropped
         let test_env = Self {
             bitcoind,
             electrsd,
@@ -256,13 +257,12 @@ impl TestEnv {
             delay: config.delay,
             bdk_electrum_client,
             ctx: Secp256k1::new(),
-            _permit: permit,
-            _tmp_dir: tmp_dir,
             explorer_process: None,
             container_name: None,
             explorer_port: None,
             bitcoin_rpc_pwd,
             mempool: Vec::new(),
+            _guard,
         };
         tracing::info!("Bitcoin regtest environment ready!");
         Ok(test_env)
@@ -538,7 +538,7 @@ impl TestEnv {
     }
 }
 
-impl Drop for TestEnv {
+impl<'a> Drop for TestEnv<'a> {
     fn drop(&mut self) {
         if let Some(name) = self.container_name.take() {
             tracing::info!("Stopping explorer container {name}...");
