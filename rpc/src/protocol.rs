@@ -270,7 +270,7 @@ impl TradeModel {
         let [buyer_pub_key, seller_pub_key] = self.keys.multisig_script_keys()?;
         let [buyer_internal_key, seller_internal_key] = self.keys.internal_keys()?;
 
-        let deposit_merkle_root = script_paths::deposit_payout_merkle_root(buyer_pub_key, seller_pub_key);
+        let deposit_merkle_root = script_paths::deposit_payout_merkle_root(buyer_pub_key, seller_pub_key)?;
         let buyer_payout_tweaked_key_ctx = self.keys.buyer_payout_ctx.with_taproot_tweak(
             Some(&deposit_merkle_root))?;
         let seller_payout_tweaked_key_ctx = self.keys.seller_payout_ctx.with_taproot_tweak(
@@ -281,9 +281,9 @@ impl TradeModel {
             .set_seller_payout_address(seller_payout_tweaked_key_ctx.p2tr_address(network));
         self.custom_payout_tx.builder
             .set_buyer_input_descriptor(script_paths::deposit_payout_descriptor(
-                &buyer_internal_key, buyer_pub_key, seller_pub_key))
+                &buyer_internal_key, buyer_pub_key, seller_pub_key)?)
             .set_seller_input_descriptor(script_paths::deposit_payout_descriptor(
-                &seller_internal_key, buyer_pub_key, seller_pub_key));
+                &seller_internal_key, buyer_pub_key, seller_pub_key)?);
 
         self.buyer_txs.warning.buyer_input_sig_ctx.set_tweaked_key_ctx(buyer_payout_tweaked_key_ctx.clone());
         self.seller_txs.warning.buyer_input_sig_ctx.set_tweaked_key_ctx(buyer_payout_tweaked_key_ctx);
@@ -295,9 +295,9 @@ impl TradeModel {
         let [buyer_claim_merkle_root, seller_claim_merkle_root] = self.keys.claim_key_shares()?
             .map(|p| script_paths::warning_escrow_merkle_root(&p.pub_key().to_public_key().into(), network));
         let buyers_warning_escrow_tweaked_key_ctx = self.keys.seller_payout_ctx.with_taproot_tweak(
-            Some(&buyer_claim_merkle_root))?;
+            Some(&buyer_claim_merkle_root?))?;
         let sellers_warning_escrow_tweaked_key_ctx = self.keys.buyer_payout_ctx.with_taproot_tweak(
-            Some(&seller_claim_merkle_root))?;
+            Some(&seller_claim_merkle_root?))?;
 
         let buyers_warning_escrow_address = buyers_warning_escrow_tweaked_key_ctx.p2tr_address(network);
         let sellers_warning_escrow_address = sellers_warning_escrow_tweaked_key_ctx.p2tr_address(network);

@@ -660,6 +660,7 @@ pub enum TransactionErrorKind {
     ExtractTx(#[from] Box<ExtractTxError>),
     CreateTx(#[from] bdk_wallet::error::CreateTxError),
     Signer(#[from] bdk_wallet::signer::SignerError),
+    Miniscript(#[from] bdk_wallet::miniscript::Error),
     Conversion(#[from] bdk_wallet::miniscript::descriptor::ConversionError),
     Wallet(#[from] wallet::protocol_wallet_api::WalletErrorKind),
     Anyhow(#[from] anyhow::Error),
@@ -965,9 +966,9 @@ mod tests {
             "fcba7ecf41bc7e1be4ee122d9d22e3333671eb0a3a87b5cdf099d59874e1940f".parse().unwrap();
 
         let buyer_input_descriptor = deposit_payout_descriptor(
-            &buyer_input_internal_key, &buyer_pub_key, &seller_pub_key);
+            &buyer_input_internal_key, &buyer_pub_key, &seller_pub_key)?;
         let seller_input_descriptor = deposit_payout_descriptor(
-            &seller_input_internal_key, &buyer_pub_key, &seller_pub_key);
+            &seller_input_internal_key, &buyer_pub_key, &seller_pub_key)?;
 
         let buyer_payout_address = "bcrt1p2zhgww7pvedvm2rg7d0zqh96crfhuudd9s0l3yc09ncaaxmuzvds5zhh8t"
             .parse::<Address<_>>()?.require_network(Network::Regtest)?;
