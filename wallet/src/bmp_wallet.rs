@@ -192,12 +192,14 @@ impl BMPWallet<Connection> {
         let unused = self.list_unused_addresses(key_chain).collect::<Vec<_>>();
 
         let addr = if unused.len() >= STOP_GAP {
-            unused
-                .first()
+            let rand_index = rand::random::<u8>() as usize % unused.len();
+
+            println!("Rand {rand_index}");
+            unused.get(rand_index)
                 .expect("Unused addresses should not be empty")
                 .clone()
         } else {
-            self.next_unused_address(key_chain)
+            self.reveal_next_address(key_chain)
         };
 
         // Persist the revealed address to avoid address reuse
@@ -767,6 +769,7 @@ impl DerefMut for BMPWallet<Connection> {
 #[cfg(test)]
 mod tests {
     use std::str::FromStr;
+
     use bdk_kyoto::FeeRate;
     use bdk_wallet::bitcoin::hashes::Hash as _;
     use bdk_wallet::bitcoin::{Address, AddressType, Amount, BlockHash, Network, Weight, psbt};
@@ -776,9 +779,9 @@ mod tests {
     use bmp_tracing::tracing;
     use rand::RngCore as _;
     use secp::Scalar;
-    use tempfile::{tempdir, TempDir};
+    use tempfile::{TempDir, tempdir};
 
-    use crate::bmp_wallet::{BMPWallet, WalletApi as _};
+    use crate::bmp_wallet::{BMPWallet, STOP_GAP, WalletApi};
     use crate::test_utils::{MockedBDKElectrum, derive_public_key, load_imported_wallet};
 
     fn get_dir() -> TempDir {
@@ -1167,6 +1170,31 @@ mod tests {
 
         assert_eq!(w1.balance(), Amount::from_int_btc(1));
         assert_eq!(w2.balance(), Amount::ZERO);
+        Ok(())
+    }
+
+    #[test]
+    fn test_address_generation() -> anyhow::Result<()> {
+        let dir = get_dir();
+        let mut wallet = BMPWallet::new(dir.path(), "", Network::Regtest)?;
+
+        let mut add_vec: Vec<AddressInfo> = vec![];
+
+        loop {
+            add_vec.push(wallet.next_address(KeychainKind::External)?);
+            if add_vec.len() >= STOP_GAP {
+                break;
+            }
+        }
+
+        // Since we reached STOP_GAP, next_address should return one address from the add_vec list
+        let new_addr = wallet.next_address(KeychainKind::External)?;
+        assert!(add_vec.contains(&new_addr));
+
+        // Returned next address should be different from previous one but still exist in the list
+        let new_addr2 = wallet.next_address(KeychainKind::External)?;
+        assert!(add_vec.contains(&new_addr2) && new_addr != new_addr2);
+
         Ok(())
     }
 }
