@@ -1,3 +1,4 @@
+use std::collections::VecDeque;
 use std::ops::{Deref, DerefMut};
 use std::path::Path;
 use std::{fs, vec};
@@ -23,6 +24,7 @@ use bdk_wallet::{
     TxOrdering, Utxo, Wallet, WalletPersister, WeightedUtxo,
 };
 use rand::RngCore as _;
+use rand::prelude::IndexedRandom as _;
 use secp::Scalar;
 
 use crate::chain_data_source::ChainDataSource;
@@ -177,6 +179,8 @@ impl BMPWalletPersister for Connection {
     }
 }
 
+const STOP_GAP: usize = 50;
+
 #[allow(unused)]
 pub struct BMPWallet<P: BMPWalletPersister> {
     wallet: PersistedWallet<P>,
@@ -184,16 +188,60 @@ pub struct BMPWallet<P: BMPWalletPersister> {
     imported_balance: Balance,
     signers_loaded: bool,
     db: P,
+    recent_addresses_cache: VecDeque<String>,
 }
 
 impl BMPWallet<Connection> {
     pub fn next_address(&mut self, key_chain: KeychainKind) -> anyhow::Result<AddressInfo> {
-        // FIXME: `next_unused_address` just returns the same unused address over and over. It has
-        //  to either be marked as used (which change isn't staged and therefore presumably never
-        //  persisted) or a fresh address requested with `reveal_next_address`.
-        let addr = self.wallet.next_unused_address(key_chain);
-        // Persist the revealed address to avoid address reuse
-        self.persist()?;
+        let mut unused = self.list_unused_addresses(key_chain).collect::<Vec<_>>();
+
+        let addr = if unused.len() >= STOP_GAP {
+            // Use proper random selection and collision detection
+            let mut selected_addr: Option<AddressInfo> = None;
+            let mut attempts = 0;
+            const MAX_ATTEMPTS: usize = 5;
+            const RECENT_ADDRESS_CACHE_SIZE: usize = 10;
+
+            while attempts < MAX_ATTEMPTS && selected_addr.is_none() {
+                let mut rng = rand::rng();
+                if let Some(addr) = unused.choose(&mut rng) {
+                    let addr_string = addr.address.to_string();
+                    
+                    // Check if address is in recent cache to avoid collisions
+                    if !self.recent_addresses_cache.contains(&addr_string) {
+                        selected_addr = Some(addr.clone());
+                    } else {
+                        // Remove colliding address from available pool for next attempt
+                        unused.retain(|a| a.address.to_string() != addr_string);
+                    }
+                }
+                attempts += 1;
+            }
+
+            // If we exhausted attempts or ran out of addresses, clear cache and use first available
+            if selected_addr.is_none() {
+                self.recent_addresses_cache.clear();
+                selected_addr = unused.first().cloned();
+            }
+
+            let selected = selected_addr.expect("Should have a selected address");
+            
+            // Track this address in cache to prevent future collisions
+            let addr_string = selected.address.to_string();
+            self.recent_addresses_cache.push_back(addr_string);
+            
+            // Maintain cache size limit
+            if self.recent_addresses_cache.len() > RECENT_ADDRESS_CACHE_SIZE {
+                self.recent_addresses_cache.pop_front();
+            }
+            
+            selected
+        } else {
+            let addr = self.reveal_next_address(key_chain);
+            // Persist the revealed address to avoid address reuse
+            self.persist()?;
+            addr
+        };
 
         Ok(addr)
     }
@@ -421,6 +469,7 @@ impl WalletApi for BMPWallet<Connection> {
             imported_balance: Balance::default(),
             signers_loaded: true,
             db,
+            recent_addresses_cache: VecDeque::new(),
         })
     }
 
@@ -677,6 +726,7 @@ impl WalletApi for BMPWallet<Connection> {
                 imported_balance: Balance::default(),
                 signers_loaded: false,
                 db,
+                recent_addresses_cache: VecDeque::new(),
             });
         }
 
@@ -772,7 +822,7 @@ mod tests {
     use secp::Scalar;
     use tempfile::{TempDir, tempdir};
 
-    use crate::bmp_wallet::{BMPWallet, WalletApi as _};
+    use crate::bmp_wallet::{BMPWallet, STOP_GAP, WalletApi};
     use crate::test_utils::{MockedBDKElectrum, derive_public_key, load_imported_wallet};
 
     fn get_dir() -> TempDir {
@@ -1161,6 +1211,31 @@ mod tests {
 
         assert_eq!(w1.balance(), Amount::from_int_btc(1));
         assert_eq!(w2.balance(), Amount::ZERO);
+        Ok(())
+    }
+
+    #[test]
+    fn test_address_generation() -> anyhow::Result<()> {
+        let dir = get_dir();
+        let mut wallet = BMPWallet::new(dir.path(), "", Network::Regtest)?;
+
+        let mut add_vec: Vec<AddressInfo> = vec![];
+
+        loop {
+            add_vec.push(wallet.next_address(KeychainKind::External)?);
+            if add_vec.len() >= STOP_GAP {
+                break;
+            }
+        }
+
+        // Since we reached STOP_GAP, next_address should return one address from the add_vec list
+        let new_addr = wallet.next_address(KeychainKind::External)?;
+        assert!(add_vec.contains(&new_addr));
+
+        // Returned next address should be different from previous one but still exist in the list
+        let new_addr2 = wallet.next_address(KeychainKind::External)?;
+        assert!(add_vec.contains(&new_addr2) && new_addr != new_addr2);
+
         Ok(())
     }
 }
