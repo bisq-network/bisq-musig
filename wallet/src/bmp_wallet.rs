@@ -1222,4 +1222,106 @@ mod tests {
 
         Ok(())
     }
+    #[test]
+    fn test_list_unused_addresses_since_last_used() -> anyhow::Result<()> {
+        let dir = get_dir();
+        let mut wallet = BMPWallet::new(dir.path(), "", Network::Regtest)?;
+
+        // Reveal a handful of addresses (indices 0..=4).
+        let revealed: Vec<AddressInfo> = (0..5)
+            .map(|_| wallet.reveal_next_address(KeychainKind::External))
+            .collect();
+        let revealed_indices: Vec<u32> = revealed.iter().map(|a| a.index).collect();
+        assert_eq!(revealed_indices, vec![0, 1, 2, 3, 4]);
+
+        // With no on-chain activity, the new method returns the same set
+        // as list_unused_addresses.
+        let baseline: Vec<u32> = wallet
+            .list_unused_addresses(KeychainKind::External)
+            .map(|a| a.index)
+            .collect();
+        let since_last: Vec<u32> = wallet
+            .list_unused_addresses_since_last_used(KeychainKind::External)
+            .map(|a| a.index)
+            .collect();
+        assert_eq!(since_last, baseline);
+        assert_eq!(since_last, vec![0, 1, 2, 3, 4]);
+
+        // Receive an output on the address at index 2. The "last used" index
+        // is now 2, so list_unused_addresses_since_last_used must exclude
+        // indices 0 and 1 (gap addresses) even though list_unused_addresses
+        // still includes them.
+        receive_output_to_address(
+            &mut wallet,
+            revealed[2].address.clone(),
+            Amount::ONE_BTC,
+            ReceiveTo::Block(chain::ConfirmationBlockTime {
+                block_id: BlockId {
+                    height: 2,
+                    hash: BlockHash::all_zeros(),
+                },
+                confirmation_time: 2,
+            }),
+        );
+
+        let baseline: Vec<u32> = wallet
+            .list_unused_addresses(KeychainKind::External)
+            .map(|a| a.index)
+            .collect();
+        // The unfiltered list still surfaces the gap indices 0 and 1.
+        assert_eq!(baseline, vec![0, 1, 3, 4]);
+
+        let since_last: Vec<u32> = wallet
+            .list_unused_addresses_since_last_used(KeychainKind::External)
+            .map(|a| a.index)
+            .collect();
+        // Filtered list drops everything at or below the last used index.
+        assert_eq!(since_last, vec![3, 4]);
+
+        // Receive on the highest revealed index (4). No unused address with
+        // a greater index exists yet, so the iterator should be empty —
+        // confirming the threshold tracks the *maximum* used index.
+        receive_output_to_address(
+            &mut wallet,
+            revealed[4].address.clone(),
+            Amount::ONE_BTC,
+            ReceiveTo::Block(chain::ConfirmationBlockTime {
+                block_id: BlockId {
+                    height: 3,
+                    hash: BlockHash::all_zeros(),
+                },
+                confirmation_time: 3,
+            }),
+        );
+
+        let since_last: Vec<u32> = wallet
+            .list_unused_addresses_since_last_used(KeychainKind::External)
+            .map(|a| a.index)
+            .collect();
+        assert!(
+            since_last.is_empty(),
+            "expected no unused addresses past the highest used index, got {since_last:?}"
+        );
+
+        // Reveal one more address; it should now be the sole result.
+        let new_addr = wallet.reveal_next_address(KeychainKind::External);
+        assert_eq!(new_addr.index, 5);
+
+        let since_last: Vec<u32> = wallet
+            .list_unused_addresses_since_last_used(KeychainKind::External)
+            .map(|a| a.index)
+            .collect();
+        assert_eq!(since_last, vec![5]);
+
+        // The internal keychain has had no on-chain activity at all, so the
+        // method must fall back to "all revealed unused" for that keychain.
+        let internal_addr = wallet.reveal_next_address(KeychainKind::Internal);
+        let internal_since_last: Vec<u32> = wallet
+            .list_unused_addresses_since_last_used(KeychainKind::Internal)
+            .map(|a| a.index)
+            .collect();
+        assert!(internal_since_last.contains(&internal_addr.index));
+
+        Ok(())
+    }
 }
