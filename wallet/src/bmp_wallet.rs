@@ -177,6 +177,8 @@ impl BMPWalletPersister for Connection {
     }
 }
 
+const STOP_GAP: usize = 50;
+
 #[allow(unused)]
 pub struct BMPWallet<P: BMPWalletPersister> {
     wallet: PersistedWallet<P>,
@@ -184,16 +186,46 @@ pub struct BMPWallet<P: BMPWalletPersister> {
     imported_balance: Balance,
     signers_loaded: bool,
     db: P,
+    last_unused_address: Option<String>,
 }
 
+// a, b, c, [d - used], [e, f, g, h, i, j, k, l, m, n], o, p, q, r, s
 impl BMPWallet<Connection> {
+
+    pub fn list_unused_addresses_since_last_used(&self, key_chain: KeychainKind) -> impl Iterator<Item = AddressInfo> + '_  {
+        let last_used = self.spk_index().last_used_index(key_chain);
+        self.list_unused_addresses(key_chain)
+           .filter(move |info| last_used.is_none_or(|idx| info.index > idx))
+    }
+
     pub fn next_address(&mut self, key_chain: KeychainKind) -> anyhow::Result<AddressInfo> {
-        // FIXME: `next_unused_address` just returns the same unused address over and over. It has
-        //  to either be marked as used (which change isn't staged and therefore presumably never
-        //  persisted) or a fresh address requested with `reveal_next_address`.
-        let addr = self.wallet.next_unused_address(key_chain);
-        // Persist the revealed address to avoid address reuse
-        self.persist()?;
+        let unused = self.list_unused_addresses_since_last_used(key_chain).collect::<Vec<_>>();
+
+        let addr = if unused.len() >= STOP_GAP {
+            // Find the position of the last returned address, or start at the beginning
+            let next_index = if let Some(last_addr) = &self.last_unused_address {
+                // Search for the last address in the current unused list
+                unused.iter().position(|info| info.address.to_string() == *last_addr)
+                    .map(|idx| (idx + 1) % unused.len())
+                    .unwrap_or(0)
+            } else {
+                // No previous address, start with the first one
+                0
+            };
+
+            let selected = unused[next_index].clone();
+            
+            // Update index to track the address just given out
+            self.last_unused_address = Some(selected.address.to_string());
+            
+            selected
+        } else {
+            let addr = self.reveal_next_address(key_chain);
+            self.persist()?;
+            // Reset the index since we've generated new addresses
+            self.last_unused_address = None;
+            addr
+        };
 
         Ok(addr)
     }
@@ -421,6 +453,7 @@ impl WalletApi for BMPWallet<Connection> {
             imported_balance: Balance::default(),
             signers_loaded: true,
             db,
+            last_unused_address: None,
         })
     }
 
@@ -677,6 +710,7 @@ impl WalletApi for BMPWallet<Connection> {
                 imported_balance: Balance::default(),
                 signers_loaded: false,
                 db,
+                last_unused_address: None,
             });
         }
 
@@ -772,7 +806,7 @@ mod tests {
     use secp::Scalar;
     use tempfile::{TempDir, tempdir};
 
-    use crate::bmp_wallet::{BMPWallet, WalletApi as _};
+    use crate::bmp_wallet::{BMPWallet, STOP_GAP, WalletApi};
     use crate::test_utils::{MockedBDKElectrum, derive_public_key, load_imported_wallet};
 
     fn get_dir() -> TempDir {
@@ -1161,6 +1195,31 @@ mod tests {
 
         assert_eq!(w1.balance(), Amount::from_int_btc(1));
         assert_eq!(w2.balance(), Amount::ZERO);
+        Ok(())
+    }
+
+    #[test]
+    fn test_address_generation() -> anyhow::Result<()> {
+        let dir = get_dir();
+        let mut wallet = BMPWallet::new(dir.path(), "", Network::Regtest)?;
+
+        let mut add_vec: Vec<AddressInfo> = vec![];
+
+        loop {
+            add_vec.push(wallet.next_address(KeychainKind::External)?);
+            if add_vec.len() >= STOP_GAP {
+                break;
+            }
+        }
+
+        // Since we reached STOP_GAP, next_address should return one address from the add_vec list
+        let new_addr = wallet.next_address(KeychainKind::External)?;
+        assert!(add_vec.contains(&new_addr));
+
+        // Returned next address should be different from previous one but still exist in the list
+        let new_addr2 = wallet.next_address(KeychainKind::External)?;
+        assert!(add_vec.contains(&new_addr2) && new_addr != new_addr2);
+
         Ok(())
     }
 }
