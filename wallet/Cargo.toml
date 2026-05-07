@@ -18,6 +18,7 @@ tracing = { workspace = true }
 zeroize = { workspace = true }
 thiserror =  { workspace = true }
 
+chain = { workspace = true }
 testenv = { path = "../testenv" }
 
 [dev-dependencies]

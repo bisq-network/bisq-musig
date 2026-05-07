@@ -5,6 +5,7 @@ use bdk_wallet::bitcoin::{
     TxOut, Txid, XOnlyPublicKey, relative,
 };
 use bdk_wallet::miniscript::{DefiniteDescriptorKey, Descriptor};
+use chain::ChainApi;
 use musig2::secp::{MaybeScalar, Point};
 use musig2::{PartialSignature, PubNonce};
 use wallet::protocol_wallet_api::MemWallet;
@@ -90,6 +91,7 @@ pub struct Round4Parameter {
 pub struct BMPContext {
     // first of all, everything which is general to the protocol itself
     pub funds: MemWallet,
+    pub chain: Box<dyn ChainApi>,
     pub role: ProtocolRole,
     pub seller_amount: Amount,
     pub buyer_amount: Amount,
@@ -116,9 +118,16 @@ pub struct BMPProtocol {
 }
 
 impl BMPContext {
-    pub fn new(wallet_service: WalletService, role: ProtocolRole, seller_amount: Amount, buyer_amount: Amount) -> anyhow::Result<Self> {
+    pub fn new(
+        chain: Box<dyn ChainApi>,
+        wallet_service: WalletService,
+        role: ProtocolRole,
+        seller_amount: Amount,
+        buyer_amount: Amount,
+    ) -> anyhow::Result<Self> {
         Ok(Self {
             funds: wallet_service.retrieve_wallet(),
+            chain,
             role,
             seller_amount,
             buyer_amount,
@@ -390,7 +399,7 @@ impl RedirectTx {
     }
 
     pub fn broadcast(&self, me: &BMPContext) -> anyhow::Result<Txid> {
-        me.funds.transaction_broadcast(self.builder.signed_tx()?)
+        me.chain.transaction_broadcast(self.builder.signed_tx()?)
     }
 
     /// sum of all f64 must be 1
@@ -452,7 +461,7 @@ impl ClaimTx {
     }
 
     pub fn broadcast(&self, me: &BMPContext) -> anyhow::Result<Txid> {
-        me.funds.transaction_broadcast(self.signed_tx()?)
+        me.chain.transaction_broadcast(self.signed_tx()?)
     }
 }
 
@@ -544,7 +553,7 @@ impl WarningTx {
     }
 
     pub fn broadcast(&self, me: &BMPContext) -> anyhow::Result<Txid> {
-        me.funds.transaction_broadcast(self.signed_tx()?)
+        me.chain.transaction_broadcast(self.signed_tx()?)
     }
 }
 
@@ -652,7 +661,7 @@ impl SwapTx {
     }
 
     pub fn broadcast(&self, me: &BMPContext) -> anyhow::Result<Txid> {
-        me.funds.transaction_broadcast(self.builder.signed_tx()?)
+        me.chain.transaction_broadcast(self.builder.signed_tx()?)
     }
 }
 
@@ -736,7 +745,7 @@ impl DepositTx {
 
         let tx = self.builder.signed_tx()?;
         // TODO both alice and bob will broadcast, is that a bug or a feature?
-        let deposit_txid = ctx.funds.transaction_broadcast(&tx)?;
+        let deposit_txid = ctx.chain.transaction_broadcast(&tx)?;
         dbg!("DepositTx txid: {:?}", &deposit_txid);
         Ok(deposit_txid)
     }

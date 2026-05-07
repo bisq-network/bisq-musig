@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["protocol", "rpc", "wallet", "testenv", "bmp_tracing", "mem"]
+members = ["chain", "protocol", "rpc", "wallet", "testenv", "bmp_tracing", "mem"]
 
 [workspace.dependencies]
 anyhow = "1.0.102"
@@ -12,6 +12,7 @@ bdk_kyoto = "0.15.4"
 # v2.2.0 deprecates `bdk_wallet::wallet::signer` without making it clear what alternative to use & how:
 bdk_wallet = { version = "~2.1.0", features = ["rusqlite", "keys-bip39"] }
 bmp_tracing = { path = "bmp_tracing" }
+chain = { path = "chain" }
 const_format = "0.2.35"
 hex = "0.4.3"
 musig2 = { version = "0.3.1", features = ["rand"] }
@@ -37,7 +38,8 @@ tail_expr_drop_order = { level = "allow", priority = 1 }
 edition_2024_expr_fragment_specifier = { level = "allow", priority = 1 }
 
 [workspace.lints.clippy]
-pedantic = "warn"
+# `priority = -1` lets per-lint entries below override the group default.
+pedantic = { level = "warn", priority = -1 }
 # Enable selected 'nursery' and 'restriction' lints...
 allow_attributes = "warn"
 branches_sharing_code = "warn"
@@ -46,7 +48,7 @@ iter_on_empty_collections = "warn"
 iter_on_single_items = "warn"
 missing_const_for_fn = "warn"
 renamed_function_params = "warn"
-significant_drop_tightening = "warn"
+significant_drop_tightening = { level = "allow" }
 str_to_string = "warn"
 try_err = "warn"
 unused_trait_names = "warn"

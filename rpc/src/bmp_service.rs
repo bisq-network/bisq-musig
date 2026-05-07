@@ -33,6 +33,7 @@ impl BmpProtocolService for BmpServiceImpl {
         let mock_wallet = MemWallet::funded_wallet(&mut env);
         let wallet_service = WalletService::new().load(mock_wallet);
 
+        let chain = Box::new(env.new_testchain().unwrap());
         let role =
             Role::try_from(req.role).map_err(|_| Status::invalid_argument("Unrecognised role"))?;
         let role = match role {
@@ -41,6 +42,7 @@ impl BmpProtocolService for BmpServiceImpl {
         };
 
         let context = BMPContext::new(
+            chain,
             wallet_service,
             role,
             Amount::from_sat(req.seller_amount_sats),

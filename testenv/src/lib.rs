@@ -14,6 +14,7 @@ use bdk_wallet::bitcoin::key::Secp256k1;
 use bdk_wallet::bitcoin::secp256k1::All;
 use bdk_wallet::bitcoin::{Address, Amount, BlockHash, Network, Transaction, Txid};
 use bmp_tracing::tracing;
+use chain::Testchain;
 use electrsd::corepc_node::Node;
 use electrsd::electrum_client::{Client, ElectrumApi};
 use electrsd::{ElectrsD, corepc_node};
@@ -273,6 +274,19 @@ impl<'a> TestEnv<'a> {
         let _ = self.wait_for_tx(txid);
         self.mempool.push(txid);
         Ok(txid)
+    }
+
+    pub fn new_client(&self) -> Result<BdkElectrumClient<Client>> {
+        let client = Client::from_config(
+            &self.electrsd.electrum_url,
+            bdk_electrum::electrum_client::Config::default(),
+        )?;
+        Ok(BdkElectrumClient::new(client))
+    }
+
+    /// Create a new [`Testchain`] backed by a fresh electrum client connected to this environment.
+    pub fn new_testchain(&self) -> Result<Testchain> {
+        Ok(Testchain::new(self.new_client()?))
     }
 
     pub fn start_explorer_in_container(&mut self) -> Result<()> {

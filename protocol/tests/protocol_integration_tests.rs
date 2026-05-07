@@ -1,5 +1,3 @@
-use bdk_electrum::BdkElectrumClient;
-use bdk_electrum::electrum_client::Client;
 use bdk_wallet::bitcoin;
 use bitcoin::key::{Keypair, Secp256k1, TapTweak as _, TweakedKeypair, TweakedPublicKey};
 use bitcoin::secp256k1::Message;
@@ -23,7 +21,7 @@ fn test_initial_tx_creation() -> anyhow::Result<()> {
 
 pub fn funded_wallet(env: &mut TestEnv) -> MemWallet {
     // TODO move this line to TestEnv
-    let client = BdkElectrumClient::new(Client::new(&env.electrum_url()).unwrap());
+    let client = env.new_client().unwrap();
     let mut wallet = MemWallet::new(client).unwrap();
     let address = wallet.next_unused_address();
     let txid = env
@@ -41,16 +39,20 @@ fn initial_tx_creation(env: &mut TestEnv) -> anyhow::Result<(BMPProtocol, BMPPro
     let alice_funds = funded_wallet(env);
     let bob_funds = funded_wallet(env);
 
+    let alice_client = Box::new(env.new_testchain()?);
+    let bob_client = Box::new(env.new_testchain()?);
+
     let alice_service = WalletService::new().load(alice_funds);
     let bob_service = WalletService::new().load(bob_funds);
     let seller_amount = Amount::from_btc(1.4)?;
     let buyer_amount = Amount::from_btc(0.2)?;
 
+
     // up to here this was the preparation for the protocol, the code from now on needs to be called from outside API
-    let alice_context = BMPContext::new(alice_service, ProtocolRole::Seller, seller_amount, buyer_amount)?;
+    let alice_context = BMPContext::new(alice_client, alice_service, ProtocolRole::Seller, seller_amount, buyer_amount)?;
 
     let mut alice = BMPProtocol::new(alice_context)?;
-    let bob_context = BMPContext::new(bob_service, ProtocolRole::Buyer, seller_amount, buyer_amount)?;
+    let bob_context = BMPContext::new(bob_client, bob_service, ProtocolRole::Buyer, seller_amount, buyer_amount)?;
     let mut bob = BMPProtocol::new(bob_context)?;
     env.mine_block()?;
 
@@ -217,7 +219,7 @@ fn test_custom_payout() -> anyhow::Result<()> {
         .sign_partial(&bob.ctx.funds)?;
     let tx = builder.signed_tx()?;
 
-    dbg!(alice.ctx.funds.transaction_broadcast(&tx)?);
+    dbg!(alice.ctx.chain.transaction_broadcast(&tx)?);
     env.mine_block()?;
     Ok(())
 }
@@ -281,7 +283,7 @@ fn test_q_tik() -> anyhow::Result<()> {
     let tx = bob.swap_tx.unsigned_tx()?.clone()
         .with_key_spend_witness(0, &signature_secp);
 
-    let txid = alice.ctx.funds.transaction_broadcast(&tx)?;
+    let txid = alice.ctx.chain.transaction_broadcast(&tx)?;
     dbg!(txid);
     env.mine_block()?;
     Ok(())

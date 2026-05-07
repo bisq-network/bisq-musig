@@ -3,7 +3,7 @@ use std::sync::LazyLock;
 
 use bdk_electrum::BdkElectrumClient;
 use bdk_electrum::bdk_core::bitcoin::bip32::Xpriv;
-use bdk_electrum::bdk_core::bitcoin::{Transaction, Txid, XOnlyPublicKey, absolute, secp256k1};
+use bdk_electrum::bdk_core::bitcoin::{XOnlyPublicKey, absolute, secp256k1};
 use bdk_electrum::electrum_client::Client;
 use bdk_wallet::bitcoin::{Address, Amount, FeeRate, Network, OutPoint, Psbt, ScriptBuf};
 use bdk_wallet::descriptor::{Descriptor, ExtendedDescriptor};
@@ -46,7 +46,6 @@ pub trait ProtocolWalletApi {
     // After importing a rescan should be triggered
     fn import_private_key(&mut self, pk: Scalar);
 }
-
 pub struct MemWallet {
     wallet: Wallet,
     client: BdkElectrumClient<Client>,
@@ -135,19 +134,6 @@ impl MemWallet {
             }
         }
         Ok(())
-    }
-
-    pub fn transaction_broadcast(&self, tx: &Transaction) -> anyhow::Result<Txid> {
-        let result = self.client.transaction_broadcast(tx);
-
-        if let Err(e) = result {
-            if e.to_string().contains("Transaction already in block chain") {
-                return Ok(tx.compute_txid());
-            }
-            return Err(e.into());
-        }
-
-        Ok(result?)
     }
 
     pub fn new(client: BdkElectrumClient<Client>) -> anyhow::Result<Self> {
