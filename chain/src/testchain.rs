@@ -1,8 +1,11 @@
+use std::sync::Arc;
+
 use bdk_electrum::BdkElectrumClient;
 use bdk_electrum::electrum_client::Client;
 use bdk_wallet::bitcoin::{Transaction, Txid};
+use bdk_wallet::chain::spk_client::{FullScanRequest, FullScanResponse};
 
-use crate::ChainApi;
+use crate::{ChainApi, ChainScanner};
 
 /// Electrum-backed [`ChainApi`] for use in integration tests and temporary scaffolding.
 ///
@@ -28,5 +31,23 @@ impl ChainApi for Testchain {
             }
             Err(e) => Err(e.into()),
         }
+    }
+}
+
+impl ChainScanner for Testchain {
+    fn populate_tx_cache(&self, txs: impl IntoIterator<Item = impl Into<Arc<Transaction>>>) {
+        self.client.populate_tx_cache(txs);
+    }
+
+    fn full_scan<K: Ord + Clone>(
+        &self,
+        request: impl Into<FullScanRequest<K>>,
+        stop_gap: usize,
+        batch_size: usize,
+        fetch_prev_txouts: bool,
+    ) -> anyhow::Result<FullScanResponse<K>> {
+        self.client
+            .full_scan(request, stop_gap, batch_size, fetch_prev_txouts)
+            .map_err(Into::into)
     }
 }

@@ -3015,6 +3015,7 @@ dependencies = [
  "testenv",
  "thiserror 2.0.18",
  "tracing",
+ "wallet",
  "zeroize",
 ]
 
