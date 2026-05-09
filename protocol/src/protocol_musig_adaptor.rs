@@ -11,7 +11,7 @@ use wallet::protocol_wallet_api::MemWallet;
 use crate::multisig::{KeyCtx, SigCtx};
 use crate::receiver::{Receiver, ReceiverList};
 use crate::transaction::{
-    DepositTxBuilder, ForwardingTxBuilder, RedirectTxBuilder, WarningTxBuilder, WithWitnesses as _,
+    DepositTxBuilder, ForwardingTxBuilder, RedirectTxBuilder, TransactionExt as _, WarningTxBuilder,
 };
 use crate::wallet_service::WalletService;
 

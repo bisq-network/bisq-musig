@@ -8,7 +8,7 @@ use bmp_tracing::tracing;
 use musig2::KeyAggContext;
 use musig2::secp::Point;
 use protocol::protocol_musig_adaptor::{BMPContext, BMPProtocol, ProtocolRole};
-use protocol::transaction::WithWitnesses as _;
+use protocol::transaction::TransactionExt as _;
 use protocol::wallet_service::WalletService;
 use testenv::TestEnv;
 use wallet::protocol_wallet_api::MemWallet;

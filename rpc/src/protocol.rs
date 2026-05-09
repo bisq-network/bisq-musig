@@ -14,7 +14,7 @@ use protocol::receiver::{Receiver, ReceiverList};
 use protocol::script_paths;
 use protocol::transaction::{
     CustomPayoutTxBuilder, DepositTxBuilder, ForwardingTxBuilder, NetworkParams as _,
-    RedirectTxBuilder, WarningTxBuilder, WithWitnesses as _,
+    RedirectTxBuilder, TransactionExt as _, WarningTxBuilder,
 };
 use thiserror::Error;
 
