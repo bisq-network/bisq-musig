@@ -3,12 +3,12 @@ use bdk_electrum::electrum_client::Client;
 use bdk_wallet::bitcoin;
 use bitcoin::key::{Keypair, Secp256k1, TapTweak as _, TweakedKeypair, TweakedPublicKey};
 use bitcoin::secp256k1::Message;
-use bitcoin::{Amount, TapSighashType};
+use bitcoin::{Amount, FeeRate, TapSighashType};
 use bmp_tracing::tracing;
 use musig2::KeyAggContext;
 use musig2::secp::Point;
 use protocol::protocol_musig_adaptor::{BMPContext, BMPProtocol, ProtocolRole};
-use protocol::transaction::TransactionExt as _;
+use protocol::transaction::{CustomPayoutTxBuilder, TransactionExt as _};
 use protocol::wallet_service::WalletService;
 use testenv::TestEnv;
 use wallet::protocol_wallet_api::MemWallet;
@@ -194,6 +194,30 @@ fn test_redirect() -> anyhow::Result<()> {
 
     let tx = alice.redirect_tx_me.broadcast(&alice.ctx)?;
     dbg!(tx);
+    env.mine_block()?;
+    Ok(())
+}
+
+#[test]
+fn test_custom_payout() -> anyhow::Result<()> {
+    let mut env = TestEnv::new()?;
+    let (alice, bob) = initial_tx_creation(&mut env)?;
+    let mut builder = CustomPayoutTxBuilder::default();
+    builder
+        .set_buyer_input(alice.deposit_tx.builder.buyer_payout()?.clone())
+        .set_seller_input(alice.deposit_tx.builder.seller_payout()?.clone())
+        .set_buyer_input_descriptor(alice.deposit_tx.p_descriptor.clone().unwrap())
+        .set_seller_input_descriptor(alice.deposit_tx.q_descriptor.clone().unwrap())
+        .set_buyer_payout_address(bob.claim_tx_me.builder.payout_address()?.clone())
+        .set_seller_payout_address(alice.claim_tx_me.builder.payout_address()?.clone())
+        .set_seller_payout_amount_excluding_fee(Amount::from_sat(30_000_000))
+        .set_fee_rate(FeeRate::from_sat_per_vb_unchecked(15))
+        .compute_unsigned_tx()?
+        .sign_partial(&alice.ctx.funds)?
+        .sign_partial(&bob.ctx.funds)?;
+    let tx = builder.signed_tx()?;
+
+    dbg!(alice.ctx.funds.transaction_broadcast(&tx)?);
     env.mine_block()?;
     Ok(())
 }

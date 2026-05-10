@@ -4,11 +4,12 @@ use bdk_wallet::bitcoin::{
     Address, Amount, FeeRate, Network, OutPoint, Psbt, Script, ScriptBuf, TapNodeHash, Transaction,
     TxOut, Txid, XOnlyPublicKey, relative,
 };
+use bdk_wallet::miniscript::{DefiniteDescriptorKey, Descriptor};
 use musig2::secp::{MaybeScalar, Point};
 use musig2::{PartialSignature, PubNonce};
 use wallet::protocol_wallet_api::MemWallet;
 
-use crate::multisig::{KeyCtx, SigCtx};
+use crate::multisig::{KeyCtx, PointExt as _, SigCtx};
 use crate::receiver::{Receiver, ReceiverList};
 use crate::script_paths;
 use crate::transaction::{
@@ -659,6 +660,8 @@ impl SwapTx {
 pub struct DepositTx {
     pub builder: DepositTxBuilder,
     pub merkle_root: Option<TapNodeHash>,
+    pub p_descriptor: Option<Descriptor<DefiniteDescriptorKey>>,
+    pub q_descriptor: Option<Descriptor<DefiniteDescriptorKey>>,
 }
 
 impl DepositTx {
@@ -703,6 +706,10 @@ impl DepositTx {
             self.builder.set_buyers_half_psbt(other_psbt);
         }
         self.merkle_root = Some(script_paths::deposit_payout_merkle_root(&buyer_pub_key, &seller_pub_key)?);
+        self.p_descriptor = Some(script_paths::deposit_payout_descriptor(
+            &p_tik.aggregated_key()?.pub_key().to_public_key().into(), &buyer_pub_key, &seller_pub_key)?);
+        self.q_descriptor = Some(script_paths::deposit_payout_descriptor(
+            &q_tik.aggregated_key()?.pub_key().to_public_key().into(), &buyer_pub_key, &seller_pub_key)?);
         let merkle_root = self.merkle_root.as_ref();
         self.builder
             .set_buyer_payout_address(p_tik.with_taproot_tweak(merkle_root)?.p2tr_address(Network::Regtest))
