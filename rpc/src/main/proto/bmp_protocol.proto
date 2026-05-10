@@ -17,7 +17,7 @@ service BmpProtocolService {
   rpc ExecuteRound3(Round3Request) returns (Round3Response);
 
   rpc ExecuteRound4(Round4Request) returns (Round4Response);
-  
+
   rpc ExecuteRound5(Round5Request) returns (google.protobuf.Empty);
 }
 
@@ -35,18 +35,19 @@ message InitializeRequest {
   uint64 buyer_amount_sats = 4;
 }
 
-message InitializeResponse { string trade_id = 1; }
+message InitializeResponse {string trade_id = 1;}
 
-message Round1Request { string trade_id = 1; }
+message Round1Request {string trade_id = 1;}
 
 message Round1Response {
   bytes p_a = 1;                   // Corresponds to musig2::secp::Point
   bytes q_a = 2;                   // Corresponds to musig2::secp::Point
-  bytes dep_part_psbt = 3;         // Corresponds to bdk_wallet::bitcoin::Psbt
-  optional bytes swap_script = 4;  // Optional ScriptBuf
-  bytes warn_anchor_spend = 5;     // ScriptBuf
-  bytes claim_spend = 6;           // ScriptBuf
-  bytes redirect_anchor_spend = 7; // ScriptBuf
+  bytes script_key = 3;            // Corresponds to bdk_wallet::bitcoin::XOnlyPublicKey
+  bytes dep_part_psbt = 4;         // Corresponds to bdk_wallet::bitcoin::Psbt
+  optional bytes swap_script = 5;  // Optional ScriptBuf
+  bytes warn_anchor_spend = 6;     // ScriptBuf
+  bytes claim_spend = 7;           // ScriptBuf
+  bytes redirect_anchor_spend = 8; // ScriptBuf
 }
 
 message Round2Request {
@@ -63,7 +64,7 @@ message Round2Response {
   bytes warn_bob_p_nonce = 6;      // PubNonce
   bytes warn_bob_q_nonce = 7;      // PubNonce
   bytes claim_alice_nonce = 8;     // PubNonce
-  bytes claim_bob_nonce = 9;      // PubNonce
+  bytes claim_bob_nonce = 9;       // PubNonce
   bytes redirect_alice_nonce = 10; // PubNonce
   bytes redirect_bob_nonce = 11;   // PubNonce
 }
@@ -88,10 +89,10 @@ message Round4Request {
 }
 
 message Round4Response {
-    bytes deposit_tx_signed = 1;
+  bytes deposit_tx_signed = 1;
 }
 
 message Round5Request {
-    string trade_id = 1;
-    Round4Response peer_round4_response = 2;
+  string trade_id = 1;
+  Round4Response peer_round4_response = 2;
 }

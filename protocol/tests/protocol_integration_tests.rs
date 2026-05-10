@@ -23,13 +23,12 @@ fn test_initial_tx_creation() -> anyhow::Result<()> {
 
 pub fn funded_wallet(env: &mut TestEnv) -> MemWallet {
     // TODO move this line to TestEnv
-    let client =
-            BdkElectrumClient::new(Client::new(&env.electrum_url()).unwrap());
+    let client = BdkElectrumClient::new(Client::new(&env.electrum_url()).unwrap());
     let mut wallet = MemWallet::new(client).unwrap();
     let address = wallet.next_unused_address();
     let txid = env
-            .fund_address(&address, Amount::from_btc(10f64).unwrap())
-            .unwrap();
+        .fund_address(&address, Amount::from_btc(10f64).unwrap())
+        .unwrap();
     env.mine_block().unwrap();
     env.wait_for_tx(txid).unwrap();
     wallet.sync().unwrap();
@@ -219,7 +218,8 @@ fn test_q_tik() -> anyhow::Result<()> {
     let agg_sec = *q_tik.aggregate_prv_key_shares()?;
     let secp = Secp256k1::new();
     let keypair = Keypair::from_seckey_slice(&secp, &agg_sec.serialize())?;
-    let tweaked: TweakedKeypair = keypair.tap_tweak(&secp, None);
+    let merkle_root = alice.deposit_tx.merkle_root;
+    let tweaked: TweakedKeypair = keypair.tap_tweak(&secp, merkle_root);
     // let sig1 = secp.sign_schnorr(&msg, &keypair); // will end up in Bad Signature
     let sig1 = secp.sign_schnorr(&msg, &tweaked.to_keypair());
     // Update the witness stack.
@@ -228,8 +228,8 @@ fn test_q_tik() -> anyhow::Result<()> {
     let path1_pub_point = Point::from_slice(&keypair.public_key().serialize())?;
     let path1_tweak_point = Point::from_slice(&tweaked.to_keypair().public_key().serialize())?;
 
-    // KeyAgg with no_merkle -------
-    let d: TweakedPublicKey = q_tik.with_taproot_tweak(None)?.tweaked_public_key();
+    // KeyAgg with merkle root copied from `alice.deposit_tx` -------
+    let d: TweakedPublicKey = q_tik.with_taproot_tweak(merkle_root.as_ref())?.tweaked_public_key();
     // How to do the signature with Point d and secure key?
 
     // AggKey ----------------------------------------------

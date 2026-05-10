@@ -1,6 +1,5 @@
 use bdk_wallet::bitcoin::ScriptBuf;
 use bdk_wallet::bitcoin::hashes::Hash as _;
-use bdk_wallet::bitcoin::psbt::Psbt;
 use protocol::protocol_musig_adaptor::{self as bmp_engine};
 use tonic::{Result, Status};
 
@@ -10,11 +9,10 @@ use crate::pb::convert::TryProtoInto;
 impl TryProtoInto<bmp_engine::Round1Parameter> for bmp_pb::Round1Response {
     fn try_proto_into(self) -> Result<bmp_engine::Round1Parameter> {
         Ok(bmp_engine::Round1Parameter {
-            p_a: self.p_a.as_slice().try_proto_into()?,
-            q_a: self.q_a.as_slice().try_proto_into()?,
-            dep_part_psbt: Psbt::deserialize(&self.dep_part_psbt).map_err(|e| {
-                Status::invalid_argument(format!("Failed to deserialize Psbt: {e}"))
-            })?,
+            p_a: self.p_a.try_proto_into()?,
+            q_a: self.q_a.try_proto_into()?,
+            script_key: self.script_key.try_proto_into()?,
+            dep_part_psbt: self.dep_part_psbt.try_proto_into()?,
             swap_script: self.swap_script.map(ScriptBuf::from_bytes),
             warn_anchor_spend: ScriptBuf::from_bytes(self.warn_anchor_spend),
             claim_spend: ScriptBuf::from_bytes(self.claim_spend),
@@ -29,6 +27,7 @@ impl TryFrom<bmp_engine::Round1Parameter> for bmp_pb::Round1Response {
         Ok(Self {
             p_a: value.p_a.serialize().to_vec(),
             q_a: value.q_a.serialize().to_vec(),
+            script_key: value.script_key.serialize().to_vec(),
             dep_part_psbt: value.dep_part_psbt.serialize(),
             swap_script: value.swap_script.map(ScriptBuf::into_bytes),
             warn_anchor_spend: value.warn_anchor_spend.into_bytes(),
@@ -60,17 +59,17 @@ impl TryFrom<bmp_engine::Round2Parameter> for bmp_pb::Round2Response {
 impl TryProtoInto<bmp_engine::Round2Parameter> for bmp_pb::Round2Response {
     fn try_proto_into(self) -> Result<bmp_engine::Round2Parameter> {
         Ok(bmp_engine::Round2Parameter {
-            p_agg: self.p_agg.as_slice().try_proto_into()?,
-            q_agg: self.q_agg.as_slice().try_proto_into()?,
-            swap_pub_nonce: self.swap_pub_nonce.as_slice().try_proto_into()?,
-            warn_alice_p_nonce: self.warn_alice_p_nonce.as_slice().try_proto_into()?,
-            warn_alice_q_nonce: self.warn_alice_q_nonce.as_slice().try_proto_into()?,
-            warn_bob_p_nonce: self.warn_bob_p_nonce.as_slice().try_proto_into()?,
-            warn_bob_q_nonce: self.warn_bob_q_nonce.as_slice().try_proto_into()?,
-            claim_alice_nonce: self.claim_alice_nonce.as_slice().try_proto_into()?,
-            claim_bob_nonce: self.claim_bob_nonce.as_slice().try_proto_into()?,
-            redirect_alice_nonce: self.redirect_alice_nonce.as_slice().try_proto_into()?,
-            redirect_bob_nonce: self.redirect_bob_nonce.as_slice().try_proto_into()?,
+            p_agg: self.p_agg.try_proto_into()?,
+            q_agg: self.q_agg.try_proto_into()?,
+            swap_pub_nonce: self.swap_pub_nonce.try_proto_into()?,
+            warn_alice_p_nonce: self.warn_alice_p_nonce.try_proto_into()?,
+            warn_alice_q_nonce: self.warn_alice_q_nonce.try_proto_into()?,
+            warn_bob_p_nonce: self.warn_bob_p_nonce.try_proto_into()?,
+            warn_bob_q_nonce: self.warn_bob_q_nonce.try_proto_into()?,
+            claim_alice_nonce: self.claim_alice_nonce.try_proto_into()?,
+            claim_bob_nonce: self.claim_bob_nonce.try_proto_into()?,
+            redirect_alice_nonce: self.redirect_alice_nonce.try_proto_into()?,
+            redirect_bob_nonce: self.redirect_bob_nonce.try_proto_into()?,
         })
     }
 }
@@ -92,12 +91,12 @@ impl TryFrom<bmp_engine::Round3Parameter> for bmp_pb::Round3Response {
 impl TryProtoInto<bmp_engine::Round3Parameter> for bmp_pb::Round3Response {
     fn try_proto_into(self) -> Result<bmp_engine::Round3Parameter> {
         Ok(bmp_engine::Round3Parameter {
-            deposit_txid: self.deposit_txid.as_slice().try_proto_into()?,
-            swap_part_sig: self.swap_part_sig.as_slice().try_proto_into()?,
-            p_part_peer: self.p_part_peer.as_slice().try_proto_into()?,
-            q_part_peer: self.q_part_peer.as_slice().try_proto_into()?,
-            claim_part_sig: self.claim_part_sig.as_slice().try_proto_into()?,
-            redirect_part_sig: self.redirect_part_sig.as_slice().try_proto_into()?,
+            deposit_txid: self.deposit_txid.try_proto_into()?,
+            swap_part_sig: self.swap_part_sig.try_proto_into()?,
+            p_part_peer: self.p_part_peer.try_proto_into()?,
+            q_part_peer: self.q_part_peer.try_proto_into()?,
+            claim_part_sig: self.claim_part_sig.try_proto_into()?,
+            redirect_part_sig: self.redirect_part_sig.try_proto_into()?,
         })
     }
 }
@@ -114,9 +113,7 @@ impl TryFrom<bmp_engine::Round4Parameter> for bmp_pb::Round4Response {
 impl TryProtoInto<bmp_engine::Round4Parameter> for bmp_pb::Round4Response {
     fn try_proto_into(self) -> Result<bmp_engine::Round4Parameter> {
         Ok(bmp_engine::Round4Parameter {
-            deposit_tx_signed: Psbt::deserialize(&self.deposit_tx_signed).map_err(|e| {
-                Status::invalid_argument(format!("Failed to deserialize Psbt: {e}"))
-            })?,
+            deposit_tx_signed: self.deposit_tx_signed.try_proto_into()?,
         })
     }
 }
