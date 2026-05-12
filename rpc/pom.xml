@@ -27,7 +27,7 @@
         <dependency>
             <groupId>io.netty</groupId>
             <artifactId>netty-handler-proxy</artifactId>
-            <version>4.1.119.Final</version>
+            <version>4.1.133.Final</version>
         </dependency>
 
         <dependency>
