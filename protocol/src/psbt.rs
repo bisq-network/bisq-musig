@@ -16,7 +16,7 @@ use bdk_wallet::miniscript::{Descriptor, ToPublicKey as _};
 use bdk_wallet::{KeychainKind, SignOptions, TxOrdering, Wallet};
 use rand::{RngCore, SeedableRng as _};
 use rand_chacha::ChaCha20Rng;
-use wallet::protocol_wallet_api::MemWallet;
+use wallet::protocol_wallet_api::{MemWallet, WalletExt as _};
 
 use crate::receiver::Receiver;
 use crate::swap::Swap as _;
@@ -315,6 +315,7 @@ impl TradeWallet for Wallet {
             return Err(TransactionErrorKind::InvalidPsbt);
         }
         let mut psbt_copy = psbt.clone();
+        self.update_psbt_with_derivation_paths(&mut psbt_copy);
         self.sign(&mut psbt_copy, SignOptions { trust_witness_utxo: true, ..SignOptions::default() })?;
         for i in 0..psbt.inputs.len() {
             if is_selected(&psbt.unsigned_tx.input[i].previous_output) {
@@ -611,10 +612,12 @@ pub(crate) fn extract_signed_tx(psbt: &Psbt) -> Result<Transaction> {
 
 #[cfg(test)]
 mod tests {
+    use bdk_wallet::miniscript::psbt::PsbtInputExt as _;
     use bdk_wallet::psbt::PsbtUtils as _;
     use bdk_wallet::test_utils;
 
     use super::*;
+    use crate::script_paths::deposit_payout_descriptor;
 
     //noinspection SpellCheckingInspection
     #[test]
@@ -691,6 +694,57 @@ mod tests {
             wallet.spk_index().index_of_spk(spk).expect("missing spk").1);
 
         assert_eq!([1, 2, 3], spk_indices);
+        Ok(())
+    }
+
+    #[test]
+    fn bdk_trade_wallet_multisig_signing() -> Result<()> {
+        let descriptors = test_utils::get_test_tr_single_sig_xprv_and_change_desc();
+        let mut buyer_wallet = test_utils::get_funded_wallet_single(descriptors.0).0;
+        let mut seller_wallet = test_utils::get_funded_wallet_single(descriptors.1).0;
+
+        let payout_address = buyer_wallet.new_address()?;
+
+        // Generate buyer and seller pubkeys from their respective wallet HD keychains.
+        let internal_key =
+            &"0000000000000000000000000000000000000000000000000000000000000001".parse().unwrap();
+        let buyer_pub_key = &buyer_wallet.new_internal_key()?;
+        let seller_pub_key = &seller_wallet.new_internal_key()?;
+
+        // Input descriptor: tr({internal_key},and_v(v:pk({buyer_pub_key}),pk({seller_pub_key})))
+        let multisig_desc = deposit_payout_descriptor(internal_key, buyer_pub_key, seller_pub_key)?;
+
+        // Create a PSBT paying from a single 1 BTC dummy input into the buyer's wallet, with zero
+        // fee, and update the input metadata with the above descriptor.
+        let unsigned_tx = Transaction {
+            version: Version::TWO,
+            lock_time: absolute::LockTime::ZERO,
+            input: vec![TxIn::default()],
+            output: vec![TxOut {
+                value: Amount::ONE_BTC,
+                script_pubkey: payout_address.script_pubkey(),
+            }],
+        };
+        let mut psbt = Psbt::from_unsigned_tx(unsigned_tx)?;
+        psbt.inputs[0].witness_utxo = Some(TxOut {
+            value: Amount::ONE_BTC,
+            script_pubkey: multisig_desc.script_pubkey(),
+        });
+        psbt.inputs[0].update_with_descriptor_unchecked(&multisig_desc)?;
+
+        // After the buyer signs, the PSBT holds one tapscript signature but is not yet finalized.
+        buyer_wallet.sign_selected_inputs(&mut psbt, &|_| true)?;
+        assert_eq!(1, psbt.inputs[0].tap_script_sigs.len());
+        assert!(psbt.inputs[0].final_script_witness.is_none());
+
+        // After the seller signs, the PSBT is automatically finalized, clearing remaining metadata.
+        seller_wallet.sign_selected_inputs(&mut psbt, &|_| true)?;
+        assert!(psbt.inputs[0].tap_script_sigs.is_empty());
+        assert!(psbt.inputs[0].final_script_witness.is_some());
+
+        // Expected weight of signed multisig tx is 168 wu greater than that of a regular single-
+        // keyspend-input, single-P2TR-output tx (namely, `SIGNED_FORWARDING_TX_WEIGHT` = 444 wu).
+        assert_eq!(Weight::from_wu(612), psbt.extract_tx()?.weight());
         Ok(())
     }
 }

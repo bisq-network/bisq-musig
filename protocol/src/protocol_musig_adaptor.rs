@@ -1,17 +1,19 @@
 use std::str::FromStr as _;
 
 use bdk_wallet::bitcoin::{
-    Address, Amount, FeeRate, Network, OutPoint, Psbt, Script, ScriptBuf, Transaction, TxOut, Txid,
-    relative,
+    Address, Amount, FeeRate, Network, OutPoint, Psbt, Script, ScriptBuf, TapNodeHash, Transaction,
+    TxOut, Txid, XOnlyPublicKey, relative,
 };
+use bdk_wallet::miniscript::{DefiniteDescriptorKey, Descriptor};
 use musig2::secp::{MaybeScalar, Point};
 use musig2::{PartialSignature, PubNonce};
 use wallet::protocol_wallet_api::MemWallet;
 
-use crate::multisig::{KeyCtx, SigCtx};
+use crate::multisig::{KeyCtx, PointExt as _, SigCtx};
 use crate::receiver::{Receiver, ReceiverList};
+use crate::script_paths;
 use crate::transaction::{
-    DepositTxBuilder, ForwardingTxBuilder, RedirectTxBuilder, WarningTxBuilder, WithWitnesses as _,
+    DepositTxBuilder, ForwardingTxBuilder, RedirectTxBuilder, TransactionExt as _, WarningTxBuilder,
 };
 use crate::wallet_service::WalletService;
 
@@ -36,6 +38,7 @@ pub struct Round1Parameter {
     // DepositTx --------
     pub p_a: Point,
     pub q_a: Point,
+    pub script_key: XOnlyPublicKey,
     pub dep_part_psbt: Psbt,
     // Swap Tx -----
     // public nonce
@@ -98,7 +101,9 @@ pub struct BMPProtocol {
     pub p_tik: KeyCtx,
     // Point securing Buyer deposit:
     pub q_tik: KeyCtx,
-    deposit_tx: DepositTx,
+    script_key_me: Option<XOnlyPublicKey>,
+    script_key_peer: Option<XOnlyPublicKey>,
+    pub deposit_tx: DepositTx,
     // which round are we in:
     round: u8,
     pub swap_tx: SwapTx,
@@ -133,6 +138,8 @@ impl BMPProtocol {
             ctx,
             p_tik,
             q_tik,
+            script_key_me: None,
+            script_key_peer: None,
             deposit_tx: DepositTx::new(),
             round: 0,
             swap_tx: SwapTx::new(role),
@@ -161,9 +168,13 @@ impl BMPProtocol {
         let redirect_anchor_spend = self.ctx.funds.next_unused_address().script_pubkey();
         self.redirect_tx_me.anchor_spend = Some(redirect_anchor_spend.clone());
 
+        let script_key = self.ctx.funds.new_internal_key()?;
+        self.script_key_me = Some(script_key);
+
         Ok(Round1Parameter {
             p_a: *self.p_tik.my_key_share()?.pub_key(),
             q_a: *self.q_tik.my_key_share()?.pub_key(),
+            script_key,
             dep_part_psbt,
             swap_script,
             warn_anchor_spend,
@@ -189,7 +200,10 @@ impl BMPProtocol {
         self.q_tik.aggregate_pub_key_shares()?;
         // now we have the aggregated key
         // so we can construct the Deposit Tx
-        self.deposit_tx.build_and_merge_tx(&mut self.ctx, bob.dep_part_psbt, &self.p_tik, &self.q_tik)?;
+        self.script_key_peer = Some(bob.script_key);
+        let [buyer_pub_key, seller_pub_key] = self.script_keys()?;
+        self.deposit_tx.build_and_merge_tx(&mut self.ctx, bob.dep_part_psbt, &self.p_tik, &self.q_tik,
+            buyer_pub_key, seller_pub_key)?;
         self.warning_tx_me.build(&mut self.ctx, &self.p_tik, &self.q_tik, &self.deposit_tx)?;
         self.warning_tx_peer.anchor_spend = Some(bob.warn_anchor_spend);
         self.warning_tx_peer.build(&mut self.ctx, &self.p_tik, &self.q_tik, &self.deposit_tx)?;
@@ -291,6 +305,14 @@ impl BMPProtocol {
         self.check_round(5);
         self.deposit_tx.transfer_sig_and_broadcast(&mut self.ctx, bob.deposit_tx_signed)?;
         Ok(())
+    }
+
+    fn script_keys(&self) -> anyhow::Result<[XOnlyPublicKey; 2]> {
+        (|| Some(if self.ctx.am_buyer() {
+            [self.script_key_me?, self.script_key_peer?]
+        } else {
+            [self.script_key_peer?, self.script_key_me?]
+        }))().ok_or_else(|| anyhow::anyhow!("Missing script key"))
     }
 
     fn check_round(&mut self, round: u8) {
@@ -466,9 +488,9 @@ impl WarningTx {
     }
 
     fn build(&mut self, ctx: &mut BMPContext, p_tik: &KeyCtx, q_tik: &KeyCtx, deposit_tx: &DepositTx) -> anyhow::Result<()> {
-        self.sig_p.set_tweaked_key_ctx(p_tik.with_taproot_tweak(None)?);
+        self.sig_p.set_tweaked_key_ctx(p_tik.with_taproot_tweak(deposit_tx.merkle_root.as_ref())?);
         self.sig_p.init_my_nonce_share()?;
-        self.sig_q.set_tweaked_key_ctx(q_tik.with_taproot_tweak(None)?);
+        self.sig_q.set_tweaked_key_ctx(q_tik.with_taproot_tweak(deposit_tx.merkle_root.as_ref())?);
         self.sig_q.init_my_nonce_share()?;
 
         //--------------------
@@ -564,7 +586,7 @@ impl SwapTx {
 
     // round 1
     pub fn build(&mut self, q_tik: &KeyCtx, p_a: Point, deposit_tx: &DepositTx, swap_spend_opt: Option<&Script>) -> anyhow::Result<()> {
-        self.fund_sig.set_tweaked_key_ctx(q_tik.with_taproot_tweak(None)?);
+        self.fund_sig.set_tweaked_key_ctx(q_tik.with_taproot_tweak(deposit_tx.merkle_root.as_ref())?);
         // SwapTx is asymmetric, both parties need to agree on P_a being the public adaptor
         // P_a is the Public key which Alice (the seller) contributes to 2of2 Multisig to lock the deposit and trade amount in the DepositTx
         // if secret key of P_a is revealed to Bob, then we has both partial keys to it and is able to spend it.
@@ -637,6 +659,9 @@ impl SwapTx {
 #[derive(Default)]
 pub struct DepositTx {
     pub builder: DepositTxBuilder,
+    pub merkle_root: Option<TapNodeHash>,
+    pub p_descriptor: Option<Descriptor<DefiniteDescriptorKey>>,
+    pub q_descriptor: Option<Descriptor<DefiniteDescriptorKey>>,
 }
 
 impl DepositTx {
@@ -666,15 +691,29 @@ impl DepositTx {
         Ok(psbt.clone())
     }
 
-    pub fn build_and_merge_tx(&mut self, ctx: &mut BMPContext, other_psbt: Psbt, p_tik: &KeyCtx, q_tik: &KeyCtx) -> anyhow::Result<()> {
+    pub fn build_and_merge_tx(
+        &mut self,
+        ctx: &mut BMPContext,
+        other_psbt: Psbt,
+        p_tik: &KeyCtx,
+        q_tik: &KeyCtx,
+        buyer_pub_key: XOnlyPublicKey,
+        seller_pub_key: XOnlyPublicKey,
+    ) -> anyhow::Result<()> {
         if ctx.am_buyer() {
             self.builder.set_sellers_half_psbt(other_psbt);
         } else {
             self.builder.set_buyers_half_psbt(other_psbt);
         }
+        self.merkle_root = Some(script_paths::deposit_payout_merkle_root(&buyer_pub_key, &seller_pub_key)?);
+        self.p_descriptor = Some(script_paths::deposit_payout_descriptor(
+            &p_tik.aggregated_key()?.pub_key().to_public_key().into(), &buyer_pub_key, &seller_pub_key)?);
+        self.q_descriptor = Some(script_paths::deposit_payout_descriptor(
+            &q_tik.aggregated_key()?.pub_key().to_public_key().into(), &buyer_pub_key, &seller_pub_key)?);
+        let merkle_root = self.merkle_root.as_ref();
         self.builder
-            .set_buyer_payout_address(p_tik.with_taproot_tweak(None)?.p2tr_address(Network::Regtest))
-            .set_seller_payout_address(q_tik.with_taproot_tweak(None)?.p2tr_address(Network::Regtest))
+            .set_buyer_payout_address(p_tik.with_taproot_tweak(merkle_root)?.p2tr_address(Network::Regtest))
+            .set_seller_payout_address(q_tik.with_taproot_tweak(merkle_root)?.p2tr_address(Network::Regtest))
             .compute_unsigned_tx()?;
         Ok(())
     }

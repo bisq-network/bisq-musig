@@ -1,6 +1,7 @@
 use std::collections::BTreeSet;
 
 use bdk_wallet::bitcoin::amount::CheckedSum as _;
+use bdk_wallet::bitcoin::policy::MAX_STANDARD_TX_WEIGHT;
 use bdk_wallet::bitcoin::psbt::ExtractTxError;
 use bdk_wallet::bitcoin::sighash::{Prevouts, SighashCache};
 use bdk_wallet::bitcoin::taproot::{Signature, TAPROOT_ANNEX_PREFIX};
@@ -139,7 +140,7 @@ impl TxOutput {
     }
 }
 
-pub trait WithWitnesses: Sized {
+pub trait TransactionExt: Sized {
     /// # Panics
     /// Will panic if `input_index` is out of bounds
     #[must_use]
@@ -148,9 +149,13 @@ pub trait WithWitnesses: Sized {
     fn key_spend_signature(&self, input_index: usize) -> Result<Signature>;
 
     fn find_key_spend_signature(&self, input: &TxOutput) -> Result<Signature>;
+
+    fn check_no_dust_outputs(&self) -> Result<()>;
+
+    fn check_standard_weight(&self) -> Result<()>;
 }
 
-impl WithWitnesses for Transaction {
+impl TransactionExt for Transaction {
     fn with_key_spend_witness(mut self, input_index: usize, signature: &Signature) -> Self {
         self.input[input_index].witness = Witness::p2tr_key_spend(signature);
         self
@@ -176,6 +181,23 @@ impl WithWitnesses for Transaction {
             }
         }
         Err(TransactionErrorKind::MissingSignature)
+    }
+
+    fn check_no_dust_outputs(&self) -> Result<()> {
+        for (i, o) in self.output.iter().enumerate() {
+            if o.value < o.script_pubkey.minimal_non_dust() {
+                return Err(TransactionErrorKind::DustOutput(o.value, i));
+            }
+        }
+        Ok(())
+    }
+
+    fn check_standard_weight(&self) -> Result<()> {
+        let weight = self.weight();
+        if weight.to_wu() > u64::from(MAX_STANDARD_TX_WEIGHT) {
+            return Err(TransactionErrorKind::NonstandardTxWeight(weight));
+        }
+        Ok(())
     }
 }
 
@@ -285,6 +307,7 @@ impl DepositTxBuilder {
             script_pubkey: self.seller_payout_address()?.script_pubkey(),
         });
         set_payouts_and_shuffle(&mut psbt, &mut buyer_payout, &mut seller_payout);
+        psbt.unsigned_tx.check_no_dust_outputs()?;
 
         // Initialize the computed fields.
         self.psbt = Some(psbt);
@@ -375,6 +398,7 @@ impl WarningTxBuilder {
             input: self.tx_ins(*self.lock_time()?)?.to_vec(),
             output: vec![escrow_output, anchor_output],
         };
+        tx.check_no_dust_outputs()?;
         self.txid = Some(self.unsigned_tx.get_or_insert(tx).compute_txid());
         Ok(self)
     }
@@ -453,6 +477,7 @@ impl RedirectTxBuilder {
             input: self.tx_ins(*self.lock_time()?)?.to_vec(),
             output,
         };
+        tx.check_no_dust_outputs()?;
         self.txid = Some(self.unsigned_tx.get_or_insert(tx).compute_txid());
         Ok(self)
     }
@@ -463,6 +488,7 @@ impl RedirectTxBuilder {
 
     pub fn compute_signed_tx(&mut self) -> Result<&mut Self> {
         let tx = self.unsigned_tx()?.clone().with_key_spend_witness(0, self.input_signature()?);
+        tx.check_standard_weight()?;
         self.signed_tx.get_or_insert(tx);
         Ok(self)
     }
@@ -512,6 +538,7 @@ impl ForwardingTxBuilder {
             input: self.tx_ins(*self.lock_time()?)?.to_vec(),
             output,
         };
+        tx.check_no_dust_outputs()?;
         self.unsigned_tx.get_or_insert(tx);
         Ok(self)
     }
@@ -559,13 +586,13 @@ impl CustomPayoutTxBuilder {
     make_getter_setter!(fee_rate: FeeRate);
     make_getter!(psbt: Psbt: Transaction);
 
-    // FIXME: We need to enforce dust limits and prevent fee over/underpayment due to non-P2TR payout addresses.
     fn payout_amounts(
         input_amounts: impl IntoIterator<Item=Amount>,
         seller_payout_amount_excluding_fee: Amount,
+        signed_tx_weight: Weight,
         fee_rate: FeeRate,
     ) -> Option<[Amount; 2]> {
-        let total_fee = fee_rate.checked_mul_by_weight(SIGNED_CUSTOM_PAYOUT_TX_WEIGHT)?;
+        let total_fee = fee_rate.checked_mul_by_weight(signed_tx_weight)?;
         let seller_payout = seller_payout_amount_excluding_fee
             .checked_sub(total_fee / 2)?;
         let buyer_payout = input_amounts.into_iter().checked_sum()?.checked_sub(seller_payout)?
@@ -574,18 +601,29 @@ impl CustomPayoutTxBuilder {
     }
 
     pub fn compute_unsigned_tx(&mut self) -> Result<&mut Self> {
+        const P2TR_SPK_WEIGHT: Weight = Weight::from_wu(34 * 4);
+        let buyer_payout_spk = self.buyer_payout_address()?.script_pubkey();
+        let seller_payout_spk = self.seller_payout_address()?.script_pubkey();
+
+        // In exceptional cases, the payout addresses may not in fact be P2TR, so correct for that
+        // in the final tx weight estimate and resultant tx fee & payout amounts.
+        let signed_tx_weight = SIGNED_CUSTOM_PAYOUT_TX_WEIGHT
+            + Weight::from_wu_usize(buyer_payout_spk.len() * 4) - P2TR_SPK_WEIGHT
+            + Weight::from_wu_usize(seller_payout_spk.len() * 4) - P2TR_SPK_WEIGHT;
+
         let [buyer_payout_amount, seller_payout_amount] = Self::payout_amounts(
             self.inputs()?.map(|input| input.prevout.value),
             *self.seller_payout_amount_excluding_fee()?,
+            signed_tx_weight,
             *self.fee_rate()?,
         ).ok_or(TransactionErrorKind::Overflow)?;
         let buyer_payout = TxOut {
             value: buyer_payout_amount,
-            script_pubkey: self.buyer_payout_address()?.script_pubkey(),
+            script_pubkey: buyer_payout_spk,
         };
         let seller_payout = TxOut {
             value: seller_payout_amount,
-            script_pubkey: self.seller_payout_address()?.script_pubkey(),
+            script_pubkey: seller_payout_spk,
         };
         let tx = Transaction {
             version: Version::TWO,
@@ -593,6 +631,7 @@ impl CustomPayoutTxBuilder {
             input: self.tx_ins(LockTime::ZERO)?.to_vec(),
             output: vec![buyer_payout, seller_payout],
         };
+        tx.check_no_dust_outputs()?;
         let mut psbt = Psbt::from_unsigned_tx(tx).expect("tx is unsigned by construction");
         psbt.inputs[0].witness_utxo = Some(self.buyer_input()?.prevout.clone());
         psbt.inputs[1].witness_utxo = Some(self.seller_input()?.prevout.clone());
@@ -652,6 +691,10 @@ pub enum TransactionErrorKind {
     InvalidWitness,
     #[error("invalid PSBT")]
     InvalidPsbt,
+    #[error("dust output of {0} at index {1}")]
+    DustOutput(Amount, usize),
+    #[error("transaction weight {0} exceeds policy maximum")]
+    NonstandardTxWeight(Weight),
     AddressParse(#[from] bdk_wallet::bitcoin::address::ParseError),
     Taproot(#[from] bdk_wallet::bitcoin::sighash::TaprootError),
     InputsIndex(#[from] bdk_wallet::bitcoin::transaction::InputsIndexError),
@@ -660,6 +703,7 @@ pub enum TransactionErrorKind {
     ExtractTx(#[from] Box<ExtractTxError>),
     CreateTx(#[from] bdk_wallet::error::CreateTxError),
     Signer(#[from] bdk_wallet::signer::SignerError),
+    Miniscript(#[from] bdk_wallet::miniscript::Error),
     Conversion(#[from] bdk_wallet::miniscript::descriptor::ConversionError),
     Wallet(#[from] wallet::protocol_wallet_api::WalletErrorKind),
     Anyhow(#[from] anyhow::Error),
@@ -965,9 +1009,9 @@ mod tests {
             "fcba7ecf41bc7e1be4ee122d9d22e3333671eb0a3a87b5cdf099d59874e1940f".parse().unwrap();
 
         let buyer_input_descriptor = deposit_payout_descriptor(
-            &buyer_input_internal_key, &buyer_pub_key, &seller_pub_key);
+            &buyer_input_internal_key, &buyer_pub_key, &seller_pub_key)?;
         let seller_input_descriptor = deposit_payout_descriptor(
-            &seller_input_internal_key, &buyer_pub_key, &seller_pub_key);
+            &seller_input_internal_key, &buyer_pub_key, &seller_pub_key)?;
 
         let buyer_payout_address = "bcrt1p2zhgww7pvedvm2rg7d0zqh96crfhuudd9s0l3yc09ncaaxmuzvds5zhh8t"
             .parse::<Address<_>>()?.require_network(Network::Regtest)?;

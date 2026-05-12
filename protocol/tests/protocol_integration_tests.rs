@@ -3,12 +3,12 @@ use bdk_electrum::electrum_client::Client;
 use bdk_wallet::bitcoin;
 use bitcoin::key::{Keypair, Secp256k1, TapTweak as _, TweakedKeypair, TweakedPublicKey};
 use bitcoin::secp256k1::Message;
-use bitcoin::{Amount, TapSighashType};
+use bitcoin::{Amount, FeeRate, TapSighashType};
 use bmp_tracing::tracing;
 use musig2::KeyAggContext;
 use musig2::secp::Point;
 use protocol::protocol_musig_adaptor::{BMPContext, BMPProtocol, ProtocolRole};
-use protocol::transaction::WithWitnesses as _;
+use protocol::transaction::{CustomPayoutTxBuilder, TransactionExt as _};
 use protocol::wallet_service::WalletService;
 use testenv::TestEnv;
 use wallet::protocol_wallet_api::MemWallet;
@@ -23,13 +23,12 @@ fn test_initial_tx_creation() -> anyhow::Result<()> {
 
 pub fn funded_wallet(env: &mut TestEnv) -> MemWallet {
     // TODO move this line to TestEnv
-    let client =
-            BdkElectrumClient::new(Client::new(&env.electrum_url()).unwrap());
+    let client = BdkElectrumClient::new(Client::new(&env.electrum_url()).unwrap());
     let mut wallet = MemWallet::new(client).unwrap();
     let address = wallet.next_unused_address();
     let txid = env
-            .fund_address(&address, Amount::from_btc(10f64).unwrap())
-            .unwrap();
+        .fund_address(&address, Amount::from_btc(10f64).unwrap())
+        .unwrap();
     env.mine_block().unwrap();
     env.wait_for_tx(txid).unwrap();
     wallet.sync().unwrap();
@@ -200,6 +199,30 @@ fn test_redirect() -> anyhow::Result<()> {
 }
 
 #[test]
+fn test_custom_payout() -> anyhow::Result<()> {
+    let mut env = TestEnv::new()?;
+    let (alice, bob) = initial_tx_creation(&mut env)?;
+    let mut builder = CustomPayoutTxBuilder::default();
+    builder
+        .set_buyer_input(alice.deposit_tx.builder.buyer_payout()?.clone())
+        .set_seller_input(alice.deposit_tx.builder.seller_payout()?.clone())
+        .set_buyer_input_descriptor(alice.deposit_tx.p_descriptor.clone().unwrap())
+        .set_seller_input_descriptor(alice.deposit_tx.q_descriptor.clone().unwrap())
+        .set_buyer_payout_address(bob.claim_tx_me.builder.payout_address()?.clone())
+        .set_seller_payout_address(alice.claim_tx_me.builder.payout_address()?.clone())
+        .set_seller_payout_amount_excluding_fee(Amount::from_sat(30_000_000))
+        .set_fee_rate(FeeRate::from_sat_per_vb_unchecked(15))
+        .compute_unsigned_tx()?
+        .sign_partial(&alice.ctx.funds)?
+        .sign_partial(&bob.ctx.funds)?;
+    let tx = builder.signed_tx()?;
+
+    dbg!(alice.ctx.funds.transaction_broadcast(&tx)?);
+    env.mine_block()?;
+    Ok(())
+}
+
+#[test]
 fn test_q_tik() -> anyhow::Result<()> {
     let mut env = TestEnv::new()?;
     // env.start_explorer_in_container()?;
@@ -219,7 +242,8 @@ fn test_q_tik() -> anyhow::Result<()> {
     let agg_sec = *q_tik.aggregate_prv_key_shares()?;
     let secp = Secp256k1::new();
     let keypair = Keypair::from_seckey_slice(&secp, &agg_sec.serialize())?;
-    let tweaked: TweakedKeypair = keypair.tap_tweak(&secp, None);
+    let merkle_root = alice.deposit_tx.merkle_root;
+    let tweaked: TweakedKeypair = keypair.tap_tweak(&secp, merkle_root);
     // let sig1 = secp.sign_schnorr(&msg, &keypair); // will end up in Bad Signature
     let sig1 = secp.sign_schnorr(&msg, &tweaked.to_keypair());
     // Update the witness stack.
@@ -228,8 +252,8 @@ fn test_q_tik() -> anyhow::Result<()> {
     let path1_pub_point = Point::from_slice(&keypair.public_key().serialize())?;
     let path1_tweak_point = Point::from_slice(&tweaked.to_keypair().public_key().serialize())?;
 
-    // KeyAgg with no_merkle -------
-    let d: TweakedPublicKey = q_tik.with_taproot_tweak(None)?.tweaked_public_key();
+    // KeyAgg with merkle root copied from `alice.deposit_tx` -------
+    let d: TweakedPublicKey = q_tik.with_taproot_tweak(merkle_root.as_ref())?.tweaked_public_key();
     // How to do the signature with Point d and secure key?
 
     // AggKey ----------------------------------------------
