@@ -1,4 +1,5 @@
 use bdk_wallet::PersistedWallet;
+#[cfg(feature = "test-support")]
 use chain::ChainScanner;
 
 use crate::bmp_wallet::BMPWalletPersister;

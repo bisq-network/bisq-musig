@@ -14,6 +14,7 @@ use bdk_wallet::bitcoin::key::Secp256k1;
 use bdk_wallet::bitcoin::secp256k1::All;
 use bdk_wallet::bitcoin::{Address, Amount, BlockHash, Network, Transaction, Txid};
 use bmp_tracing::tracing;
+#[cfg(feature = "test-support")]
 use chain::Testchain;
 use electrsd::corepc_node::Node;
 use electrsd::electrum_client::{Client, ElectrumApi};
@@ -285,6 +286,7 @@ impl<'a> TestEnv<'a> {
     }
 
     /// Create a new [`Testchain`] backed by a fresh electrum client connected to this environment.
+    #[cfg(feature = "test-support")]
     pub fn new_testchain(&self) -> Result<Testchain> {
         Ok(Testchain::new(self.new_client()?))
     }

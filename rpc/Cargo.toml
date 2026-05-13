@@ -30,7 +30,9 @@ bmp_tracing = { workspace = true }
 clap = { version = "4.6.0", features = ["derive"] }
 wallet = { path = "../wallet" }
 # TODO move this to dev-dependencies:
-testenv = { path = "../testenv" }
+# `test-support` is required because `bmp_service.rs` currently uses `Testchain` as a
+# placeholder `ChainApi`. Once `rpc` switches to a real chain backend, drop this feature.
+testenv = { path = "../testenv", features = ["test-support"] }
 
 [build-dependencies]
 tonic-prost-build = "0.14.5"

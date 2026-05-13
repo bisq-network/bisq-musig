@@ -10,7 +10,9 @@ bdk_bitcoind_rpc = { workspace = true }
 bdk_electrum = { workspace = true }
 bdk_wallet = { workspace = true, features = ["test-utils"] }
 bmp_tracing = { workspace = true }
-chain = { workspace = true, features = ["test-support"] }
+# Optional, gated behind the local `test-support` feature so a non-test consumer of `testenv`
+# doesn't transitively activate `chain/test-support` (and pull in `bdk_electrum`) on it.
+chain = { workspace = true, optional = true }
 hex = { workspace = true }
 rand = { workspace = true }
 secp = { workspace = true }
@@ -23,6 +25,11 @@ electrsd = { version = "0.36.1", features = [
 ] }
 hmac = "0.12.1"
 sha2 = "0.10.9"
+
+[features]
+# Enables the [`Testchain`]-related helpers (notably [`TestEnv::new_testchain`]).
+# Consumers that need these must opt in explicitly via `features = ["test-support"]`.
+test-support = ["dep:chain", "chain/test-support"]
 
 [dev-dependencies]
 serde_json = "1"
