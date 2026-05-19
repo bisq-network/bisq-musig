@@ -10,6 +10,7 @@ bdk_bitcoind_rpc = { workspace = true }
 bdk_electrum = { workspace = true }
 bdk_wallet = { workspace = true, features = ["test-utils"] }
 bmp_tracing = { workspace = true }
+chain = { workspace = true }
 hex = { workspace = true }
 rand = { workspace = true }
 secp = { workspace = true }

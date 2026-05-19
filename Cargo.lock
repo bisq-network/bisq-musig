@@ -582,6 +582,14 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4b4b0fc281743d80256607bd65e8beedc42cb0787ea119c85b81b4c0eab85e5f"
 
 [[package]]
+name = "chain"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "bdk_wallet",
+]
+
+[[package]]
 name = "chrono"
 version = "0.4.44"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -818,12 +826,6 @@ dependencies = [
  "crypto-common",
  "subtle",
 ]
-
-[[package]]
-name = "dotenv"
-version = "0.15.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "77c90badedccf4105eca100756a0b1289e191f6fcbdadd3cee1d2f614f97da8f"
 
 [[package]]
 name = "drop-stream"
@@ -1913,11 +1915,10 @@ name = "protocol"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "bdk_electrum",
  "bdk_wallet",
  "bmp_tracing",
+ "chain",
  "const_format",
- "dotenv",
  "musig2",
  "paste",
  "rand 0.9.2",
@@ -2561,6 +2562,7 @@ dependencies = [
  "bdk_electrum",
  "bdk_wallet",
  "bmp_tracing",
+ "chain",
  "electrsd",
  "hex",
  "hmac",
@@ -3003,6 +3005,7 @@ dependencies = [
  "bdk_kyoto",
  "bdk_wallet",
  "bmp_tracing",
+ "chain",
  "hex",
  "rand 0.9.2",
  "rusqlite",

@@ -2,7 +2,7 @@
 This represents a service to get access to the wallet
 as of now its a fake implementation, you need to pass in the wallet which you
 want to retrieve later. In the real version this should discover and actually load the user's wallet.
- */
+*/
 use wallet::protocol_wallet_api::MemWallet;
 
 #[derive(Default)]
