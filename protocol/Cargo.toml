@@ -18,13 +18,9 @@ tracing = { workspace = true }
 wallet = { path = "../wallet" }
 
 [dev-dependencies]
-chain = { workspace = true, features = ["test-support"] }
 bdk_wallet = { workspace = true, features = ["test-utils"] }
 bmp_tracing = { workspace = true }
 const_format = { workspace = true }
-# Re-list `testenv` here with `test-support` so integration tests can call `new_testchain()`,
-# without leaking `chain/test-support` into protocol's release builds.
-testenv = { path = "../testenv", features = ["test-support"] }
 
 [lints]
 workspace = true

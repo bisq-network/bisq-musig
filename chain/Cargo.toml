@@ -7,11 +7,5 @@ edition = "2024"
 anyhow = { workspace = true }
 bdk_wallet = { workspace = true }
 
-# Only needed for the Testchain implementation:
-bdk_electrum = { workspace = true, optional = true }
-
-[features]
-test-support = ["dep:bdk_electrum"]
-
 [lints]
 workspace = true

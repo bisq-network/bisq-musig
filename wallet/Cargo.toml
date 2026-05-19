@@ -19,21 +19,10 @@ zeroize = { workspace = true }
 thiserror =  { workspace = true }
 
 chain = { workspace = true }
+# TODO move this to dev-dependencies:
 testenv = { path = "../testenv" }
-
-[features]
-# Enables a `ChainDataSource` implementation for `chain::Testchain`, used by integration tests
-# in this crate and in downstream crates that exercise the wallet against a real Electrum backend.
-test-support = ["chain/test-support"]
 
 [dev-dependencies]
 bdk_wallet = { workspace = true, features = ["test-utils"] }
 bmp_tracing = { workspace = true }
-chain = { workspace = true, features = ["test-support"] }
 tempfile = { workspace = true }
-# Re-list `testenv` here with `test-support` so integration tests can call `new_testchain()`,
-# without leaking `chain/test-support` into wallet's release builds.
-testenv = { path = "../testenv", features = ["test-support"] }
-# Self-dev-dependency: activates the `test-support` feature on this crate when it's compiled
-# for tests, so integration tests in `tests/` can see the `ChainDataSource` impl for `Testchain`.
-wallet = { path = ".", features = ["test-support"] }

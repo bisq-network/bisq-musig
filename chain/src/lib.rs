@@ -27,9 +27,3 @@ pub trait ChainScanner {
         fetch_prev_txouts: bool,
     ) -> anyhow::Result<FullScanResponse<K>>;
 }
-
-#[cfg(feature = "test-support")]
-mod testchain;
-
-#[cfg(feature = "test-support")]
-pub use testchain::Testchain;

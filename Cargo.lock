@@ -586,7 +586,6 @@ name = "chain"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "bdk_electrum",
  "bdk_wallet",
 ]
 
@@ -3015,7 +3014,6 @@ dependencies = [
  "testenv",
  "thiserror 2.0.18",
  "tracing",
- "wallet",
  "zeroize",
 ]
 
