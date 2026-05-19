@@ -729,9 +729,9 @@ impl DepositTx {
 
     fn sign(&mut self, ctx: &mut BMPContext) -> anyhow::Result<()> {
         if ctx.am_buyer() {
-            self.builder.sign_buyer_inputs(&ctx.funds)?;
+            self.builder.sign_buyer_inputs(&mut ctx.funds)?;
         } else {
-            self.builder.sign_seller_inputs(&ctx.funds)?;
+            self.builder.sign_seller_inputs(&mut ctx.funds)?;
         }
         Ok(())
     }

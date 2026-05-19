@@ -617,9 +617,9 @@ impl TradeModel {
         // FIXME: This is the first point in the protocol that a real commitment is made.
         //  It is CRITICAL that the trade data is persisted and backed up at this point.
         if self.am_buyer() {
-            self.deposit_tx.builder.sign_buyer_inputs(&*self.trade_wallet()?)?;
+            self.deposit_tx.builder.sign_buyer_inputs(&mut *self.trade_wallet()?)?;
         } else {
-            self.deposit_tx.builder.sign_seller_inputs(&*self.trade_wallet()?)?;
+            self.deposit_tx.builder.sign_seller_inputs(&mut *self.trade_wallet()?)?;
         }
         Ok(())
     }
@@ -697,7 +697,9 @@ impl TradeModel {
     }
 
     pub fn sign_custom_payout_psbt(&mut self) -> Result<()> {
-        self.custom_payout_tx.builder.sign_partial(&*self.trade_wallet()?)?;
+        self.custom_payout_tx
+            .builder
+            .sign_partial(&mut *self.trade_wallet()?)?;
         Ok(())
     }
 
@@ -764,12 +766,16 @@ pub enum ProtocolErrorKind {
     MissingTradeWallet,
     #[error("missing script key")]
     MissingScriptKey,
-    #[error("insufficient redirection funds (available {available_msat:?} msat, used {used_msat:?} msat)")]
+    #[error(
+        "insufficient redirection funds (available {available_msat:?} msat, used {used_msat:?} msat)"
+    )]
     InsufficientRedirectionFunds {
         available_msat: u64,
         used_msat: u64,
     },
-    #[error("excess redirection funds (available {available_msat:?} msat, used {used_msat:?} msat)")]
+    #[error(
+        "excess redirection funds (available {available_msat:?} msat, used {used_msat:?} msat)"
+    )]
     ExcessRedirectionFunds {
         available_msat: u64,
         used_msat: u64,
@@ -777,4 +783,5 @@ pub enum ProtocolErrorKind {
     AddressParse(#[from] bdk_wallet::bitcoin::address::ParseError),
     Transaction(#[from] protocol::transaction::TransactionErrorKind),
     Multisig(#[from] protocol::multisig::MultisigErrorKind),
+    Anyhow(#[from] anyhow::Error),
 }

@@ -6,6 +6,7 @@ edition = "2021"
 default-run = "musig-cli"
 
 [dependencies]
+anyhow = { workspace = true }
 bdk_bitcoind_rpc = { workspace = true }
 bdk_wallet = { workspace = true }
 drop-stream = "0.3.2"
@@ -38,7 +39,6 @@ tonic-prost-build = "0.14.5"
 
 [dev-dependencies]
 rpc = { path = ".", features = ["unimock"] }
-anyhow = { workspace = true }
 assert_cmd = "2.2.0"
 const_format = { workspace = true }
 predicates = "3.1.4"

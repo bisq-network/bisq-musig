@@ -203,7 +203,7 @@ fn test_redirect() -> anyhow::Result<()> {
 #[test]
 fn test_custom_payout() -> anyhow::Result<()> {
     let mut env = TestEnv::new()?;
-    let (alice, bob) = initial_tx_creation(&mut env)?;
+    let (mut alice, mut bob) = initial_tx_creation(&mut env)?;
     let mut builder = CustomPayoutTxBuilder::default();
     builder
         .set_buyer_input(alice.deposit_tx.builder.buyer_payout()?.clone())
@@ -215,8 +215,8 @@ fn test_custom_payout() -> anyhow::Result<()> {
         .set_seller_payout_amount_excluding_fee(Amount::from_sat(30_000_000))
         .set_fee_rate(FeeRate::from_sat_per_vb_unchecked(15))
         .compute_unsigned_tx()?
-        .sign_partial(&alice.ctx.funds)?
-        .sign_partial(&bob.ctx.funds)?;
+        .sign_partial(&mut alice.ctx.funds)?
+        .sign_partial(&mut bob.ctx.funds)?;
     let tx = builder.signed_tx()?;
 
     dbg!(alice.ctx.chain.transaction_broadcast(&tx)?);

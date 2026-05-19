@@ -1,4 +1,5 @@
 use std::io::Write;
+use std::mem;
 use std::sync::LazyLock;
 
 use bdk_electrum::BdkElectrumClient;
@@ -6,12 +7,13 @@ use bdk_electrum::bdk_core::bitcoin::bip32::Xpriv;
 use bdk_electrum::bdk_core::bitcoin::{XOnlyPublicKey, absolute, secp256k1};
 use bdk_electrum::electrum_client::Client;
 use bdk_wallet::bitcoin::{Address, Amount, FeeRate, Network, OutPoint, Psbt, ScriptBuf};
+use bdk_wallet::coin_selection::CoinSelectionAlgorithm;
 use bdk_wallet::descriptor::{Descriptor, ExtendedDescriptor};
 use bdk_wallet::miniscript::ToPublicKey;
 use bdk_wallet::miniscript::descriptor::ConversionError;
 use bdk_wallet::miniscript::psbt::PsbtExt as _;
 use bdk_wallet::template::{Bip86, DescriptorTemplate};
-use bdk_wallet::{AddressInfo, KeychainKind, SignOptions, TxOrdering, Wallet};
+use bdk_wallet::{AddressInfo, KeychainKind, SignOptions, TxBuilder, TxOrdering, Wallet};
 use rand::RngCore;
 use secp::Scalar;
 use thiserror::Error;
@@ -59,10 +61,6 @@ pub(crate) static LIBSECP256K1_CTX: LazyLock<secp256k1::Secp256k1<secp256k1::All
     LazyLock::new(secp256k1::Secp256k1::new);
 
 impl MemWallet {
-    pub fn network(&self) -> Network {
-        self.wallet.network()
-    }
-
     pub fn reveal_next_address(&mut self) -> Address {
         self.wallet
             .reveal_next_address(KeychainKind::External)
@@ -87,20 +85,6 @@ impl MemWallet {
                 .to_x_only_pubkey());
         }
         Err(WalletErrorKind::NotTaprootAddress)
-    }
-
-    pub fn create_psbt(
-        &mut self,
-        recipients: Vec<(ScriptBuf, Amount)>,
-        fee_rate: FeeRate,
-    ) -> anyhow::Result<Psbt> {
-        let mut builder = self.wallet.build_tx();
-        builder
-            .ordering(TxOrdering::Untouched)
-            .nlocktime(absolute::LockTime::ZERO)
-            .fee_rate(fee_rate)
-            .set_recipients(recipients);
-        Ok(builder.finish()?)
     }
 
     pub fn sign_the_selected_inputs(
@@ -244,6 +228,134 @@ impl WalletExt for MemWallet {
     fn update_psbt_with_derivation_paths(&self, psbt: &mut Psbt) {
         self.wallet.update_psbt_with_derivation_paths(psbt);
     }
+}
+
+impl ProtocolWalletApi for MemWallet {
+    fn network(&self) -> Network {
+        self.wallet.network()
+    }
+
+    fn new_address(&mut self) -> anyhow::Result<Address> {
+        // For privacy, always get fresh addresses for the trade protocol.
+        // FIXME: Need to find a way to prevent gaps of unused addresses from growing too large.
+        Ok(self.reveal_next_address())
+    }
+
+    fn create_psbt(
+        &mut self,
+        recipients: Vec<(ScriptBuf, Amount)>,
+        fee_rate: FeeRate,
+    ) -> anyhow::Result<Psbt> {
+        finish_standard_psbt(self.wallet.build_tx(), recipients, fee_rate)
+    }
+
+    fn sign_selected_inputs(
+        &mut self,
+        psbt: &mut Psbt,
+        is_selected: &dyn Fn(&OutPoint) -> bool,
+    ) -> anyhow::Result<()> {
+        self.sign_the_selected_inputs(psbt, is_selected)
+    }
+
+    fn import_private_key(&mut self, _pk: Scalar) {
+        // `MemWallet` is an in-memory wallet that doesn't currently support imported keys.
+        // If/when this is needed, mirror the `BMPWallet` implementation.
+        todo!("MemWallet does not yet support importing private keys")
+    }
+}
+
+impl ProtocolWalletApi for Wallet {
+    fn network(&self) -> Network {
+        self.network()
+    }
+
+    fn new_address(&mut self) -> anyhow::Result<Address> {
+        // For privacy, always get fresh addresses for the trade protocol.
+        // FIXME: Need to find a way to prevent gaps of unused addresses from growing too large.
+        Ok(self.reveal_next_address(KeychainKind::External).address)
+    }
+
+    fn create_psbt(
+        &mut self,
+        recipients: Vec<(ScriptBuf, Amount)>,
+        fee_rate: FeeRate,
+    ) -> anyhow::Result<Psbt> {
+        finish_standard_psbt(self.build_tx(), recipients, fee_rate)
+    }
+
+    fn sign_selected_inputs(
+        &mut self,
+        psbt: &mut Psbt,
+        is_selected: &dyn Fn(&OutPoint) -> bool,
+    ) -> anyhow::Result<()> {
+        if !is_well_formed_psbt(psbt) {
+            anyhow::bail!("PSBT is not well-formed");
+        }
+        let mut psbt_copy = psbt.clone();
+        self.update_psbt_with_derivation_paths(&mut psbt_copy);
+        Wallet::sign(
+            self,
+            &mut psbt_copy,
+            SignOptions {
+                trust_witness_utxo: true,
+                ..SignOptions::default()
+            },
+        )?;
+        for i in 0..psbt.inputs.len() {
+            if is_selected(&psbt.unsigned_tx.input[i].previous_output) {
+                psbt.inputs[i].final_script_sig = psbt_copy.inputs[i].final_script_sig.take();
+                psbt.inputs[i].final_script_witness =
+                    psbt_copy.inputs[i].final_script_witness.take();
+                psbt.inputs[i].tap_script_sigs =
+                    mem::take(&mut psbt_copy.inputs[i].tap_script_sigs);
+
+                if !psbt.inputs[i].tap_script_sigs.is_empty() {
+                    // BDK couldn't finalize the selected input. Try to finalize it ourselves
+                    // using the `miniscript` lib, ignoring any errors that might occur.
+                    let _ = psbt.finalize_inp_mut(&*LIBSECP256K1_CTX, i);
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn import_private_key(&mut self, _pk: Scalar) {
+        // `bdk_wallet::Wallet` does not support importing external private keys here.
+        // Use `BMPWallet` for that flow.
+        unimplemented!(
+            "bdk_wallet::Wallet does not support importing external private keys; \
+            use BMPWallet for that"
+        )
+    }
+}
+
+/// Apply the standard PSBT-builder configuration used by the trade protocol — untouched output
+/// ordering, zero locktime, given fee rate, given recipients — and finish the builder. Generic
+/// over the coin-selection algorithm so the same helper serves `Wallet`, `MemWallet`, and
+/// `BMPWallet`.
+pub(crate) fn finish_standard_psbt<Cs: CoinSelectionAlgorithm>(
+    mut builder: TxBuilder<'_, Cs>,
+    recipients: Vec<(ScriptBuf, Amount)>,
+    fee_rate: FeeRate,
+) -> anyhow::Result<Psbt> {
+    builder
+        .ordering(TxOrdering::Untouched)
+        .nlocktime(absolute::LockTime::ZERO)
+        .fee_rate(fee_rate)
+        .set_recipients(recipients);
+    Ok(builder.finish()?)
+}
+
+/// PSBT well-formedness predicate used as a precondition for signing. Mirrors the check
+/// previously performed by the protocol crate's adapter implementations.
+fn is_well_formed_psbt(psbt: &Psbt) -> bool {
+    psbt.inputs.len() == psbt.unsigned_tx.input.len()
+        && psbt.outputs.len() == psbt.unsigned_tx.output.len()
+        && psbt
+            .unsigned_tx
+            .input
+            .iter()
+            .all(|i| i.script_sig.is_empty() && i.witness.is_empty())
 }
 
 #[derive(Error, Debug)]

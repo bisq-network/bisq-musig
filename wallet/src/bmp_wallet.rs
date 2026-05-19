@@ -4,7 +4,7 @@ use std::{fs, vec};
 
 use base64::Engine as _;
 use base64::engine::general_purpose;
-use bdk_electrum::bdk_core::bitcoin::{Address, FeeRate, OutPoint, absolute};
+use bdk_electrum::bdk_core::bitcoin::{Address, FeeRate, OutPoint};
 use bdk_kyoto::bip157::{Builder, tokio};
 use bdk_kyoto::{BuilderExt as _, LightClient, Requester, ScanType, TrustedPeer, UpdateSubscriber};
 use bdk_wallet::bitcoin::bip32::Xpriv;
@@ -19,15 +19,15 @@ use bdk_wallet::rusqlite::{self, Connection, named_params};
 use bdk_wallet::signer::{InputSigner as _, SignerContext, SignerError, SignerWrapper};
 use bdk_wallet::template::{Bip86, DescriptorTemplate as _};
 use bdk_wallet::{
-    AddressInfo, Balance, ChangeSet, KeychainKind, PersistedWallet, SignOptions, TxBuilder,
-    TxOrdering, Utxo, Wallet, WalletPersister, WeightedUtxo,
+    AddressInfo, Balance, ChangeSet, KeychainKind, PersistedWallet, SignOptions, TxBuilder, Utxo,
+    Wallet, WalletPersister, WeightedUtxo,
 };
 use rand::RngCore as _;
 use secp::Scalar;
 
 use crate::chain_data_source::ChainDataSource;
 use crate::coin_selection::{AlwaysSpendImportedFirst, SpendImportedOnly};
-use crate::protocol_wallet_api::ProtocolWalletApi;
+use crate::protocol_wallet_api::{ProtocolWalletApi, finish_standard_psbt};
 use crate::utils::{derive_key_from_password, get_salt, trace_logs};
 
 pub trait BMPWalletPersister: WalletPersister {
@@ -321,13 +321,7 @@ impl ProtocolWalletApi for BMPWallet<Connection> {
         recipients: Vec<(ScriptBuf, Amount)>,
         fee_rate: FeeRate,
     ) -> anyhow::Result<Psbt> {
-        let mut builder = self.build_tx();
-        builder
-            .ordering(TxOrdering::Untouched)
-            .nlocktime(absolute::LockTime::ZERO)
-            .fee_rate(fee_rate)
-            .set_recipients(recipients);
-        Ok(builder.finish()?)
+        finish_standard_psbt(self.build_tx(), recipients, fee_rate)
     }
 
     fn sign_selected_inputs(
