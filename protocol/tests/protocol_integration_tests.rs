@@ -1,15 +1,35 @@
 use bdk_wallet::bitcoin;
+use bdk_wallet::rusqlite::Connection;
 use bitcoin::key::{Keypair, Secp256k1, TapTweak as _, TweakedKeypair, TweakedPublicKey};
 use bitcoin::secp256k1::Message;
-use bitcoin::{Amount, FeeRate, TapSighashType};
+use bitcoin::{Amount, FeeRate, Network, TapSighashType};
 use bmp_tracing::tracing;
 use musig2::KeyAggContext;
 use musig2::secp::Point;
 use protocol::protocol_musig_adaptor::{BMPContext, BMPProtocol, ProtocolRole};
 use protocol::transaction::{CustomPayoutTxBuilder, TransactionExt as _};
-use protocol::wallet_service::WalletService;
+use protocol::wallet_service::{BoxedTradeWallet, WalletService};
 use testenv::TestEnv;
+use wallet::bmp_wallet::{BMPWallet, WalletApi as _};
 use wallet::protocol_wallet_api::MemWallet;
+
+/// Wallet backend used by the integration tests.
+///
+/// Flip the constant [`WALLET_BACKEND`] below to switch the whole suite between the
+/// in-memory `MemWallet` and the disk-backed `BMPWallet<Connection>` -- both implement
+/// [`TradeWallet`] and are interchangeable from the protocol's point of view.
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+#[expect(
+    dead_code,
+    reason = "one variant is always unused depending on the WALLET_BACKEND constant"
+)]
+enum WalletBackend {
+    Mem,
+    Bmp,
+}
+
+/// Single switch controlling which wallet backend the integration tests exercise.
+const WALLET_BACKEND: WalletBackend = WalletBackend::Mem;
 
 #[test]
 fn test_initial_tx_creation() -> anyhow::Result<()> {
@@ -19,8 +39,16 @@ fn test_initial_tx_creation() -> anyhow::Result<()> {
     Ok(())
 }
 
-pub fn funded_wallet(env: &mut TestEnv) -> MemWallet {
-    // TODO move this line to TestEnv
+/// Single entry point used by every test below to obtain a funded trade wallet. The concrete
+/// backend (`MemWallet` vs `BMPWallet`) is chosen by [`WALLET_BACKEND`].
+pub fn funded_wallet(env: &mut TestEnv) -> BoxedTradeWallet {
+    match WALLET_BACKEND {
+        WalletBackend::Mem => Box::new(funded_mem_wallet(env)),
+        WalletBackend::Bmp => Box::new(funded_bmp_wallet(env)),
+    }
+}
+
+fn funded_mem_wallet(env: &mut TestEnv) -> MemWallet {
     let client = env.new_client().unwrap();
     let mut wallet = MemWallet::new(client).unwrap();
     let address = wallet.next_unused_address();
@@ -33,8 +61,27 @@ pub fn funded_wallet(env: &mut TestEnv) -> MemWallet {
     wallet
 }
 
+fn funded_bmp_wallet(env: &mut TestEnv) -> BMPWallet<Connection> {
+    // The wallet persists to disk; the integration tests don't need the directory to outlive
+    // them, but we use `keep()` so the test does not race the wallet against `TempDir`'s
+    // automatic cleanup.
+    let dir = tempfile::tempdir().unwrap().keep();
+    let mut wallet = BMPWallet::<Connection>::new(&dir, "", Network::Regtest).unwrap();
+
+    let address = wallet.get_new_address().unwrap();
+    let txid = env
+        .fund_address(&address.address, Amount::from_btc(10f64).unwrap())
+        .unwrap();
+    env.mine_block().unwrap();
+    env.wait_for_tx(txid).unwrap();
+
+    let chain = env.new_testchain().unwrap();
+    wallet.sync_all(&chain).unwrap();
+    wallet
+}
+
 fn initial_tx_creation(env: &mut TestEnv) -> anyhow::Result<(BMPProtocol, BMPProtocol)> {
-    tracing::debug!("running...");
+    tracing::debug!("running with wallet backend: {WALLET_BACKEND:?}");
 
     let alice_funds = funded_wallet(env);
     let bob_funds = funded_wallet(env);
@@ -42,8 +89,8 @@ fn initial_tx_creation(env: &mut TestEnv) -> anyhow::Result<(BMPProtocol, BMPPro
     let alice_client = Box::new(env.new_testchain()?);
     let bob_client = Box::new(env.new_testchain()?);
 
-    let alice_service = WalletService::new().load(alice_funds);
-    let bob_service = WalletService::new().load(bob_funds);
+    let alice_service = WalletService::new().load_boxed(alice_funds);
+    let bob_service = WalletService::new().load_boxed(bob_funds);
     let seller_amount = Amount::from_btc(1.4)?;
     let buyer_amount = Amount::from_btc(0.2)?;
 
@@ -215,8 +262,8 @@ fn test_custom_payout() -> anyhow::Result<()> {
         .set_seller_payout_amount_excluding_fee(Amount::from_sat(30_000_000))
         .set_fee_rate(FeeRate::from_sat_per_vb_unchecked(15))
         .compute_unsigned_tx()?
-        .sign_partial(&mut alice.ctx.funds)?
-        .sign_partial(&mut bob.ctx.funds)?;
+        .sign_partial(&mut *alice.ctx.funds)?
+        .sign_partial(&mut *bob.ctx.funds)?;
     let tx = builder.signed_tx()?;
 
     dbg!(alice.ctx.chain.transaction_broadcast(&tx)?);

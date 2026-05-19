@@ -12,10 +12,12 @@ use bdk_wallet::bitcoin::{
     Transaction, TxIn, TxOut, Weight, Witness, XOnlyPublicKey, absolute, psbt, script, secp256k1,
 };
 use bdk_wallet::miniscript::{Descriptor, ToPublicKey as _};
+use bdk_wallet::rusqlite::Connection;
 use bdk_wallet::{KeychainKind, TxOrdering, Wallet};
 use musig2::secp::Scalar;
 use rand::{RngCore, SeedableRng as _};
 use rand_chacha::ChaCha20Rng;
+use wallet::bmp_wallet::BMPWallet;
 use wallet::protocol_wallet_api::{MemWallet, ProtocolWalletApi};
 
 use crate::receiver::Receiver;
@@ -325,6 +327,50 @@ impl TradeWallet for Wallet {
             // by BDK (as each witness is assumed to potentially have a non-default sighash type in
             // the case of p2tr and not grind for low R in the case of p2wpkh), and also due to the
             // fact that each would-be-signed half-deposit PSBT is 1 wu bigger than ideal.
+            let overpay = Amount::from_sat(overpay_msat / 1000);
+            psbt.unsigned_tx.output[change_output_index].value += overpay;
+        }
+        psbt.redact_sensitive_fields();
+        Ok(psbt)
+    }
+}
+
+impl TradeWallet for BMPWallet<Connection> {
+    fn new_internal_key(&mut self) -> Result<XOnlyPublicKey> {
+        if let Descriptor::Tr(tr) = self.public_descriptor(KeychainKind::External) {
+            let ik = tr.internal_key().clone();
+            let index = self.reveal_next_address(KeychainKind::External).index;
+            return Ok(ik
+                .at_derivation_index(index)?
+                .derive_public_key(&*LIBSECP256K1_CTX)?
+                .to_x_only_pubkey());
+        }
+        // TODO: Consider returning a dedicated error for this:
+        Err(TransactionErrorKind::MissingAddress)
+    }
+
+    fn create_half_deposit_psbt(
+        &mut self,
+        deposit_amount: Amount,
+        fee_rate: FeeRate,
+        trade_fee_receivers: &[Receiver],
+        rng: &mut dyn RngCore,
+    ) -> Result<Psbt> {
+        let mut recipients: Vec<(ScriptBuf, Amount)> =
+            Vec::with_capacity(1 + trade_fee_receivers.len());
+        recipients.push((half_deposit_placeholder_spk(rng), deposit_amount));
+        recipients.extend(
+            trade_fee_receivers
+                .iter()
+                .map(|r| (r.address.script_pubkey(), r.amount)),
+        );
+        let mut psbt = ProtocolWalletApi::create_psbt(self, recipients, fee_rate)?;
+        let overpay_msat: u64 = half_psbt_fee_overpay_msat(&psbt, fee_rate)
+            .ok_or(TransactionErrorKind::Overflow)?
+            .try_into()
+            .map_err(|_| TransactionErrorKind::InvalidPsbt)?;
+        let change_output_index = 1 + trade_fee_receivers.len();
+        if psbt.unsigned_tx.output.len() > change_output_index {
             let overpay = Amount::from_sat(overpay_msat / 1000);
             psbt.unsigned_tx.output[change_output_index].value += overpay;
         }
