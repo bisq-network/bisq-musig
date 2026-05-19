@@ -50,6 +50,10 @@ pub trait TradeWallet: ProtocolWalletApi {
     ) -> Result<Psbt>;
 }
 
+/// Type-erased wallet handle used by the trade protocol. The concrete wallet may be a
+/// `MemWallet`, a `BMPWallet<Connection>`, or any other type that implements [`TradeWallet`].
+pub type BoxedTradeWallet = Box<dyn TradeWallet + Send>;
+
 struct MockTradeWallet<Cs: Iterator<Item=TxOutput>, As: Iterator<Item=Address>> {
     funding_coins: Cs,
     new_addresses: As,

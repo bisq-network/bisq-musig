@@ -10,13 +10,12 @@ use musig2::secp::{MaybeScalar, Point};
 use musig2::{PartialSignature, PubNonce};
 
 use crate::multisig::{KeyCtx, PointExt as _, SigCtx};
-use crate::psbt::TradeWallet;
+use crate::psbt::{BoxedTradeWallet, TradeWallet};
 use crate::receiver::{Receiver, ReceiverList};
 use crate::script_paths;
 use crate::transaction::{
     DepositTxBuilder, ForwardingTxBuilder, RedirectTxBuilder, TransactionExt as _, WarningTxBuilder,
 };
-use crate::wallet_service::{BoxedTradeWallet, WalletService};
 
 #[derive(PartialEq, Eq, Clone, Copy, Debug)]
 #[expect(clippy::exhaustive_enums)]
@@ -122,13 +121,13 @@ pub struct BMPProtocol {
 impl BMPContext {
     pub fn new(
         chain: Box<dyn ChainApi>,
-        wallet_service: WalletService,
+        funds: BoxedTradeWallet,
         role: ProtocolRole,
         seller_amount: Amount,
         buyer_amount: Amount,
     ) -> anyhow::Result<Self> {
         Ok(Self {
-            funds: wallet_service.retrieve_wallet(),
+            funds,
             chain,
             role,
             seller_amount,

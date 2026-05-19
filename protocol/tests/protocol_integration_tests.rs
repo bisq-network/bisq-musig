@@ -7,8 +7,8 @@ use bmp_tracing::tracing;
 use musig2::KeyAggContext;
 use musig2::secp::Point;
 use protocol::protocol_musig_adaptor::{BMPContext, BMPProtocol, ProtocolRole};
+use protocol::psbt::BoxedTradeWallet;
 use protocol::transaction::{CustomPayoutTxBuilder, TransactionExt as _};
-use protocol::wallet_service::{BoxedTradeWallet, WalletService};
 use testenv::TestEnv;
 use wallet::bmp_wallet::{BMPWallet, WalletApi as _};
 use wallet::protocol_wallet_api::MemWallet;
@@ -89,17 +89,27 @@ fn initial_tx_creation(env: &mut TestEnv) -> anyhow::Result<(BMPProtocol, BMPPro
     let alice_client = Box::new(env.new_testchain()?);
     let bob_client = Box::new(env.new_testchain()?);
 
-    let alice_service = WalletService::new().load_boxed(alice_funds);
-    let bob_service = WalletService::new().load_boxed(bob_funds);
     let seller_amount = Amount::from_btc(1.4)?;
     let buyer_amount = Amount::from_btc(0.2)?;
 
 
     // up to here this was the preparation for the protocol, the code from now on needs to be called from outside API
-    let alice_context = BMPContext::new(alice_client, alice_service, ProtocolRole::Seller, seller_amount, buyer_amount)?;
+    let alice_context = BMPContext::new(
+        alice_client,
+        alice_funds,
+        ProtocolRole::Seller,
+        seller_amount,
+        buyer_amount,
+    )?;
 
     let mut alice = BMPProtocol::new(alice_context)?;
-    let bob_context = BMPContext::new(bob_client, bob_service, ProtocolRole::Buyer, seller_amount, buyer_amount)?;
+    let bob_context = BMPContext::new(
+        bob_client,
+        bob_funds,
+        ProtocolRole::Buyer,
+        seller_amount,
+        buyer_amount,
+    )?;
     let mut bob = BMPProtocol::new(bob_context)?;
     env.mine_block()?;
 
