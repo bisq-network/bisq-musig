@@ -40,6 +40,7 @@ pub struct TestEnv {
     bitcoin_rpc_pwd: String,
     mempool: Vec<Txid>,
     _guard: Option<MutexGuard<'static, ()>>,
+    dir: TempDir,
 }
 
 /// Configuration parameters.
@@ -165,9 +166,8 @@ impl TestEnv {
     }
 
     /// Generate a new temporary directory
-    pub fn get_tmp_dir(&self) -> Result<TempDir> {
-        let dir = TempDir::new()?;
-        Ok(dir)
+    pub fn get_tmp_dir(&self) -> Result<&TempDir> {
+        Ok(&self.dir)
     }
 
     /// Create a new test environment with ZMQ enabled on bitcoind.
@@ -265,6 +265,7 @@ impl TestEnv {
             bitcoin_rpc_pwd,
             mempool: Vec::new(),
             _guard,
+            dir: TempDir::new()?,
         };
         tracing::info!("Bitcoin regtest environment ready!");
         Ok(test_env)

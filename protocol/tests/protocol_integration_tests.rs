@@ -29,7 +29,7 @@ enum WalletBackend {
 }
 
 /// Single switch controlling which wallet backend the integration tests exercise.
-const WALLET_BACKEND: WalletBackend = WalletBackend::Mem;
+const WALLET_BACKEND: WalletBackend = WalletBackend::Bmp;
 
 #[test]
 fn test_initial_tx_creation() -> anyhow::Result<()> {
@@ -62,11 +62,8 @@ fn funded_mem_wallet(env: &mut TestEnv) -> MemWallet {
 }
 
 fn funded_bmp_wallet(env: &mut TestEnv) -> BMPWallet<Connection> {
-    // The wallet persists to disk; the integration tests don't need the directory to outlive
-    // them, but we use `keep()` so the test does not race the wallet against `TempDir`'s
-    // automatic cleanup.
-    let dir = tempfile::tempdir().unwrap().keep();
-    let mut wallet = BMPWallet::<Connection>::new(&dir, "", Network::Regtest).unwrap();
+    let dir = env.get_tmp_dir().unwrap();
+    let mut wallet = BMPWallet::<Connection>::new(dir.path(), "", Network::Regtest).unwrap();
 
     let address = wallet.get_new_address().unwrap();
     let txid = env
