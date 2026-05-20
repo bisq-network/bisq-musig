@@ -62,8 +62,8 @@ fn funded_mem_wallet(env: &mut TestEnv) -> MemWallet {
 }
 
 fn funded_bmp_wallet(env: &mut TestEnv) -> BMPWallet<Connection> {
-    let dir = env.get_tmp_dir().unwrap();
-    let mut wallet = BMPWallet::<Connection>::new(dir.path(), "", Network::Regtest).unwrap();
+    let mut wallet =
+        BMPWallet::<Connection>::new(env.new_temp_path(), "", Network::Regtest).unwrap();
 
     let address = wallet.get_new_address().unwrap();
     let txid = env
