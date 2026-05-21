@@ -13,24 +13,6 @@ use testenv::TestEnv;
 use wallet::bmp_wallet::{BMPWallet, WalletApi as _};
 use wallet::protocol_wallet_api::MemWallet;
 
-/// Wallet backend used by the integration tests.
-///
-/// Flip the constant [`WALLET_BACKEND`] below to switch the whole suite between the
-/// in-memory `MemWallet` and the disk-backed `BMPWallet<Connection>` -- both implement
-/// [`TradeWallet`] and are interchangeable from the protocol's point of view.
-#[derive(Copy, Clone, Debug, Eq, PartialEq)]
-#[expect(
-    dead_code,
-    reason = "one variant is always unused depending on the WALLET_BACKEND constant"
-)]
-enum WalletBackend {
-    Mem,
-    Bmp,
-}
-
-/// Single switch controlling which wallet backend the integration tests exercise.
-const WALLET_BACKEND: WalletBackend = WalletBackend::Bmp;
-
 #[test]
 fn test_initial_tx_creation() -> anyhow::Result<()> {
     let mut env = TestEnv::new()?;
@@ -40,11 +22,19 @@ fn test_initial_tx_creation() -> anyhow::Result<()> {
 }
 
 /// Single entry point used by every test below to obtain a funded trade wallet. The concrete
-/// backend (`MemWallet` vs `BMPWallet`) is chosen by [`WALLET_BACKEND`].
+/// backend (`MemWallet` vs `BMPWallet<Connection>`) is selected by the `WALLET_BACKEND`
+/// environment variable (`mem` or `bmp`); it defaults to `bmp` when unset. Both implement
+/// [`TradeWallet`] and are interchangeable from the protocol's point of view.
 pub fn funded_wallet(env: &mut TestEnv) -> BoxedTradeWallet {
-    match WALLET_BACKEND {
-        WalletBackend::Mem => Box::new(funded_mem_wallet(env)),
-        WalletBackend::Bmp => Box::new(funded_bmp_wallet(env)),
+    // TODO need to abstract sync(), so we can simplify this.
+    match std::env::var("WALLET_BACKEND")
+        .unwrap_or_else(|_| "bmp".to_owned())
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "mem" => Box::new(funded_mem_wallet(env)),
+        "bmp" => Box::new(funded_bmp_wallet(env)),
+        other => panic!("unknown WALLET_BACKEND={other:?}, expected `mem` or `bmp`"),
     }
 }
 
@@ -78,7 +68,10 @@ fn funded_bmp_wallet(env: &mut TestEnv) -> BMPWallet<Connection> {
 }
 
 fn initial_tx_creation(env: &mut TestEnv) -> anyhow::Result<(BMPProtocol, BMPProtocol)> {
-    tracing::debug!("running with wallet backend: {WALLET_BACKEND:?}");
+    tracing::debug!(
+        "running with wallet backend: {}",
+        std::env::var("WALLET_BACKEND").unwrap_or_else(|_| "bmp (default)".to_owned())
+    );
 
     let alice_funds = funded_wallet(env);
     let bob_funds = funded_wallet(env);
