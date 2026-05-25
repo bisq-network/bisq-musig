@@ -32,23 +32,10 @@ pub fn funded_wallet(env: &mut TestEnv) -> BoxedTradeWallet {
         .to_ascii_lowercase()
         .as_str()
     {
-        "mem" => Box::new(funded_mem_wallet(env)),
+        "mem" => Box::new(MemWallet::funded_wallet(env)),
         "bmp" => Box::new(funded_bmp_wallet(env)),
         other => panic!("unknown WALLET_BACKEND={other:?}, expected `mem` or `bmp`"),
     }
-}
-
-fn funded_mem_wallet(env: &mut TestEnv) -> MemWallet {
-    let client = env.new_client().unwrap();
-    let mut wallet = MemWallet::new(client).unwrap();
-    let address = wallet.next_unused_address();
-    let txid = env
-        .fund_address(&address, Amount::from_btc(10f64).unwrap())
-        .unwrap();
-    env.mine_block().unwrap();
-    env.wait_for_tx(txid).unwrap();
-    wallet.sync().unwrap();
-    wallet
 }
 
 fn funded_bmp_wallet(env: &mut TestEnv) -> BMPWallet<Connection> {
