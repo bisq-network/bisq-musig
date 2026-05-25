@@ -21,7 +21,6 @@ wallet = { path = "../wallet" }
 bdk_wallet = { workspace = true, features = ["test-utils"] }
 bmp_tracing = { workspace = true }
 const_format = { workspace = true }
-tempfile = { workspace = true }
 
 [lints]
 workspace = true
