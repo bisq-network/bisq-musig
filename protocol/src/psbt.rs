@@ -1,7 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::mem;
-use std::sync::LazyLock;
 
+use bdk_wallet::Wallet;
 use bdk_wallet::bitcoin::amount::CheckedSum as _;
 use bdk_wallet::bitcoin::hashes::Hash as _;
 use bdk_wallet::bitcoin::opcodes::all::{OP_PUSHBYTES_27, OP_RETURN};
@@ -9,11 +9,9 @@ use bdk_wallet::bitcoin::taproot::Signature;
 use bdk_wallet::bitcoin::transaction::Version;
 use bdk_wallet::bitcoin::{
     Address, Amount, FeeRate, Network, OutPoint, Psbt, ScriptBuf, Sequence, TapSighashType,
-    Transaction, TxIn, TxOut, Weight, Witness, XOnlyPublicKey, absolute, psbt, script, secp256k1,
+    Transaction, TxIn, TxOut, Weight, Witness, XOnlyPublicKey, absolute, psbt, script,
 };
-use bdk_wallet::miniscript::{Descriptor, ToPublicKey as _};
 use bdk_wallet::rusqlite::Connection;
-use bdk_wallet::{KeychainKind, Wallet};
 use musig2::secp::Scalar;
 use rand::{RngCore, SeedableRng as _};
 use rand_chacha::ChaCha20Rng;
@@ -32,18 +30,12 @@ use crate::transaction::{Result, TransactionErrorKind, TxOutput};
 pub const MAX_ALLOWED_HALF_PSBT_INPUT_NUM: usize = 126;
 pub const MAX_ALLOWED_HALF_PSBT_OUTPUT_NUM: usize = 126;
 
-pub(crate) static LIBSECP256K1_CTX: LazyLock<secp256k1::Secp256k1<secp256k1::All>> =
-    LazyLock::new(secp256k1::Secp256k1::new);
-
 /// Extension trait carrying the trade-deposit-specific wallet operations on top of the
-/// generic [`ProtocolWalletApi`]. Anything that implements `ProtocolWalletApi` only needs
-/// to add `new_internal_key` to plug into the trade protocol; the default
-/// `create_half_deposit_psbt` is built on top of [`ProtocolWalletApi::create_psbt`] and
-/// only needs to be overridden by mock impls that don't provide a real `create_psbt`
-/// (notably [`MockTradeWallet`]).
+/// generic [`ProtocolWalletApi`]. Anything that implements `ProtocolWalletApi` plugs in
+/// for free via the default `create_half_deposit_psbt`, which is built on top of
+/// [`ProtocolWalletApi::create_psbt`]. The default only needs to be overridden by mock
+/// impls that don't provide a real `create_psbt` (notably [`MockTradeWallet`]).
 pub trait TradeWallet: ProtocolWalletApi {
-    fn new_internal_key(&mut self) -> Result<XOnlyPublicKey>;
-
     fn create_half_deposit_psbt(
         &mut self,
         deposit_amount: Amount,
@@ -99,6 +91,12 @@ impl<Cs: Iterator<Item = TxOutput>, As: Iterator<Item = Address>> ProtocolWallet
     fn new_address(&mut self) -> anyhow::Result<Address> {
         self.new_addresses
             .next()
+            .ok_or_else(|| anyhow::Error::from(TransactionErrorKind::MissingAddress))
+    }
+
+    fn new_internal_key(&mut self) -> anyhow::Result<XOnlyPublicKey> {
+        self.internal_key
+            .take()
             .ok_or_else(|| anyhow::Error::from(TransactionErrorKind::MissingAddress))
     }
 
@@ -169,10 +167,6 @@ impl<Cs: Iterator<Item = TxOutput>, As: Iterator<Item = Address>> ProtocolWallet
 impl<Cs: Iterator<Item = TxOutput>, As: Iterator<Item = Address>> TradeWallet
     for MockTradeWallet<Cs, As>
 {
-    fn new_internal_key(&mut self) -> Result<XOnlyPublicKey> {
-        self.internal_key.take().ok_or(TransactionErrorKind::MissingAddress)
-    }
-
     fn create_half_deposit_psbt(
         &mut self,
         deposit_amount: Amount,
@@ -319,40 +313,11 @@ fn script_sigs(iks: &[XOnlyPublicKey], signatures: &[&'static str]) -> BTreeMap<
     iks.iter().map(|k| (*k, signature_vec(signatures))).collect()
 }
 
-impl TradeWallet for Wallet {
-    fn new_internal_key(&mut self) -> Result<XOnlyPublicKey> {
-        if let Descriptor::Tr(tr) = self.public_descriptor(KeychainKind::External) {
-            let ik = tr.internal_key().clone();
-            let index = self.reveal_next_address(KeychainKind::External).index;
+impl TradeWallet for Wallet {}
 
-            return Ok(ik.at_derivation_index(index)?.derive_public_key(&*LIBSECP256K1_CTX)?
-                .to_x_only_pubkey());
-        }
-        // TODO: Consider returning a dedicated error for this:
-        Err(TransactionErrorKind::MissingAddress)
-    }
-}
+impl TradeWallet for BMPWallet<Connection> {}
 
-impl TradeWallet for BMPWallet<Connection> {
-    fn new_internal_key(&mut self) -> Result<XOnlyPublicKey> {
-        if let Descriptor::Tr(tr) = self.public_descriptor(KeychainKind::External) {
-            let ik = tr.internal_key().clone();
-            let index = self.reveal_next_address(KeychainKind::External).index;
-            return Ok(ik
-                .at_derivation_index(index)?
-                .derive_public_key(&*LIBSECP256K1_CTX)?
-                .to_x_only_pubkey());
-        }
-        // TODO: Consider returning a dedicated error for this:
-        Err(TransactionErrorKind::MissingAddress)
-    }
-}
-
-impl TradeWallet for MemWallet {
-    fn new_internal_key(&mut self) -> Result<XOnlyPublicKey> {
-        Self::new_internal_key(self).map_err(TransactionErrorKind::from)
-    }
-}
+impl TradeWallet for MemWallet {}
 
 trait Redact {
     fn redact_sensitive_fields(&mut self);
@@ -579,12 +544,18 @@ pub(crate) fn extract_signed_tx(psbt: &Psbt) -> Result<Transaction> {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::LazyLock;
+
+    use bdk_wallet::bitcoin::secp256k1;
     use bdk_wallet::miniscript::psbt::PsbtInputExt as _;
     use bdk_wallet::psbt::PsbtUtils as _;
-    use bdk_wallet::test_utils;
+    use bdk_wallet::{KeychainKind, test_utils};
 
     use super::*;
     use crate::script_paths::deposit_payout_descriptor;
+
+    static LIBSECP256K1_CTX: LazyLock<secp256k1::Secp256k1<secp256k1::All>> =
+        LazyLock::new(secp256k1::Secp256k1::new);
 
     //noinspection SpellCheckingInspection
     #[test]

@@ -27,6 +27,13 @@ pub trait ProtocolWalletApi {
 
     fn new_address(&mut self) -> anyhow::Result<Address>;
 
+    /// Reveal a fresh external-keychain Taproot internal key. The returned X-only key shall
+    /// correspond to a P2TR address that this wallet would otherwise have produced via
+    /// [`Self::new_address`] — the two methods are intentionally tied together so that
+    /// callers can use either flavour interchangeably and rely on the wallet to keep its
+    /// keychain cursor / gap-fill state consistent.
+    fn new_internal_key(&mut self) -> anyhow::Result<XOnlyPublicKey>;
+
     /// This creates a PSBT for use with the depositTx (but not limited to). You specify the
     /// recipients, consisting of the deposit- (and trade-)amount and spk, and the
     /// `trade_fee_outputs`. This method returns a PSBT with added inputs sufficient to pay the
@@ -69,22 +76,6 @@ impl MemWallet {
 
     pub fn public_descriptor(&self, chain: KeychainKind) -> &ExtendedDescriptor {
         self.wallet.public_descriptor(chain)
-    }
-
-    pub fn new_internal_key(&mut self) -> Result<XOnlyPublicKey, WalletErrorKind> {
-        if let Descriptor::Tr(tr) = self.public_descriptor(KeychainKind::External) {
-            let ik = tr.internal_key().clone();
-            let index = self
-                .wallet
-                .reveal_next_address(KeychainKind::External)
-                .index;
-
-            return Ok(ik
-                .at_derivation_index(index)?
-                .derive_public_key(&*LIBSECP256K1_CTX)?
-                .to_x_only_pubkey());
-        }
-        Err(WalletErrorKind::NotTaprootAddress)
     }
 
     pub fn sign_the_selected_inputs(
@@ -241,6 +232,14 @@ impl ProtocolWalletApi for MemWallet {
         Ok(self.reveal_next_address())
     }
 
+    fn new_internal_key(&mut self) -> anyhow::Result<XOnlyPublicKey> {
+        let index = self
+            .wallet
+            .reveal_next_address(KeychainKind::External)
+            .index;
+        Ok(internal_key_at_index(&self.wallet, index)?)
+    }
+
     fn create_psbt(
         &mut self,
         recipients: Vec<(ScriptBuf, Amount)>,
@@ -273,6 +272,11 @@ impl ProtocolWalletApi for Wallet {
         // For privacy, always get fresh addresses for the trade protocol.
         // FIXME: Need to find a way to prevent gaps of unused addresses from growing too large.
         Ok(self.reveal_next_address(KeychainKind::External).address)
+    }
+
+    fn new_internal_key(&mut self) -> anyhow::Result<XOnlyPublicKey> {
+        let index = self.reveal_next_address(KeychainKind::External).index;
+        Ok(internal_key_at_index(self, index)?)
     }
 
     fn create_psbt(
@@ -344,6 +348,25 @@ pub(crate) fn finish_standard_psbt<Cs: CoinSelectionAlgorithm>(
         .fee_rate(fee_rate)
         .set_recipients(recipients);
     Ok(builder.finish()?)
+}
+
+/// Derive the X-only Taproot internal public key at the given external-keychain derivation
+/// index, from the wallet's external descriptor. Shared by every `ProtocolWalletApi`
+/// implementation so that the descriptor-walking logic isn't repeated per wallet flavour;
+/// each implementor only needs to decide *which* index to feed in (e.g. via
+/// `reveal_next_address` or a gap-filling `next_address`).
+pub(crate) fn internal_key_at_index(
+    wallet: &Wallet,
+    index: u32,
+) -> Result<XOnlyPublicKey, WalletErrorKind> {
+    if let Descriptor::Tr(tr) = wallet.public_descriptor(KeychainKind::External) {
+        let ik = tr.internal_key().clone();
+        return Ok(ik
+            .at_derivation_index(index)?
+            .derive_public_key(&*LIBSECP256K1_CTX)?
+            .to_x_only_pubkey());
+    }
+    Err(WalletErrorKind::NotTaprootAddress)
 }
 
 /// PSBT well-formedness predicate used as a precondition for signing. Mirrors the check

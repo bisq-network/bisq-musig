@@ -10,7 +10,7 @@ use musig2::secp::{MaybeScalar, Point};
 use musig2::{PartialSignature, PubNonce};
 
 use crate::multisig::{KeyCtx, PointExt as _, SigCtx};
-use crate::psbt::{BoxedTradeWallet, TradeWallet};
+use crate::psbt::BoxedTradeWallet;
 use crate::receiver::{Receiver, ReceiverList};
 use crate::script_paths;
 use crate::transaction::{
@@ -178,7 +178,7 @@ impl BMPProtocol {
         let redirect_anchor_spend = self.ctx.funds.new_address()?.script_pubkey();
         self.redirect_tx_me.anchor_spend = Some(redirect_anchor_spend.clone());
 
-        let script_key = TradeWallet::new_internal_key(&mut *self.ctx.funds)?;
+        let script_key = self.ctx.funds.new_internal_key()?;
         self.script_key_me = Some(script_key);
 
         Ok(Round1Parameter {

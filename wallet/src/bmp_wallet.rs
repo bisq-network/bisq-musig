@@ -29,6 +29,7 @@ use crate::chain_data_source::ChainDataSource;
 use crate::coin_selection::{AlwaysSpendImportedFirst, SpendImportedOnly};
 use crate::protocol_wallet_api::{
     LIBSECP256K1_CTX, ProtocolWalletApi, WalletExt as _, finish_standard_psbt,
+    internal_key_at_index,
 };
 use crate::utils::{derive_key_from_password, get_salt, trace_logs};
 
@@ -316,6 +317,13 @@ impl ProtocolWalletApi for BMPWallet<Connection> {
 
     fn new_address(&mut self) -> anyhow::Result<Address> {
         Ok(self.next_address(KeychainKind::External)?.address)
+    }
+
+    fn new_internal_key(&mut self) -> anyhow::Result<XOnlyPublicKey> {
+        // Use `next_address` (gap-filling) rather than `reveal_next_address` directly so
+        // that the internal key's index stays in step with what `new_address` would yield.
+        let index = self.next_address(KeychainKind::External)?.index;
+        Ok(internal_key_at_index(self, index)?)
     }
 
     fn create_psbt(
