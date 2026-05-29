@@ -47,6 +47,19 @@ pub trait ProtocolWalletApi {
     fn import_private_key(&mut self, pk: Scalar);
 }
 
+/// An x-only public key freshly minted by [`MemWallet::new_internal_key`], paired with the
+/// BIP32 child index it was derived at.
+///
+/// The `key` is the value to share with peers (it appears as a `pk(...)` inside the
+/// trade-deposit script tree). The `index` is forwarded to the protocol layer's
+/// `InternalKeyIndexMap` so that signing can populate `bip32_derivation` without
+/// reverse-resolving the index from the key.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct IndexedInternalKey {
+    pub key: XOnlyPublicKey,
+    pub index: u32,
+}
+
 pub struct MemWallet {
     wallet: Wallet,
     client: BdkElectrumClient<Client>,
@@ -74,7 +87,7 @@ impl MemWallet {
         self.wallet.public_descriptor(chain)
     }
 
-    pub fn new_internal_key(&mut self) -> Result<XOnlyPublicKey, WalletErrorKind> {
+    pub fn new_internal_key(&mut self) -> Result<IndexedInternalKey, WalletErrorKind> {
         if let Descriptor::Tr(tr) = self.public_descriptor(KeychainKind::External) {
             let ik = tr.internal_key().clone();
             let index = self
@@ -82,10 +95,13 @@ impl MemWallet {
                 .reveal_next_address(KeychainKind::External)
                 .index;
 
-            return Ok(ik
+            let key = ik
                 .at_derivation_index(index)?
                 .derive_public_key(&*LIBSECP256K1_CTX)?
-                .to_x_only_pubkey());
+                .to_x_only_pubkey();
+            // The protocol layer is responsible for recording `(key, index)` into its
+            // `InternalKeyIndexMap` -- the wallet itself stays bookkeeping-free.
+            return Ok(IndexedInternalKey { key, index });
         }
         Err(WalletErrorKind::NotTaprootAddress)
     }
@@ -104,13 +120,26 @@ impl MemWallet {
         Ok(builder.finish()?)
     }
 
-    pub fn sign_the_selected_inputs(
+    /// Sign the inputs of `psbt` for which `is_selected` returns true.
+    ///
+    /// `prepare_clone` is invoked on the working clone of the PSBT *before* signing -- it
+    /// is where the protocol layer populates `bip32_derivation` from its internal-key
+    /// index map. The wallet itself is intentionally agnostic about how that population
+    /// is done; this keeps the wallet free of any protocol-level bookkeeping.
+    pub fn sign_the_selected_inputs<F>(
         &self,
         psbt: &mut Psbt,
         is_selected: &dyn Fn(&OutPoint) -> bool,
-    ) -> anyhow::Result<()> {
+        prepare_clone: F,
+    ) -> anyhow::Result<()>
+    where
+        F: FnOnce(&mut Psbt, &ExtendedDescriptor) -> anyhow::Result<()>,
+    {
         let mut psbt_copy = psbt.clone();
-        self.update_psbt_with_derivation_paths(&mut psbt_copy);
+        prepare_clone(
+            &mut psbt_copy,
+            self.wallet.public_descriptor(KeychainKind::External),
+        )?;
         self.wallet.sign(
             &mut psbt_copy,
             SignOptions {
@@ -222,41 +251,6 @@ impl MemWallet {
         env.wait_for_tx(txid).unwrap();
         wallet.sync().unwrap();
         wallet
-    }
-}
-
-pub trait WalletExt {
-    fn update_psbt_with_derivation_paths(&self, psbt: &mut Psbt);
-}
-
-impl WalletExt for Wallet {
-    fn update_psbt_with_derivation_paths(&self, psbt: &mut Psbt) {
-        for input in &mut psbt.inputs {
-            for key in input.tap_key_origins.keys() {
-                let spk = ScriptBuf::new_p2tr(&*LIBSECP256K1_CTX, *key, None);
-                if let Some((keychain, index)) = self.derivation_of_spk(spk) {
-                    let desc = self
-                        .public_descriptor(keychain)
-                        .at_derivation_index(index)
-                        .expect("child can't be hardened");
-                    if let Descriptor::Tr(tr) = desc {
-                        let ik = tr.internal_key();
-                        let pub_key = ik.to_public_key().inner;
-                        let key_source = (
-                            ik.master_fingerprint(),
-                            ik.full_derivation_path().expect("descriptor is definite"),
-                        );
-                        input.bip32_derivation.insert(pub_key, key_source);
-                    }
-                }
-            }
-        }
-    }
-}
-
-impl WalletExt for MemWallet {
-    fn update_psbt_with_derivation_paths(&self, psbt: &mut Psbt) {
-        self.wallet.update_psbt_with_derivation_paths(psbt);
     }
 }
 

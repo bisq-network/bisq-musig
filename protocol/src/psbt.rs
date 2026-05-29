@@ -11,13 +11,15 @@ use bdk_wallet::bitcoin::{
     Address, Amount, FeeRate, Network, OutPoint, Psbt, ScriptBuf, Sequence, TapSighashType,
     Transaction, TxIn, TxOut, Weight, Witness, XOnlyPublicKey, absolute, psbt, script, secp256k1,
 };
+use bdk_wallet::descriptor::ExtendedDescriptor;
 use bdk_wallet::miniscript::psbt::PsbtExt as _;
 use bdk_wallet::miniscript::{Descriptor, ToPublicKey as _};
 use bdk_wallet::{KeychainKind, SignOptions, TxOrdering, Wallet};
 use rand::{RngCore, SeedableRng as _};
 use rand_chacha::ChaCha20Rng;
-use wallet::protocol_wallet_api::{MemWallet, WalletExt as _};
+use wallet::protocol_wallet_api::{IndexedInternalKey, MemWallet};
 
+use crate::internal_key_index_map::InternalKeyIndexMap;
 use crate::receiver::Receiver;
 use crate::swap::Swap as _;
 use crate::transaction::{Result, TransactionErrorKind, TxOutput};
@@ -38,7 +40,19 @@ pub trait TradeWallet {
 
     fn new_address(&mut self) -> Result<Address>;
 
-    fn new_internal_key(&mut self) -> Result<XOnlyPublicKey>;
+    /// Reveal a fresh Taproot internal key on the wallet's external keychain, returning
+    /// both the x-only public key (to be exchanged with peers) and the BIP32 child index
+    /// it was derived at. The protocol layer is expected to record the `(key, index)`
+    /// pair into its [`InternalKeyIndexMap`] so that signing can reconstruct the BIP32
+    /// derivation later.
+    fn new_internal_key(&mut self) -> Result<IndexedInternalKey>;
+
+    /// The wallet's external Taproot descriptor. Returned by reference so the protocol
+    /// can derive `(pub_key, key_source)` at a saved BIP32 child index without going
+    /// through the wallet at all (see [`InternalKeyIndexMap::populate_bip32_derivation`]).
+    /// Implementations whose backing wallet has no concept of an HD descriptor (the
+    /// mocks) may return `None`.
+    fn external_descriptor(&self) -> Option<&ExtendedDescriptor>;
 
     fn create_half_deposit_psbt(
         &mut self,
@@ -48,7 +62,21 @@ pub trait TradeWallet {
         rng: &mut dyn RngCore,
     ) -> Result<Psbt>;
 
-    fn sign_selected_inputs(&self, psbt: &mut Psbt, is_selected: &dyn Fn(&OutPoint) -> bool) -> Result<()>;
+    /// Sign every input of `psbt` for which `is_selected` returns true.
+    ///
+    /// `internal_key_index_map` is the protocol's `(internal_key -> child_index)` book
+    /// of every key minted via [`new_internal_key`](Self::new_internal_key); the impl
+    /// uses it to populate `bip32_derivation` on a working clone of the PSBT before
+    /// asking the underlying wallet to sign, then merges the resulting signatures back
+    /// into the caller's PSBT (so the caller's PSBT never sees the derivation paths
+    /// directly). A missing entry surfaces as
+    /// [`TransactionErrorKind::MissingKeyIndexEntry`].
+    fn sign_selected_inputs(
+        &self,
+        psbt: &mut Psbt,
+        is_selected: &dyn Fn(&OutPoint) -> bool,
+        internal_key_index_map: &InternalKeyIndexMap,
+    ) -> Result<()>;
 }
 
 struct MockTradeWallet<Cs: Iterator<Item=TxOutput>, As: Iterator<Item=Address>> {
@@ -59,15 +87,27 @@ struct MockTradeWallet<Cs: Iterator<Item=TxOutput>, As: Iterator<Item=Address>> 
     script_sigs: BTreeMap<XOnlyPublicKey, Vec<Signature>>,
 }
 
-impl<Cs: Iterator<Item=TxOutput>, As: Iterator<Item=Address>> TradeWallet for MockTradeWallet<Cs, As> {
+impl<Cs: Iterator<Item = TxOutput>, As: Iterator<Item = Address>> TradeWallet
+    for MockTradeWallet<Cs, As>
+{
     fn network(&self) -> Network { Network::Regtest }
 
     fn new_address(&mut self) -> Result<Address> {
         self.new_addresses.next().ok_or(TransactionErrorKind::MissingAddress)
     }
 
-    fn new_internal_key(&mut self) -> Result<XOnlyPublicKey> {
-        self.internal_key.take().ok_or(TransactionErrorKind::MissingAddress)
+    fn new_internal_key(&mut self) -> Result<IndexedInternalKey> {
+        let key = self
+            .internal_key
+            .take()
+            .ok_or(TransactionErrorKind::MissingAddress)?;
+        // The mock wallet doesn't model an HD keychain, so we expose a deterministic-but
+        // -unused index of 0 to satisfy the new return type.
+        Ok(IndexedInternalKey { key, index: 0 })
+    }
+
+    fn external_descriptor(&self) -> Option<&ExtendedDescriptor> {
+        None
     }
 
     fn create_half_deposit_psbt(
@@ -140,7 +180,12 @@ impl<Cs: Iterator<Item=TxOutput>, As: Iterator<Item=Address>> TradeWallet for Mo
         Ok(Psbt { inputs, ..Psbt::from_unsigned_tx(unsigned_tx).expect("tx is unsigned by construction") })
     }
 
-    fn sign_selected_inputs(&self, psbt: &mut Psbt, is_selected: &dyn Fn(&OutPoint) -> bool) -> Result<()> {
+    fn sign_selected_inputs(
+        &self,
+        psbt: &mut Psbt,
+        is_selected: &dyn Fn(&OutPoint) -> bool,
+        _internal_key_index_map: &InternalKeyIndexMap,
+    ) -> Result<()> {
         let mut script_sigs = self.script_sigs.clone();
 
         for (input, TxIn { previous_output, .. })
@@ -263,16 +308,21 @@ impl TradeWallet for Wallet {
         Ok(self.reveal_next_address(KeychainKind::External).address)
     }
 
-    fn new_internal_key(&mut self) -> Result<XOnlyPublicKey> {
+    fn new_internal_key(&mut self) -> Result<IndexedInternalKey> {
         if let Descriptor::Tr(tr) = self.public_descriptor(KeychainKind::External) {
             let ik = tr.internal_key().clone();
             let index = self.reveal_next_address(KeychainKind::External).index;
 
-            return Ok(ik.at_derivation_index(index)?.derive_public_key(&*LIBSECP256K1_CTX)?
-                .to_x_only_pubkey());
+            let key = ik.at_derivation_index(index)?.derive_public_key(&*LIBSECP256K1_CTX)?
+                .to_x_only_pubkey();
+            return Ok(IndexedInternalKey { key, index });
         }
         // TODO: Consider returning a dedicated error for this:
         Err(TransactionErrorKind::MissingAddress)
+    }
+
+    fn external_descriptor(&self) -> Option<&ExtendedDescriptor> {
+        Some(self.public_descriptor(KeychainKind::External))
     }
 
     fn create_half_deposit_psbt(
@@ -310,12 +360,41 @@ impl TradeWallet for Wallet {
         Ok(psbt)
     }
 
-    fn sign_selected_inputs(&self, psbt: &mut Psbt, is_selected: &dyn Fn(&OutPoint) -> bool) -> Result<()> {
+    fn sign_selected_inputs(
+        &self,
+        psbt: &mut Psbt,
+        is_selected: &dyn Fn(&OutPoint) -> bool,
+        _internal_key_index_map: &InternalKeyIndexMap,
+    ) -> Result<()> {
         if !is_well_formed(psbt) {
             return Err(TransactionErrorKind::InvalidPsbt);
         }
         let mut psbt_copy = psbt.clone();
-        self.update_psbt_with_derivation_paths(&mut psbt_copy);
+        // The bare BDK `Wallet` impl is used by tests that don't go through
+        // `new_internal_key` recording and therefore have an empty index map. We fall
+        // back to BDK's own reverse lookup (`derivation_of_spk`) for every key in
+        // `tap_key_origins`. Production code paths use `MemWallet`, which routes
+        // through the protocol-side `InternalKeyIndexMap` instead.
+        for input in &mut psbt_copy.inputs {
+            for key in input.tap_key_origins.keys() {
+                let spk = ScriptBuf::new_p2tr(&*LIBSECP256K1_CTX, *key, None);
+                if let Some((keychain, index)) = self.derivation_of_spk(spk) {
+                    let desc = self
+                        .public_descriptor(keychain)
+                        .at_derivation_index(index)
+                        .expect("child can't be hardened");
+                    if let Descriptor::Tr(tr) = desc {
+                        let ik = tr.internal_key();
+                        let pub_key = ik.to_public_key().inner;
+                        let key_source = (
+                            ik.master_fingerprint(),
+                            ik.full_derivation_path().expect("descriptor is definite"),
+                        );
+                        input.bip32_derivation.insert(pub_key, key_source);
+                    }
+                }
+            }
+        }
         self.sign(&mut psbt_copy, SignOptions { trust_witness_utxo: true, ..SignOptions::default() })?;
         for i in 0..psbt.inputs.len() {
             if is_selected(&psbt.unsigned_tx.input[i].previous_output) {
@@ -343,8 +422,12 @@ impl TradeWallet for MemWallet {
         Ok(self.reveal_next_address())
     }
 
-    fn new_internal_key(&mut self) -> Result<XOnlyPublicKey> {
+    fn new_internal_key(&mut self) -> Result<IndexedInternalKey> {
         Self::new_internal_key(self).map_err(TransactionErrorKind::from)
+    }
+
+    fn external_descriptor(&self) -> Option<&ExtendedDescriptor> {
+        Some(self.public_descriptor(KeychainKind::External))
     }
 
     fn create_half_deposit_psbt(
@@ -378,11 +461,22 @@ impl TradeWallet for MemWallet {
         Ok(psbt)
     }
 
-    fn sign_selected_inputs(&self, psbt: &mut Psbt, is_selected: &dyn Fn(&OutPoint) -> bool) -> Result<()> {
+    fn sign_selected_inputs(
+        &self,
+        psbt: &mut Psbt,
+        is_selected: &dyn Fn(&OutPoint) -> bool,
+        internal_key_index_map: &InternalKeyIndexMap,
+    ) -> Result<()> {
         if !is_well_formed(psbt) {
             return Err(TransactionErrorKind::InvalidPsbt);
         }
-        self.sign_the_selected_inputs(psbt, is_selected)?;
+        // Hand the wallet a closure that runs the protocol-side `(key -> index)`
+        // population on the working PSBT clone -- the wallet itself remains agnostic
+        // about how derivation paths are computed.
+        self.sign_the_selected_inputs(psbt, is_selected, |psbt_clone, descriptor| {
+            internal_key_index_map.populate_bip32_derivation(psbt_clone, descriptor)?;
+            Ok(())
+        })?;
         Ok(())
     }
 }
@@ -645,7 +739,7 @@ mod tests {
 
         // (The PSBT halves would not ever be signed in production, only the merged and shuffled
         // Deposit Tx resulting from them.)
-        wallet.sign_selected_inputs(&mut psbt, &|_| true)?;
+        wallet.sign_selected_inputs(&mut psbt, &|_| true, &InternalKeyIndexMap::new())?;
 
         let fee_amount = psbt.fee_amount().unwrap();
         let actual_weight = psbt.extract_tx()?.weight();
@@ -686,9 +780,14 @@ mod tests {
         let addr2 = wallet.new_address()?;
         let ik3 = wallet.new_internal_key()?;
 
-        let spk1 = ScriptBuf::new_p2tr(&*LIBSECP256K1_CTX, ik1, None);
+        // The new return type carries the BIP32 child index alongside the key. Verify the
+        // indices reported by the wallet match the positions we expect.
+        assert_eq!(1, ik1.index);
+        assert_eq!(3, ik3.index);
+
+        let spk1 = ScriptBuf::new_p2tr(&*LIBSECP256K1_CTX, ik1.key, None);
         let spk2 = addr2.script_pubkey();
-        let spk3 = ScriptBuf::new_p2tr(&*LIBSECP256K1_CTX, ik3, None);
+        let spk3 = ScriptBuf::new_p2tr(&*LIBSECP256K1_CTX, ik3.key, None);
 
         let spk_indices = [spk1, spk2, spk3].map(|spk|
             wallet.spk_index().index_of_spk(spk).expect("missing spk").1);
@@ -708,8 +807,8 @@ mod tests {
         // Generate buyer and seller pubkeys from their respective wallet HD keychains.
         let internal_key =
             &"0000000000000000000000000000000000000000000000000000000000000001".parse().unwrap();
-        let buyer_pub_key = &buyer_wallet.new_internal_key()?;
-        let seller_pub_key = &seller_wallet.new_internal_key()?;
+        let buyer_pub_key = &buyer_wallet.new_internal_key()?.key;
+        let seller_pub_key = &seller_wallet.new_internal_key()?.key;
 
         // Input descriptor: tr({internal_key},and_v(v:pk({buyer_pub_key}),pk({seller_pub_key})))
         let multisig_desc = deposit_payout_descriptor(internal_key, buyer_pub_key, seller_pub_key)?;
@@ -733,18 +832,180 @@ mod tests {
         psbt.inputs[0].update_with_descriptor_unchecked(&multisig_desc)?;
 
         // After the buyer signs, the PSBT holds one tapscript signature but is not yet finalized.
-        buyer_wallet.sign_selected_inputs(&mut psbt, &|_| true)?;
+        let empty_index_map = InternalKeyIndexMap::new();
+        buyer_wallet.sign_selected_inputs(&mut psbt, &|_| true, &empty_index_map)?;
         assert_eq!(1, psbt.inputs[0].tap_script_sigs.len());
         assert!(psbt.inputs[0].final_script_witness.is_none());
 
         // After the seller signs, the PSBT is automatically finalized, clearing remaining metadata.
-        seller_wallet.sign_selected_inputs(&mut psbt, &|_| true)?;
+        seller_wallet.sign_selected_inputs(&mut psbt, &|_| true, &empty_index_map)?;
         assert!(psbt.inputs[0].tap_script_sigs.is_empty());
         assert!(psbt.inputs[0].final_script_witness.is_some());
 
         // Expected weight of signed multisig tx is 168 wu greater than that of a regular single-
         // keyspend-input, single-P2TR-output tx (namely, `SIGNED_FORWARDING_TX_WEIGHT` = 444 wu).
         assert_eq!(Weight::from_wu(612), psbt.extract_tx()?.weight());
+        Ok(())
+    }
+
+    /// Demonstrates that the BIP32 child index reported by `new_internal_key` (now part
+    /// of its return value, via [`IndexedInternalKey`]) is the same index that the
+    /// bare-`Wallet` reverse-lookup path (`derivation_of_spk`) would compute. The
+    /// protocol layer keeps an [`InternalKeyIndexMap`] of `(key -> saved_index)` pairs
+    /// and feeds them into `populate_bip32_derivation` at signing time -- this test
+    /// confirms the saved index agrees with what the reverse lookup would have
+    /// produced, justifying the substitution.
+    ///
+    /// Flow per iteration:
+    ///   1. `wallet.new_internal_key()` returns `IndexedInternalKey { key, index }` -- `index` is
+    ///      the External-keychain BIP32 child it was derived at, captured at mint time.
+    ///   2. We record the pair into a fresh `InternalKeyIndexMap` and build a PSBT input the same
+    ///      way the trade flow does (a `tr(...)` descriptor whose script leaf references `key` as a
+    ///      `pk(...)`).
+    ///   3. We assert that calling `populate_bip32_derivation` with the map produces a
+    ///      `bip32_derivation` entry at the saved index, and that the bare `Wallet`'s
+    ///      `derivation_of_spk(P2TR(key, None))` returns that same index.
+    ///
+    /// Multiple iterations with a mid-run hop in the index rule out off-by-one
+    /// accidents and prove the relation holds across different index values.
+    #[test]
+    fn new_internal_key_index_matches_update_psbt_with_derivation_paths_index() -> Result<()> {
+        let descriptor = test_utils::get_test_tr_single_sig_xprv();
+        let mut wallet = test_utils::get_funded_wallet_single(descriptor).0;
+
+        // Sanity check: the test fixture starts with one already-revealed address at index 0.
+        assert_eq!(Some(0), wallet.derivation_index(KeychainKind::External));
+
+        // Run multiple iterations so we can observe the relation across different indices,
+        // including a mid-run hop that shifts the index by 5 to make the comparison
+        // non-trivial.
+        let mut comparisons: Vec<(u32, u32)> = Vec::new();
+        for iteration in 0..6 {
+            // Halfway through, advance the keychain by extra addresses so successive
+            // iterations don't all just see consecutive indices: this forces the test to
+            // compare actual index values rather than always (n, n) for some constant n.
+            if iteration == 3 {
+                for _ in 0..5 {
+                    wallet.new_address()?;
+                }
+            }
+
+            // (1) Mint a fresh internal key. The new return type carries the BIP32 child
+            //     index alongside the key -- this is exactly the saved index that signing
+            //     can reuse without going back to the descriptor.
+            let IndexedInternalKey {
+                key: internal_key,
+                index: saved_index,
+            } = wallet.new_internal_key()?;
+
+            // Cross-check that the wallet's own derivation cursor agrees with the saved
+            // index (i.e. `new_internal_key` really did advance to `saved_index`).
+            assert_eq!(
+                Some(saved_index),
+                wallet.derivation_index(KeychainKind::External),
+                "saved index from new_internal_key should equal the wallet's current \
+                 External derivation index"
+            );
+
+            // Record the pair into a protocol-side index map -- this is the operation
+            // the real protocol does in `BMPProtocol::round1`.
+            let mut index_map = InternalKeyIndexMap::new();
+            index_map.record(internal_key, saved_index);
+
+            // (2) Build a PSBT input the same way the trade flow does: a Taproot descriptor
+            //     whose script-leaf references our `internal_key` as a `pk(...)`. Calling
+            //     `update_with_descriptor_unchecked` populates `tap_key_origins` with
+            //     `internal_key` (alongside the descriptor's own internal key and a
+            //     placeholder peer key), exactly as it would in the real deposit-payout
+            //     PSBT. The peer key and descriptor literal are intentionally NOT
+            //     recorded: they aren't ours, and `populate_bip32_derivation` should
+            //     silently skip them.
+            let other_pub_key = "0000000000000000000000000000000000000000000000000000000000000002"
+                .parse()
+                .unwrap();
+            let dummy_internal_key =
+                "0000000000000000000000000000000000000000000000000000000000000001"
+                    .parse()
+                    .unwrap();
+            let multisig_desc =
+                deposit_payout_descriptor(&dummy_internal_key, &internal_key, &other_pub_key)?;
+
+            let unsigned_tx = Transaction {
+                version: Version::TWO,
+                lock_time: absolute::LockTime::ZERO,
+                input: vec![TxIn::default()],
+                output: vec![TxOut {
+                    value: Amount::from_sat(1_000),
+                    script_pubkey: ScriptBuf::new(),
+                }],
+            };
+            let mut psbt = Psbt::from_unsigned_tx(unsigned_tx)?;
+            psbt.inputs[0].witness_utxo = Some(TxOut {
+                value: Amount::ONE_BTC,
+                script_pubkey: multisig_desc.script_pubkey(),
+            });
+            psbt.inputs[0].update_with_descriptor_unchecked(&multisig_desc)?;
+            assert!(
+                psbt.inputs[0].tap_key_origins.contains_key(&internal_key),
+                "fixture: tap_key_origins should now contain our newly-minted internal key"
+            );
+
+            // (3a) Compute the index the *generic* (lookup-based) path would resolve --
+            //      `derivation_of_spk(P2TR(key, None))` -- so we can compare it against
+            //      the saved index returned by `new_internal_key`.
+            let lookup_spk = ScriptBuf::new_p2tr(&*LIBSECP256K1_CTX, internal_key, None);
+            let (lookup_keychain, recomputed_index) = wallet
+                .derivation_of_spk(lookup_spk)
+                .expect("derivation_of_spk should resolve our freshly-minted key");
+            assert_eq!(
+                KeychainKind::External,
+                lookup_keychain,
+                "key was minted on the External keychain"
+            );
+
+            // (3b) End-to-end check that `populate_bip32_derivation` (driven by the
+            //      saved index from the map) actually populates `bip32_derivation`.
+            assert!(
+                psbt.inputs[0].bip32_derivation.is_empty(),
+                "fixture: bip32_derivation should start empty"
+            );
+            index_map
+                .populate_bip32_derivation(
+                    &mut psbt,
+                    wallet.public_descriptor(KeychainKind::External),
+                )
+                .expect("strict populate should succeed -- every key was recorded");
+            assert!(
+                !psbt.inputs[0].bip32_derivation.is_empty(),
+                "populate_bip32_derivation must populate bip32_derivation when the \
+                 saved index resolves to a known derivation"
+            );
+
+            // (4) Record the (saved_index, recomputed_index) pair. The whole point of the
+            //     refactor is that these are equal -- so the protocol can use the saved
+            //     one and skip the recomputation.
+            comparisons.push((saved_index, recomputed_index));
+        }
+
+        // (5) The core assertion: the index returned by `new_internal_key` (and stored
+        //     in the protocol's index map) matches the one the lookup-based path would
+        //     compute, in every iteration.
+        for (i, (saved_idx, recomputed_idx)) in comparisons.iter().enumerate() {
+            assert_eq!(
+                saved_idx, recomputed_idx,
+                "iteration {i}: saved index from new_internal_key ({saved_idx}) \
+                 differs from index resolved by derivation_of_spk ({recomputed_idx})"
+            );
+        }
+
+        // Sanity: we exercised genuinely different index values (not all the same number),
+        // including the jump caused by the mid-run `new_address()` calls.
+        let distinct_indices: BTreeSet<u32> = comparisons.iter().map(|(n, _)| *n).collect();
+        assert!(
+            distinct_indices.len() >= 2,
+            "test should exercise multiple distinct indices; got {distinct_indices:?}"
+        );
+
         Ok(())
     }
 }

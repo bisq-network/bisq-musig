@@ -213,8 +213,8 @@ fn test_custom_payout() -> anyhow::Result<()> {
         .set_seller_payout_amount_excluding_fee(Amount::from_sat(30_000_000))
         .set_fee_rate(FeeRate::from_sat_per_vb_unchecked(15))
         .compute_unsigned_tx()?
-        .sign_partial(&alice.ctx.funds)?
-        .sign_partial(&bob.ctx.funds)?;
+        .sign_partial(&alice.ctx.funds, &alice.ctx.internal_key_index_map)?
+        .sign_partial(&bob.ctx.funds, &bob.ctx.internal_key_index_map)?;
     let tx = builder.signed_tx()?;
 
     dbg!(alice.ctx.funds.transaction_broadcast(&tx)?);

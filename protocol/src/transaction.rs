@@ -318,21 +318,42 @@ impl DepositTxBuilder {
 
     pub fn txid(&self) -> Result<&Txid> { Ok(&self.buyer_payout()?.outpoint.txid) }
 
-    pub fn sign_buyer_inputs(&mut self, trade_wallet: &(impl TradeWallet + ?Sized)) -> Result<&mut Self> {
-        self.sign_matching_inputs(trade_wallet, &prevout_set(self.buyers_half_psbt()?))
+    pub fn sign_buyer_inputs(
+        &mut self,
+        trade_wallet: &(impl TradeWallet + ?Sized),
+        internal_key_index_map: &crate::internal_key_index_map::InternalKeyIndexMap,
+    ) -> Result<&mut Self> {
+        self.sign_matching_inputs(
+            trade_wallet,
+            &prevout_set(self.buyers_half_psbt()?),
+            internal_key_index_map,
+        )
     }
 
-    pub fn sign_seller_inputs(&mut self, trade_wallet: &(impl TradeWallet + ?Sized)) -> Result<&mut Self> {
-        self.sign_matching_inputs(trade_wallet, &prevout_set(self.sellers_half_psbt()?))
+    pub fn sign_seller_inputs(
+        &mut self,
+        trade_wallet: &(impl TradeWallet + ?Sized),
+        internal_key_index_map: &crate::internal_key_index_map::InternalKeyIndexMap,
+    ) -> Result<&mut Self> {
+        self.sign_matching_inputs(
+            trade_wallet,
+            &prevout_set(self.sellers_half_psbt()?),
+            internal_key_index_map,
+        )
     }
 
     fn sign_matching_inputs(
         &mut self,
         trade_wallet: &(impl TradeWallet + ?Sized),
         prevouts: &BTreeSet<OutPoint>,
+        internal_key_index_map: &crate::internal_key_index_map::InternalKeyIndexMap,
     ) -> Result<&mut Self> {
         let psbt = self.psbt.as_mut().ok_or(TransactionErrorKind::MissingTransaction)?;
-        trade_wallet.sign_selected_inputs(psbt, &|o| prevouts.contains(o))?;
+        trade_wallet.sign_selected_inputs(
+            psbt,
+            &|o| prevouts.contains(o),
+            internal_key_index_map,
+        )?;
         Ok(self)
     }
 
@@ -641,9 +662,13 @@ impl CustomPayoutTxBuilder {
         Ok(self)
     }
 
-    pub fn sign_partial(&mut self, trade_wallet: &(impl TradeWallet + ?Sized)) -> Result<&mut Self> {
+    pub fn sign_partial(
+        &mut self,
+        trade_wallet: &(impl TradeWallet + ?Sized),
+        internal_key_index_map: &crate::internal_key_index_map::InternalKeyIndexMap,
+    ) -> Result<&mut Self> {
         let psbt = self.psbt.as_mut().ok_or(TransactionErrorKind::MissingTransaction)?;
-        trade_wallet.sign_selected_inputs(psbt, &|_| true)?;
+        trade_wallet.sign_selected_inputs(psbt, &|_| true, internal_key_index_map)?;
         Ok(self)
     }
 
@@ -695,6 +720,13 @@ pub enum TransactionErrorKind {
     DustOutput(Amount, usize),
     #[error("transaction weight {0} exceeds policy maximum")]
     NonstandardTxWeight(Weight),
+    #[error("no derivation index recorded for x-only key {0}")]
+    MissingKeyIndexEntry(bdk_wallet::bitcoin::XOnlyPublicKey),
+    #[error(
+        "internal-key index map is empty -- did the protocol forget to record \
+             a freshly minted key after calling new_internal_key()?"
+    )]
+    EmptyKeyIndexMap,
     AddressParse(#[from] bdk_wallet::bitcoin::address::ParseError),
     Taproot(#[from] bdk_wallet::bitcoin::sighash::TaprootError),
     InputsIndex(#[from] bdk_wallet::bitcoin::transaction::InputsIndexError),
@@ -865,12 +897,13 @@ mod tests {
         // Check that signing with the mock buyer/seller wallets has exactly the same effect as
         // signing with the above fake BDK trade wallets (with the particular params chosen)...
 
-        builder0.sign_partial(&fake_buyer_trade_wallet)?;
-        builder1.sign_partial(&mock_buyer_trade_wallet())?;
+        let empty_index_map = crate::internal_key_index_map::InternalKeyIndexMap::new();
+        builder0.sign_partial(&fake_buyer_trade_wallet, &empty_index_map)?;
+        builder1.sign_partial(&mock_buyer_trade_wallet(), &empty_index_map)?;
         assert_eq!(builder0.psbt()?, builder1.psbt()?);
 
-        builder0.sign_partial(&fake_seller_trade_wallet)?;
-        builder1.sign_partial(&mock_seller_trade_wallet())?;
+        builder0.sign_partial(&fake_seller_trade_wallet, &empty_index_map)?;
+        builder1.sign_partial(&mock_seller_trade_wallet(), &empty_index_map)?;
         assert_eq!(builder0.psbt()?, builder1.psbt()?);
 
         // Now check the final signed tx...
@@ -911,8 +944,10 @@ mod tests {
             .init_buyers_half_psbt(&mut mock_buyer_trade_wallet(), &mut rng)?
             .init_sellers_half_psbt(&mut mock_seller_trade_wallet(), &mut rng)?
             .compute_unsigned_tx()?
-            .sign_buyer_inputs(&mock_buyer_trade_wallet())?
-            .sign_seller_inputs(&mock_seller_trade_wallet())?;
+            .sign_buyer_inputs(&mock_buyer_trade_wallet(),
+                &crate::internal_key_index_map::InternalKeyIndexMap::new())?
+            .sign_seller_inputs(&mock_seller_trade_wallet(),
+                &crate::internal_key_index_map::InternalKeyIndexMap::new())?;
         Ok(builder)
     }
 

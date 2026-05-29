@@ -1,3 +1,4 @@
+pub mod internal_key_index_map;
 pub mod multisig;
 pub mod protocol_musig_adaptor;
 pub mod psbt;

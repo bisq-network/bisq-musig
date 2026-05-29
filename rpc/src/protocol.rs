@@ -68,6 +68,11 @@ struct Keys {
     seller_payout_ctx: KeyCtx,
     my_multisig_script_key: Option<XOnlyPublicKey>,
     peers_multisig_script_key: Option<XOnlyPublicKey>,
+    /// `(key -> BIP32 child index)` map for every internal key minted via
+    /// `trade_wallet().new_internal_key()`. Used at signing time to populate
+    /// `bip32_derivation` on the deposit-payout PSBT (see
+    /// `protocol::internal_key_index_map`).
+    internal_key_index_map: protocol::internal_key_index_map::InternalKeyIndexMap,
 }
 
 #[derive(Default)]
@@ -243,7 +248,16 @@ impl TradeModel {
     pub fn init_my_key_shares(&mut self) -> Result<()> {
         self.keys.buyer_payout_ctx.init_my_key_share();
         self.keys.seller_payout_ctx.init_my_key_share();
-        self.keys.my_multisig_script_key.get_or_insert(self.trade_wallet()?.new_internal_key()?);
+        if self.keys.my_multisig_script_key.is_none() {
+            // Mint a fresh internal key and remember its `(key, index)` pair: the key
+            // is what we hand to the peer, the index is what the protocol's index map
+            // will use to populate `bip32_derivation` at signing time.
+            let indexed = self.trade_wallet()?.new_internal_key()?;
+            self.keys.my_multisig_script_key = Some(indexed.key);
+            self.keys
+                .internal_key_index_map
+                .record(indexed.key, indexed.index);
+        }
         Ok(())
     }
 
@@ -617,9 +631,11 @@ impl TradeModel {
         // FIXME: This is the first point in the protocol that a real commitment is made.
         //  It is CRITICAL that the trade data is persisted and backed up at this point.
         if self.am_buyer() {
-            self.deposit_tx.builder.sign_buyer_inputs(&*self.trade_wallet()?)?;
+            self.deposit_tx.builder.sign_buyer_inputs(
+                &*self.trade_wallet()?, &self.keys.internal_key_index_map)?;
         } else {
-            self.deposit_tx.builder.sign_seller_inputs(&*self.trade_wallet()?)?;
+            self.deposit_tx.builder.sign_seller_inputs(
+                &*self.trade_wallet()?, &self.keys.internal_key_index_map)?;
         }
         Ok(())
     }
@@ -697,7 +713,9 @@ impl TradeModel {
     }
 
     pub fn sign_custom_payout_psbt(&mut self) -> Result<()> {
-        self.custom_payout_tx.builder.sign_partial(&*self.trade_wallet()?)?;
+        self.custom_payout_tx
+            .builder
+            .sign_partial(&*self.trade_wallet()?, &self.keys.internal_key_index_map)?;
         Ok(())
     }
 

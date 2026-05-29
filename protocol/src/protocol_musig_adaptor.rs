@@ -93,6 +93,12 @@ pub struct BMPContext {
     pub role: ProtocolRole,
     pub seller_amount: Amount,
     pub buyer_amount: Amount,
+    /// Tracks the BIP32 child index of every internal key minted via
+    /// `funds.new_internal_key()`. The protocol layer owns this bookkeeping (rather
+    /// than the wallet) so that the wallet can stay key-management-only. Consulted
+    /// when populating `bip32_derivation` on the deposit-payout PSBT prior to
+    /// signing.
+    pub internal_key_index_map: crate::internal_key_index_map::InternalKeyIndexMap,
 }
 
 pub struct BMPProtocol {
@@ -116,12 +122,18 @@ pub struct BMPProtocol {
 }
 
 impl BMPContext {
-    pub fn new(wallet_service: WalletService, role: ProtocolRole, seller_amount: Amount, buyer_amount: Amount) -> anyhow::Result<Self> {
+    pub fn new(
+        wallet_service: WalletService,
+        role: ProtocolRole,
+        seller_amount: Amount,
+        buyer_amount: Amount,
+    ) -> anyhow::Result<Self> {
         Ok(Self {
             funds: wallet_service.retrieve_wallet(),
             role,
             seller_amount,
             buyer_amount,
+            internal_key_index_map: crate::internal_key_index_map::InternalKeyIndexMap::new(),
         })
     }
 
@@ -168,7 +180,15 @@ impl BMPProtocol {
         let redirect_anchor_spend = self.ctx.funds.next_unused_address().script_pubkey();
         self.redirect_tx_me.anchor_spend = Some(redirect_anchor_spend.clone());
 
-        let script_key = self.ctx.funds.new_internal_key()?;
+        // The wallet returns both the freshly-derived x-only key and its BIP32 child index.
+        // The peer only needs the public-key half. The index is recorded into
+        // `internal_key_index_map` so signing can populate `bip32_derivation` from it
+        // later (see `protocol::psbt::populate_then_sign`).
+        let indexed = self.ctx.funds.new_internal_key()?;
+        self.ctx
+            .internal_key_index_map
+            .record(indexed.key, indexed.index);
+        let script_key = indexed.key;
         self.script_key_me = Some(script_key);
 
         Ok(Round1Parameter {
@@ -720,9 +740,9 @@ impl DepositTx {
 
     fn sign(&mut self, ctx: &mut BMPContext) -> anyhow::Result<()> {
         if ctx.am_buyer() {
-            self.builder.sign_buyer_inputs(&ctx.funds)?;
+            self.builder.sign_buyer_inputs(&ctx.funds, &ctx.internal_key_index_map)?;
         } else {
-            self.builder.sign_seller_inputs(&ctx.funds)?;
+            self.builder.sign_seller_inputs(&ctx.funds, &ctx.internal_key_index_map)?;
         }
         Ok(())
     }
