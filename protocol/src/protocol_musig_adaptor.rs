@@ -5,17 +5,17 @@ use bdk_wallet::bitcoin::{
     TxOut, Txid, XOnlyPublicKey, relative,
 };
 use bdk_wallet::miniscript::{DefiniteDescriptorKey, Descriptor};
+use chain::ChainApi;
 use musig2::secp::{MaybeScalar, Point};
 use musig2::{PartialSignature, PubNonce};
-use wallet::protocol_wallet_api::MemWallet;
 
 use crate::multisig::{KeyCtx, PointExt as _, SigCtx};
+use crate::psbt::BoxedTradeWallet;
 use crate::receiver::{Receiver, ReceiverList};
 use crate::script_paths;
 use crate::transaction::{
     DepositTxBuilder, ForwardingTxBuilder, RedirectTxBuilder, TransactionExt as _, WarningTxBuilder,
 };
-use crate::wallet_service::WalletService;
 
 #[derive(PartialEq, Eq, Clone, Copy, Debug)]
 #[expect(clippy::exhaustive_enums)]
@@ -88,8 +88,11 @@ pub struct Round4Parameter {
 
 /// this context is for the whole process and need to be persisted by the caller
 pub struct BMPContext {
-    // first of all, everything which is general to the protocol itself
-    pub funds: MemWallet,
+    // first of all, everything which is general to the protocol itself.
+    // `funds` is type-erased so the protocol works against any [`TradeWallet`]
+    // implementation (e.g. `MemWallet`, `BMPWallet`, mocks).
+    pub funds: BoxedTradeWallet,
+    pub chain: Box<dyn ChainApi>,
     pub role: ProtocolRole,
     pub seller_amount: Amount,
     pub buyer_amount: Amount,
@@ -116,9 +119,16 @@ pub struct BMPProtocol {
 }
 
 impl BMPContext {
-    pub fn new(wallet_service: WalletService, role: ProtocolRole, seller_amount: Amount, buyer_amount: Amount) -> anyhow::Result<Self> {
+    pub fn new(
+        chain: Box<dyn ChainApi>,
+        funds: BoxedTradeWallet,
+        role: ProtocolRole,
+        seller_amount: Amount,
+        buyer_amount: Amount,
+    ) -> anyhow::Result<Self> {
         Ok(Self {
-            funds: wallet_service.retrieve_wallet(),
+            funds,
+            chain,
             role,
             seller_amount,
             buyer_amount,
@@ -156,16 +166,16 @@ impl BMPProtocol {
         self.check_round(1);
 
         let dep_part_psbt = self.deposit_tx.generate_part_tx(&mut self.ctx)?;
-        let swap_script = self.swap_tx.spend_condition(&mut self.ctx);
-        let warn_anchor_spend = self.ctx.funds.next_unused_address().script_pubkey();
+        let swap_script = self.swap_tx.spend_condition(&mut self.ctx)?;
+        let warn_anchor_spend = self.ctx.funds.new_address()?.script_pubkey();
         self.warning_tx_me.anchor_spend = Some(warn_anchor_spend.clone());
 
         // ClaimTx
-        let claim_spend = self.ctx.funds.next_unused_address().script_pubkey();
+        let claim_spend = self.ctx.funds.new_address()?.script_pubkey();
         self.claim_tx_me.claim_spend = Some(claim_spend.clone());
 
         // RedirectTx
-        let redirect_anchor_spend = self.ctx.funds.next_unused_address().script_pubkey();
+        let redirect_anchor_spend = self.ctx.funds.new_address()?.script_pubkey();
         self.redirect_tx_me.anchor_spend = Some(redirect_anchor_spend.clone());
 
         let script_key = self.ctx.funds.new_internal_key()?;
@@ -390,7 +400,7 @@ impl RedirectTx {
     }
 
     pub fn broadcast(&self, me: &BMPContext) -> anyhow::Result<Txid> {
-        me.funds.transaction_broadcast(self.builder.signed_tx()?)
+        me.chain.transaction_broadcast(self.builder.signed_tx()?)
     }
 
     /// sum of all f64 must be 1
@@ -452,7 +462,7 @@ impl ClaimTx {
     }
 
     pub fn broadcast(&self, me: &BMPContext) -> anyhow::Result<Txid> {
-        me.funds.transaction_broadcast(self.signed_tx()?)
+        me.chain.transaction_broadcast(self.signed_tx()?)
     }
 }
 
@@ -544,7 +554,7 @@ impl WarningTx {
     }
 
     pub fn broadcast(&self, me: &BMPContext) -> anyhow::Result<Txid> {
-        me.funds.transaction_broadcast(self.signed_tx()?)
+        me.chain.transaction_broadcast(self.signed_tx()?)
     }
 }
 
@@ -559,12 +569,15 @@ pub struct SwapTx {
 }
 
 impl SwapTx {
-    pub(crate) fn spend_condition(&mut self, ctx: &mut BMPContext) -> Option<ScriptBuf> {
+    pub(crate) fn spend_condition(
+        &mut self,
+        ctx: &mut BMPContext,
+    ) -> anyhow::Result<Option<ScriptBuf>> {
         self.swap_spend = match self.role {
-            ProtocolRole::Seller => Some(ctx.funds.next_unused_address().script_pubkey()),
+            ProtocolRole::Seller => Some(ctx.funds.new_address()?.script_pubkey()),
             ProtocolRole::Buyer => None,
         };
-        self.swap_spend.clone()
+        Ok(self.swap_spend.clone())
     }
 
     /// even though only the seller gets a `SwapTx` transaction, both parties are constructing the
@@ -652,7 +665,7 @@ impl SwapTx {
     }
 
     pub fn broadcast(&self, me: &BMPContext) -> anyhow::Result<Txid> {
-        me.funds.transaction_broadcast(self.builder.signed_tx()?)
+        me.chain.transaction_broadcast(self.builder.signed_tx()?)
     }
 }
 
@@ -681,11 +694,11 @@ impl DepositTx {
 
         let psbt = if ctx.am_buyer() {
             self.builder
-                .init_buyers_half_psbt(&mut ctx.funds, &mut rand::rng())?
+                .init_buyers_half_psbt(&mut *ctx.funds, &mut rand::rng())?
                 .buyers_half_psbt()?
         } else {
             self.builder
-                .init_sellers_half_psbt(&mut ctx.funds, &mut rand::rng())?
+                .init_sellers_half_psbt(&mut *ctx.funds, &mut rand::rng())?
                 .sellers_half_psbt()?
         };
         Ok(psbt.clone())
@@ -720,9 +733,9 @@ impl DepositTx {
 
     fn sign(&mut self, ctx: &mut BMPContext) -> anyhow::Result<()> {
         if ctx.am_buyer() {
-            self.builder.sign_buyer_inputs(&ctx.funds)?;
+            self.builder.sign_buyer_inputs(&mut *ctx.funds)?;
         } else {
-            self.builder.sign_seller_inputs(&ctx.funds)?;
+            self.builder.sign_seller_inputs(&mut *ctx.funds)?;
         }
         Ok(())
     }
@@ -736,7 +749,7 @@ impl DepositTx {
 
         let tx = self.builder.signed_tx()?;
         // TODO both alice and bob will broadcast, is that a bug or a feature?
-        let deposit_txid = ctx.funds.transaction_broadcast(&tx)?;
+        let deposit_txid = ctx.chain.transaction_broadcast(&tx)?;
         dbg!("DepositTx txid: {:?}", &deposit_txid);
         Ok(deposit_txid)
     }

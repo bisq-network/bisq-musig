@@ -1,7 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::mem;
-use std::sync::LazyLock;
 
+use bdk_wallet::Wallet;
 use bdk_wallet::bitcoin::amount::CheckedSum as _;
 use bdk_wallet::bitcoin::hashes::Hash as _;
 use bdk_wallet::bitcoin::opcodes::all::{OP_PUSHBYTES_27, OP_RETURN};
@@ -9,14 +9,14 @@ use bdk_wallet::bitcoin::taproot::Signature;
 use bdk_wallet::bitcoin::transaction::Version;
 use bdk_wallet::bitcoin::{
     Address, Amount, FeeRate, Network, OutPoint, Psbt, ScriptBuf, Sequence, TapSighashType,
-    Transaction, TxIn, TxOut, Weight, Witness, XOnlyPublicKey, absolute, psbt, script, secp256k1,
+    Transaction, TxIn, TxOut, Weight, Witness, XOnlyPublicKey, absolute, psbt, script,
 };
-use bdk_wallet::miniscript::psbt::PsbtExt as _;
-use bdk_wallet::miniscript::{Descriptor, ToPublicKey as _};
-use bdk_wallet::{KeychainKind, SignOptions, TxOrdering, Wallet};
+use bdk_wallet::rusqlite::Connection;
+use musig2::secp::Scalar;
 use rand::{RngCore, SeedableRng as _};
 use rand_chacha::ChaCha20Rng;
-use wallet::protocol_wallet_api::{MemWallet, WalletExt as _};
+use wallet::bmp_wallet::BMPWallet;
+use wallet::protocol_wallet_api::{MemWallet, ProtocolWalletApi};
 
 use crate::receiver::Receiver;
 use crate::swap::Swap as _;
@@ -30,26 +30,50 @@ use crate::transaction::{Result, TransactionErrorKind, TxOutput};
 pub const MAX_ALLOWED_HALF_PSBT_INPUT_NUM: usize = 126;
 pub const MAX_ALLOWED_HALF_PSBT_OUTPUT_NUM: usize = 126;
 
-pub(crate) static LIBSECP256K1_CTX: LazyLock<secp256k1::Secp256k1<secp256k1::All>> =
-    LazyLock::new(secp256k1::Secp256k1::new);
-
-pub trait TradeWallet {
-    fn network(&self) -> Network;
-
-    fn new_address(&mut self) -> Result<Address>;
-
-    fn new_internal_key(&mut self) -> Result<XOnlyPublicKey>;
-
+/// Extension trait carrying the trade-deposit-specific wallet operations on top of the
+/// generic [`ProtocolWalletApi`]. Anything that implements `ProtocolWalletApi` plugs in
+/// for free via the default `create_half_deposit_psbt`, which is built on top of
+/// [`ProtocolWalletApi::create_psbt`]. The default only needs to be overridden by mock
+/// impls that don't provide a real `create_psbt` (notably [`MockTradeWallet`]).
+pub trait TradeWallet: ProtocolWalletApi {
     fn create_half_deposit_psbt(
         &mut self,
         deposit_amount: Amount,
         fee_rate: FeeRate,
         trade_fee_receivers: &[Receiver],
         rng: &mut dyn RngCore,
-    ) -> Result<Psbt>;
-
-    fn sign_selected_inputs(&self, psbt: &mut Psbt, is_selected: &dyn Fn(&OutPoint) -> bool) -> Result<()>;
+    ) -> Result<Psbt> {
+        let mut recipients: Vec<(ScriptBuf, Amount)> =
+            Vec::with_capacity(1 + trade_fee_receivers.len());
+        recipients.push((half_deposit_placeholder_spk(rng), deposit_amount));
+        recipients.extend(
+            trade_fee_receivers
+                .iter()
+                .map(|r| (r.address.script_pubkey(), r.amount)),
+        );
+        let mut psbt = ProtocolWalletApi::create_psbt(self, recipients, fee_rate)?;
+        // Calculate tx fee overpay unconditionally, as this performs additional checks on the PSBT:
+        let overpay_msat: u64 = half_psbt_fee_overpay_msat(&psbt, fee_rate)
+            .ok_or(TransactionErrorKind::Overflow)?
+            .try_into()
+            .map_err(|_| TransactionErrorKind::InvalidPsbt)?;
+        let change_output_index = 1 + trade_fee_receivers.len();
+        if psbt.unsigned_tx.output.len() > change_output_index {
+            // Correct any tx fee overpay due to overly conservative input witness size estimation
+            // by BDK (as each witness is assumed to potentially have a non-default sighash type in
+            // the case of p2tr and not grind for low R in the case of p2wpkh), and also due to the
+            // fact that each would-be-signed half-deposit PSBT is 1 wu bigger than ideal.
+            let overpay = Amount::from_sat(overpay_msat / 1000);
+            psbt.unsigned_tx.output[change_output_index].value += overpay;
+        }
+        psbt.redact_sensitive_fields();
+        Ok(psbt)
+    }
 }
+
+/// Type-erased wallet handle used by the trade protocol. The concrete wallet may be a
+/// `MemWallet`, a `BMPWallet<Connection>`, or any other type that implements [`TradeWallet`].
+pub type BoxedTradeWallet = Box<dyn TradeWallet + Send>;
 
 struct MockTradeWallet<Cs: Iterator<Item=TxOutput>, As: Iterator<Item=Address>> {
     funding_coins: Cs,
@@ -59,17 +83,90 @@ struct MockTradeWallet<Cs: Iterator<Item=TxOutput>, As: Iterator<Item=Address>> 
     script_sigs: BTreeMap<XOnlyPublicKey, Vec<Signature>>,
 }
 
-impl<Cs: Iterator<Item=TxOutput>, As: Iterator<Item=Address>> TradeWallet for MockTradeWallet<Cs, As> {
+impl<Cs: Iterator<Item = TxOutput>, As: Iterator<Item = Address>> ProtocolWalletApi
+    for MockTradeWallet<Cs, As>
+{
     fn network(&self) -> Network { Network::Regtest }
 
-    fn new_address(&mut self) -> Result<Address> {
-        self.new_addresses.next().ok_or(TransactionErrorKind::MissingAddress)
+    fn new_address(&mut self) -> anyhow::Result<Address> {
+        self.new_addresses
+            .next()
+            .ok_or_else(|| anyhow::Error::from(TransactionErrorKind::MissingAddress))
     }
 
-    fn new_internal_key(&mut self) -> Result<XOnlyPublicKey> {
-        self.internal_key.take().ok_or(TransactionErrorKind::MissingAddress)
+    fn new_internal_key(&mut self) -> anyhow::Result<XOnlyPublicKey> {
+        self.internal_key
+            .take()
+            .ok_or_else(|| anyhow::Error::from(TransactionErrorKind::MissingAddress))
     }
 
+    fn create_psbt(
+        &mut self,
+        _recipients: Vec<(ScriptBuf, Amount)>,
+        _fee_rate: FeeRate,
+    ) -> anyhow::Result<Psbt> {
+        unimplemented!(
+            "MockTradeWallet does not implement the generic create_psbt; \
+            the trade protocol uses create_half_deposit_psbt instead"
+        )
+    }
+
+    fn sign_selected_inputs(
+        &mut self,
+        psbt: &mut Psbt,
+        is_selected: &dyn Fn(&OutPoint) -> bool,
+    ) -> anyhow::Result<()> {
+        let mut script_sigs = self.script_sigs.clone();
+
+        for (
+            input,
+            TxIn {
+                previous_output, ..
+            },
+        ) in psbt.inputs.iter_mut().zip(&psbt.unsigned_tx.input)
+        {
+            if is_selected(previous_output) {
+                for (key, (leaf_hashes, _)) in &input.tap_key_origins {
+                    if let Some(sig) = script_sigs.get_mut(key).and_then(Vec::pop) {
+                        for leaf_hash in leaf_hashes {
+                            input.tap_script_sigs.insert((*key, *leaf_hash), sig);
+                        }
+                    }
+                }
+                if let Some(signature) = self.signature_map.get(previous_output) {
+                    // Mock keyspend:
+                    input.final_script_witness = Some(Witness::p2tr_key_spend(signature));
+                    input.redact_sensitive_fields();
+                } else if input.tap_key_origins.len() == input.tap_script_sigs.len() + 1 {
+                    // Mock script spend (assumes only one path):
+                    if let Some((control_block, (script, _))) = input.tap_scripts.first_key_value()
+                    {
+                        let mut wit = Witness::new();
+                        // For the purpose of the mock, assume that (pubkey, leaf-hash) -> signature
+                        // mappings occur in the opposite order that the signatures need to be added
+                        // to the witness. This won't be true in general.
+                        for sig in input.tap_script_sigs.values().rev() {
+                            wit.push(sig.serialize());
+                        }
+                        wit.push(script.as_bytes());
+                        wit.push(control_block.serialize());
+                        input.final_script_witness = Some(wit);
+                        input.redact_sensitive_fields();
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn import_private_key(&mut self, _pk: Scalar) {
+        unimplemented!("MockTradeWallet does not support importing private keys")
+    }
+}
+
+impl<Cs: Iterator<Item = TxOutput>, As: Iterator<Item = Address>> TradeWallet
+    for MockTradeWallet<Cs, As>
+{
     fn create_half_deposit_psbt(
         &mut self,
         deposit_amount: Amount,
@@ -138,44 +235,6 @@ impl<Cs: Iterator<Item=TxOutput>, As: Iterator<Item=Address>> TradeWallet for Mo
             output,
         };
         Ok(Psbt { inputs, ..Psbt::from_unsigned_tx(unsigned_tx).expect("tx is unsigned by construction") })
-    }
-
-    fn sign_selected_inputs(&self, psbt: &mut Psbt, is_selected: &dyn Fn(&OutPoint) -> bool) -> Result<()> {
-        let mut script_sigs = self.script_sigs.clone();
-
-        for (input, TxIn { previous_output, .. })
-        in psbt.inputs.iter_mut().zip(&psbt.unsigned_tx.input) {
-            if is_selected(previous_output) {
-                for (key, (leaf_hashes, _)) in &input.tap_key_origins {
-                    if let Some(sig) = script_sigs.get_mut(key).and_then(Vec::pop) {
-                        for leaf_hash in leaf_hashes {
-                            input.tap_script_sigs.insert((*key, *leaf_hash), sig);
-                        }
-                    }
-                }
-                if let Some(signature) = self.signature_map.get(previous_output) {
-                    // Mock keyspend:
-                    input.final_script_witness = Some(Witness::p2tr_key_spend(signature));
-                    input.redact_sensitive_fields();
-                } else if input.tap_key_origins.len() == input.tap_script_sigs.len() + 1 {
-                    // Mock script spend (assumes only one path):
-                    if let Some((control_block, (script, _))) = input.tap_scripts.first_key_value() {
-                        let mut wit = Witness::new();
-                        // For the purpose of the mock, assume that (pubkey, leaf-hash) -> signature
-                        // mappings occur in the opposite order that the signatures need to be added
-                        // to the witness. This won't be true in general.
-                        for sig in input.tap_script_sigs.values().rev() {
-                            wit.push(sig.serialize());
-                        }
-                        wit.push(script.as_bytes());
-                        wit.push(control_block.serialize());
-                        input.final_script_witness = Some(wit);
-                        input.redact_sensitive_fields();
-                    }
-                }
-            }
-        }
-        Ok(())
     }
 }
 
@@ -254,138 +313,11 @@ fn script_sigs(iks: &[XOnlyPublicKey], signatures: &[&'static str]) -> BTreeMap<
     iks.iter().map(|k| (*k, signature_vec(signatures))).collect()
 }
 
-impl TradeWallet for Wallet {
-    fn network(&self) -> Network { self.network() }
+impl TradeWallet for Wallet {}
 
-    fn new_address(&mut self) -> Result<Address> {
-        // For privacy, always get fresh addresses for the trade protocol.
-        // FIXME: Need to find a way to prevent gaps of unused addresses from growing too large.
-        Ok(self.reveal_next_address(KeychainKind::External).address)
-    }
+impl TradeWallet for BMPWallet<Connection> {}
 
-    fn new_internal_key(&mut self) -> Result<XOnlyPublicKey> {
-        if let Descriptor::Tr(tr) = self.public_descriptor(KeychainKind::External) {
-            let ik = tr.internal_key().clone();
-            let index = self.reveal_next_address(KeychainKind::External).index;
-
-            return Ok(ik.at_derivation_index(index)?.derive_public_key(&*LIBSECP256K1_CTX)?
-                .to_x_only_pubkey());
-        }
-        // TODO: Consider returning a dedicated error for this:
-        Err(TransactionErrorKind::MissingAddress)
-    }
-
-    fn create_half_deposit_psbt(
-        &mut self,
-        deposit_amount: Amount,
-        fee_rate: FeeRate,
-        trade_fee_receivers: &[Receiver],
-        rng: &mut dyn RngCore,
-    ) -> Result<Psbt> {
-        let mut builder = self.build_tx();
-        builder
-            .ordering(TxOrdering::Untouched)
-            .nlocktime(absolute::LockTime::ZERO)
-            .fee_rate(fee_rate)
-            .add_recipient(half_deposit_placeholder_spk(rng), deposit_amount);
-        for receiver in trade_fee_receivers {
-            builder.add_recipient(receiver.address.script_pubkey(), receiver.amount);
-        }
-        let mut psbt = builder.finish()?;
-        // Calculate tx fee overpay unconditionally, as this performs additional checks on the PSBT:
-        let overpay_msat: u64 = half_psbt_fee_overpay_msat(&psbt, fee_rate)
-            .ok_or(TransactionErrorKind::Overflow)?
-            .try_into()
-            .map_err(|_| TransactionErrorKind::InvalidPsbt)?;
-        let change_output_index = 1 + trade_fee_receivers.len();
-        if psbt.unsigned_tx.output.len() > change_output_index {
-            // Correct any tx fee overpay due to overly conservative input witness size estimation
-            // by BDK (as each witness is assumed to potentially have a non-default sighash type in
-            // the case of p2tr and not grind for low R in the case of p2wpkh), and also due to the
-            // fact that each would-be-signed half-deposit PSBT is 1 wu bigger than ideal.
-            let overpay = Amount::from_sat(overpay_msat / 1000);
-            psbt.unsigned_tx.output[change_output_index].value += overpay;
-        }
-        psbt.redact_sensitive_fields();
-        Ok(psbt)
-    }
-
-    fn sign_selected_inputs(&self, psbt: &mut Psbt, is_selected: &dyn Fn(&OutPoint) -> bool) -> Result<()> {
-        if !is_well_formed(psbt) {
-            return Err(TransactionErrorKind::InvalidPsbt);
-        }
-        let mut psbt_copy = psbt.clone();
-        self.update_psbt_with_derivation_paths(&mut psbt_copy);
-        self.sign(&mut psbt_copy, SignOptions { trust_witness_utxo: true, ..SignOptions::default() })?;
-        for i in 0..psbt.inputs.len() {
-            if is_selected(&psbt.unsigned_tx.input[i].previous_output) {
-                psbt.inputs[i].final_script_sig = psbt_copy.inputs[i].final_script_sig.take();
-                psbt.inputs[i].final_script_witness = psbt_copy.inputs[i].final_script_witness.take();
-                psbt.inputs[i].tap_script_sigs = mem::take(&mut psbt_copy.inputs[i].tap_script_sigs);
-
-                if !psbt.inputs[i].tap_script_sigs.is_empty() {
-                    // BDK couldn't finalize the selected input. Try to finalize it ourselves using
-                    // the `miniscript` lib, ignoring any errors that might occur.
-                    let _ = psbt.finalize_inp_mut(&*LIBSECP256K1_CTX, i);
-                }
-            }
-        }
-        Ok(())
-    }
-}
-
-impl TradeWallet for MemWallet {
-    fn network(&self) -> Network { self.network() }
-
-    fn new_address(&mut self) -> Result<Address> {
-        // For privacy, always get fresh addresses for the trade protocol.
-        // FIXME: Need to find a way to prevent gaps of unused addresses from growing too large.
-        Ok(self.reveal_next_address())
-    }
-
-    fn new_internal_key(&mut self) -> Result<XOnlyPublicKey> {
-        Self::new_internal_key(self).map_err(TransactionErrorKind::from)
-    }
-
-    fn create_half_deposit_psbt(
-        &mut self,
-        deposit_amount: Amount,
-        fee_rate: FeeRate,
-        trade_fee_receivers: &[Receiver],
-        rng: &mut dyn RngCore,
-    ) -> Result<Psbt> {
-        let mut res: Vec<(ScriptBuf, Amount)> = trade_fee_receivers
-            .iter()
-            .map(|receiver| (receiver.address.script_pubkey(), deposit_amount))
-            .collect();
-        res.push((half_deposit_placeholder_spk(rng), deposit_amount));
-        let mut psbt = self.create_psbt(res, fee_rate)?;
-        // Calculate tx fee overpay unconditionally, as this performs additional checks on the PSBT:
-        let overpay_msat: u64 = half_psbt_fee_overpay_msat(&psbt, fee_rate)
-            .ok_or(TransactionErrorKind::Overflow)?
-            .try_into()
-            .map_err(|_| TransactionErrorKind::InvalidPsbt)?;
-        let change_output_index = 1 + trade_fee_receivers.len();
-        if psbt.unsigned_tx.output.len() > change_output_index {
-            // Correct any tx fee overpay due to overly conservative input witness size estimation
-            // by BDK (as each witness is assumed to potentially have a non-default sighash type in
-            // the case of p2tr and not grind for low R in the case of p2wpkh), and also due to the
-            // fact that each would-be-signed half-deposit PSBT is 1 wu bigger than ideal.
-            let overpay = Amount::from_sat(overpay_msat / 1000);
-            psbt.unsigned_tx.output[change_output_index].value += overpay;
-        }
-        psbt.redact_sensitive_fields();
-        Ok(psbt)
-    }
-
-    fn sign_selected_inputs(&self, psbt: &mut Psbt, is_selected: &dyn Fn(&OutPoint) -> bool) -> Result<()> {
-        if !is_well_formed(psbt) {
-            return Err(TransactionErrorKind::InvalidPsbt);
-        }
-        self.sign_the_selected_inputs(psbt, is_selected)?;
-        Ok(())
-    }
-}
+impl TradeWallet for MemWallet {}
 
 trait Redact {
     fn redact_sensitive_fields(&mut self);
@@ -612,12 +544,18 @@ pub(crate) fn extract_signed_tx(psbt: &Psbt) -> Result<Transaction> {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::LazyLock;
+
+    use bdk_wallet::bitcoin::secp256k1;
     use bdk_wallet::miniscript::psbt::PsbtInputExt as _;
     use bdk_wallet::psbt::PsbtUtils as _;
-    use bdk_wallet::test_utils;
+    use bdk_wallet::{KeychainKind, test_utils};
 
     use super::*;
     use crate::script_paths::deposit_payout_descriptor;
+
+    static LIBSECP256K1_CTX: LazyLock<secp256k1::Secp256k1<secp256k1::All>> =
+        LazyLock::new(secp256k1::Secp256k1::new);
 
     //noinspection SpellCheckingInspection
     #[test]

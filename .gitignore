@@ -4,3 +4,4 @@ target
 .project
 .settings
 /concept/pandoc/output/
+/CLAUDE.local.md

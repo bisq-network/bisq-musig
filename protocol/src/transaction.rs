@@ -318,17 +318,23 @@ impl DepositTxBuilder {
 
     pub fn txid(&self) -> Result<&Txid> { Ok(&self.buyer_payout()?.outpoint.txid) }
 
-    pub fn sign_buyer_inputs(&mut self, trade_wallet: &(impl TradeWallet + ?Sized)) -> Result<&mut Self> {
+    pub fn sign_buyer_inputs(
+        &mut self,
+        trade_wallet: &mut (impl TradeWallet + ?Sized),
+    ) -> Result<&mut Self> {
         self.sign_matching_inputs(trade_wallet, &prevout_set(self.buyers_half_psbt()?))
     }
 
-    pub fn sign_seller_inputs(&mut self, trade_wallet: &(impl TradeWallet + ?Sized)) -> Result<&mut Self> {
+    pub fn sign_seller_inputs(
+        &mut self,
+        trade_wallet: &mut (impl TradeWallet + ?Sized),
+    ) -> Result<&mut Self> {
         self.sign_matching_inputs(trade_wallet, &prevout_set(self.sellers_half_psbt()?))
     }
 
     fn sign_matching_inputs(
         &mut self,
-        trade_wallet: &(impl TradeWallet + ?Sized),
+        trade_wallet: &mut (impl TradeWallet + ?Sized),
         prevouts: &BTreeSet<OutPoint>,
     ) -> Result<&mut Self> {
         let psbt = self.psbt.as_mut().ok_or(TransactionErrorKind::MissingTransaction)?;
@@ -641,7 +647,10 @@ impl CustomPayoutTxBuilder {
         Ok(self)
     }
 
-    pub fn sign_partial(&mut self, trade_wallet: &(impl TradeWallet + ?Sized)) -> Result<&mut Self> {
+    pub fn sign_partial(
+        &mut self,
+        trade_wallet: &mut (impl TradeWallet + ?Sized),
+    ) -> Result<&mut Self> {
         let psbt = self.psbt.as_mut().ok_or(TransactionErrorKind::MissingTransaction)?;
         trade_wallet.sign_selected_inputs(psbt, &|_| true)?;
         Ok(self)
@@ -852,9 +861,9 @@ mod tests {
     //noinspection SpellCheckingInspection
     #[test]
     fn test_custom_payout_tx_builder() -> Result<()> {
-        let fake_buyer_trade_wallet = bdk_wallet::test_utils::get_funded_wallet_single(
+        let mut fake_buyer_trade_wallet = bdk_wallet::test_utils::get_funded_wallet_single(
             "tr(cPZzKuNmpuUjD1e8jUU4PVzy2b5LngbSip8mBsxf4e7rSFZVb4Uh)").0;
-        let fake_seller_trade_wallet = bdk_wallet::test_utils::get_funded_wallet_single(
+        let mut fake_seller_trade_wallet = bdk_wallet::test_utils::get_funded_wallet_single(
             "tr(cNaQCDwmmh4dS9LzCgVtyy1e1xjCJ21GUDHe9K98nzb689JvinGV)").0;
 
         let mut builder0 = filled_unsigned_custom_payout_tx_builder(
@@ -865,12 +874,12 @@ mod tests {
         // Check that signing with the mock buyer/seller wallets has exactly the same effect as
         // signing with the above fake BDK trade wallets (with the particular params chosen)...
 
-        builder0.sign_partial(&fake_buyer_trade_wallet)?;
-        builder1.sign_partial(&mock_buyer_trade_wallet())?;
+        builder0.sign_partial(&mut fake_buyer_trade_wallet)?;
+        builder1.sign_partial(&mut mock_buyer_trade_wallet())?;
         assert_eq!(builder0.psbt()?, builder1.psbt()?);
 
-        builder0.sign_partial(&fake_seller_trade_wallet)?;
-        builder1.sign_partial(&mock_seller_trade_wallet())?;
+        builder0.sign_partial(&mut fake_seller_trade_wallet)?;
+        builder1.sign_partial(&mut mock_seller_trade_wallet())?;
         assert_eq!(builder0.psbt()?, builder1.psbt()?);
 
         // Now check the final signed tx...
@@ -911,8 +920,8 @@ mod tests {
             .init_buyers_half_psbt(&mut mock_buyer_trade_wallet(), &mut rng)?
             .init_sellers_half_psbt(&mut mock_seller_trade_wallet(), &mut rng)?
             .compute_unsigned_tx()?
-            .sign_buyer_inputs(&mock_buyer_trade_wallet())?
-            .sign_seller_inputs(&mock_seller_trade_wallet())?;
+            .sign_buyer_inputs(&mut mock_buyer_trade_wallet())?
+            .sign_seller_inputs(&mut mock_seller_trade_wallet())?;
         Ok(builder)
     }
 

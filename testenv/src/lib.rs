@@ -1,7 +1,8 @@
 //! Bitcoin regtest environment using electrsd with automatic executable downloads
 
 use std::net::SocketAddrV4;
-use std::sync::{Mutex, MutexGuard, PoisonError};
+use std::path::Path;
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
 use anyhow::{Context as _, Result};
@@ -13,7 +14,9 @@ use bdk_wallet::bitcoin::address::NetworkChecked;
 use bdk_wallet::bitcoin::key::Secp256k1;
 use bdk_wallet::bitcoin::secp256k1::All;
 use bdk_wallet::bitcoin::{Address, Amount, BlockHash, Network, Transaction, Txid};
+use bdk_wallet::chain::spk_client::{FullScanRequest, FullScanResponse};
 use bmp_tracing::tracing;
+use chain::{ChainApi, ChainScanner};
 use electrsd::corepc_node::Node;
 use electrsd::electrum_client::{Client, ElectrumApi};
 use electrsd::{ElectrsD, corepc_node};
@@ -23,9 +26,10 @@ use secp::Scalar;
 use sha2::Sha256;
 use tempfile::TempDir;
 use tokio::net::TcpListener;
+use typed_arena::Arena;
 
 /// Bitcoin regtest environment manager
-pub struct TestEnv<'a> {
+pub struct TestEnv {
     bitcoind: Node,
     electrsd: ElectrsD,
     timeout: Duration,
@@ -37,7 +41,14 @@ pub struct TestEnv<'a> {
     explorer_port: Option<u16>,
     bitcoin_rpc_pwd: String,
     mempool: Vec<Txid>,
-    _guard: Option<MutexGuard<'a, ()>>,
+    _guard: Option<MutexGuard<'static, ()>>,
+    /// Append-only arena of every `TempDir` we've handed out a `&Path` to.
+    ///
+    /// `typed_arena::Arena` lets us insert through `&self` (interior mutability) and
+    /// guarantees that prior items never move when we allocate more — so `&Path`s borrowed
+    /// from earlier `TempDir`s stay valid for the lifetime of the `TestEnv`. The arena is
+    /// dropped with `TestEnv`, which triggers each `TempDir`'s cleanup-on-drop.
+    dirs: Arena<TempDir>,
 }
 
 /// Configuration parameters.
@@ -156,16 +167,21 @@ pub fn validate_rpcauth(rpcauth_line: &str, username: &str, password: &str) -> b
 }
 static TESTENV_LOCK: Mutex<()> = Mutex::new(());
 
-impl<'a> TestEnv<'a> {
+impl TestEnv {
     /// Create a new test environment with automatic executable downloads
     pub fn new() -> Result<Self> {
         Self::new_with_conf(Config::default())
     }
 
-    /// Generate a new temporary directory
-    pub fn get_tmp_dir(&self) -> Result<TempDir> {
-        let dir = TempDir::new()?;
-        Ok(dir)
+    /// Creates a fresh temp directory owned by this `TestEnv` and returns its `&Path`.
+    ///
+    /// The returned reference borrows from `&self`, so it stays valid for as long as the
+    /// `TestEnv` lives — even after subsequent calls (the arena never moves prior items)
+    /// and even across `&mut self` calls (the borrow ends at the call boundary if you use
+    /// it inline). Each call returns a *different* directory.
+    pub fn new_temp_path(&self) -> &Path {
+        let tmp = TempDir::new().unwrap();
+        self.dirs.alloc(tmp).path()
     }
 
     /// Create a new test environment with ZMQ enabled on bitcoind.
@@ -263,6 +279,7 @@ impl<'a> TestEnv<'a> {
             bitcoin_rpc_pwd,
             mempool: Vec::new(),
             _guard,
+            dirs: Arena::new(),
         };
         tracing::info!("Bitcoin regtest environment ready!");
         Ok(test_env)
@@ -273,6 +290,24 @@ impl<'a> TestEnv<'a> {
         let _ = self.wait_for_tx(txid);
         self.mempool.push(txid);
         Ok(txid)
+    }
+
+    pub fn new_client(&self) -> Result<BdkElectrumClient<Client>> {
+        let client = Client::from_config(
+            &self.electrsd.electrum_url,
+            bdk_electrum::electrum_client::Config::default(),
+        )?;
+        Ok(BdkElectrumClient::new(client))
+    }
+
+    /// Create a new [`Testchain`] backed by a fresh electrum client connected to this environment.
+    ///
+    /// Each call returns an independent owned handle (with its own Electrum connection and
+    /// transaction cache), suitable for `Box<dyn ChainApi>` consumers that want one handle per
+    /// simulated peer. For ergonomic single-instance use, `&TestEnv` itself implements
+    /// [`ChainApi`] and [`ChainScanner`].
+    pub fn new_testchain(&self) -> Result<Testchain> {
+        Ok(Testchain::new(self.new_client()?))
     }
 
     pub fn start_explorer_in_container(&mut self) -> Result<()> {
@@ -538,7 +573,81 @@ impl<'a> TestEnv<'a> {
     }
 }
 
-impl<'a> Drop for TestEnv<'a> {
+// Note: `TestEnv` itself cannot implement `ChainApi` because it holds a non-`Send`
+// `MutexGuard` (used to serialize tests by default), but `ChainApi: Send + Sync`. Callers
+// that need an owned `Box<dyn ChainApi>` use [`TestEnv::new_testchain`], which returns a
+// `Testchain` handle with its own electrum client. `ChainScanner`, which has no thread-safety
+// bound, is implemented directly for ergonomic test use (e.g. `wallet.sync_all(&env)`).
+impl ChainScanner for TestEnv {
+    fn populate_tx_cache(&self, txs: impl IntoIterator<Item = impl Into<Arc<Transaction>>>) {
+        self.bdk_electrum_client.populate_tx_cache(txs);
+    }
+
+    fn full_scan<K: Ord + Clone>(
+        &self,
+        request: impl Into<FullScanRequest<K>>,
+        stop_gap: usize,
+        batch_size: usize,
+        fetch_prev_txouts: bool,
+    ) -> anyhow::Result<FullScanResponse<K>> {
+        self.bdk_electrum_client
+            .full_scan(request, stop_gap, batch_size, fetch_prev_txouts)
+            .map_err(Into::into)
+    }
+}
+
+/// Owned Electrum-backed [`ChainApi`] / [`ChainScanner`] handle.
+///
+/// Each instance owns its own [`BdkElectrumClient`] (and therefore its own connection and
+/// transaction cache). Construct via [`TestEnv::new_testchain`] to get a handle connected to
+/// this environment's Electrum endpoint.
+pub struct Testchain {
+    client: BdkElectrumClient<Client>,
+}
+
+impl Testchain {
+    pub const fn new(client: BdkElectrumClient<Client>) -> Self {
+        Self { client }
+    }
+}
+
+impl ChainApi for Testchain {
+    fn transaction_broadcast(&self, tx: &Transaction) -> anyhow::Result<Txid> {
+        broadcast_via(&self.client, tx)
+    }
+}
+
+impl ChainScanner for Testchain {
+    fn populate_tx_cache(&self, txs: impl IntoIterator<Item = impl Into<Arc<Transaction>>>) {
+        self.client.populate_tx_cache(txs);
+    }
+
+    fn full_scan<K: Ord + Clone>(
+        &self,
+        request: impl Into<FullScanRequest<K>>,
+        stop_gap: usize,
+        batch_size: usize,
+        fetch_prev_txouts: bool,
+    ) -> anyhow::Result<FullScanResponse<K>> {
+        self.client
+            .full_scan(request, stop_gap, batch_size, fetch_prev_txouts)
+            .map_err(Into::into)
+    }
+}
+
+/// Shared `ChainApi::transaction_broadcast` body — swallows the idempotent
+/// "Transaction already in block chain" Electrum error and returns the computed txid.
+fn broadcast_via(client: &BdkElectrumClient<Client>, tx: &Transaction) -> anyhow::Result<Txid> {
+    match client.transaction_broadcast(tx) {
+        Ok(txid) => Ok(txid),
+        Err(e) if e.to_string().contains("Transaction already in block chain") => {
+            Ok(tx.compute_txid())
+        }
+        Err(e) => Err(e.into()),
+    }
+}
+
+impl Drop for TestEnv {
     fn drop(&mut self) {
         if let Some(name) = self.container_name.take() {
             tracing::info!("Stopping explorer container {name}...");

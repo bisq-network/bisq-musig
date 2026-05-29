@@ -1,16 +1,16 @@
-use bdk_electrum::BdkElectrumClient;
-use bdk_electrum::electrum_client::Client;
 use bdk_wallet::bitcoin;
+use bdk_wallet::rusqlite::Connection;
 use bitcoin::key::{Keypair, Secp256k1, TapTweak as _, TweakedKeypair, TweakedPublicKey};
 use bitcoin::secp256k1::Message;
-use bitcoin::{Amount, FeeRate, TapSighashType};
+use bitcoin::{Amount, FeeRate, Network, TapSighashType};
 use bmp_tracing::tracing;
 use musig2::KeyAggContext;
 use musig2::secp::Point;
 use protocol::protocol_musig_adaptor::{BMPContext, BMPProtocol, ProtocolRole};
+use protocol::psbt::BoxedTradeWallet;
 use protocol::transaction::{CustomPayoutTxBuilder, TransactionExt as _};
-use protocol::wallet_service::WalletService;
 use testenv::TestEnv;
+use wallet::bmp_wallet::{BMPWallet, WalletApi as _};
 use wallet::protocol_wallet_api::MemWallet;
 
 #[test]
@@ -21,36 +21,72 @@ fn test_initial_tx_creation() -> anyhow::Result<()> {
     Ok(())
 }
 
-pub fn funded_wallet(env: &mut TestEnv) -> MemWallet {
-    // TODO move this line to TestEnv
-    let client = BdkElectrumClient::new(Client::new(&env.electrum_url()).unwrap());
-    let mut wallet = MemWallet::new(client).unwrap();
-    let address = wallet.next_unused_address();
+/// Single entry point used by every test below to obtain a funded trade wallet. The concrete
+/// backend (`MemWallet` vs `BMPWallet<Connection>`) is selected by the `WALLET_BACKEND`
+/// environment variable (`mem` or `bmp`); it defaults to `bmp` when unset. Both implement
+/// [`TradeWallet`] and are interchangeable from the protocol's point of view.
+pub fn funded_wallet(env: &mut TestEnv) -> BoxedTradeWallet {
+    // TODO need to abstract sync(), so we can simplify this.
+    match std::env::var("WALLET_BACKEND")
+        .unwrap_or_else(|_| "bmp".to_owned())
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "mem" => Box::new(MemWallet::funded_wallet(env)),
+        "bmp" => Box::new(funded_bmp_wallet(env)),
+        other => panic!("unknown WALLET_BACKEND={other:?}, expected `mem` or `bmp`"),
+    }
+}
+
+fn funded_bmp_wallet(env: &mut TestEnv) -> BMPWallet<Connection> {
+    let mut wallet =
+        BMPWallet::<Connection>::new(env.new_temp_path(), "", Network::Regtest).unwrap();
+
+    let address = wallet.get_new_address().unwrap();
     let txid = env
-        .fund_address(&address, Amount::from_btc(10f64).unwrap())
+        .fund_address(&address.address, Amount::from_btc(10f64).unwrap())
         .unwrap();
     env.mine_block().unwrap();
     env.wait_for_tx(txid).unwrap();
-    wallet.sync().unwrap();
+
+    let chain = env.new_testchain().unwrap();
+    wallet.sync_all(&chain).unwrap();
     wallet
 }
 
 fn initial_tx_creation(env: &mut TestEnv) -> anyhow::Result<(BMPProtocol, BMPProtocol)> {
-    tracing::debug!("running...");
+    tracing::debug!(
+        "running with wallet backend: {}",
+        std::env::var("WALLET_BACKEND").unwrap_or_else(|_| "bmp (default)".to_owned())
+    );
 
     let alice_funds = funded_wallet(env);
     let bob_funds = funded_wallet(env);
 
-    let alice_service = WalletService::new().load(alice_funds);
-    let bob_service = WalletService::new().load(bob_funds);
+    let alice_client = Box::new(env.new_testchain()?);
+    let bob_client = Box::new(env.new_testchain()?);
+
     let seller_amount = Amount::from_btc(1.4)?;
     let buyer_amount = Amount::from_btc(0.2)?;
 
+
     // up to here this was the preparation for the protocol, the code from now on needs to be called from outside API
-    let alice_context = BMPContext::new(alice_service, ProtocolRole::Seller, seller_amount, buyer_amount)?;
+    let alice_context = BMPContext::new(
+        alice_client,
+        alice_funds,
+        ProtocolRole::Seller,
+        seller_amount,
+        buyer_amount,
+    )?;
 
     let mut alice = BMPProtocol::new(alice_context)?;
-    let bob_context = BMPContext::new(bob_service, ProtocolRole::Buyer, seller_amount, buyer_amount)?;
+    let bob_context = BMPContext::new(
+        bob_client,
+        bob_funds,
+        ProtocolRole::Buyer,
+        seller_amount,
+        buyer_amount,
+    )?;
     let mut bob = BMPProtocol::new(bob_context)?;
     env.mine_block()?;
 
@@ -201,7 +237,7 @@ fn test_redirect() -> anyhow::Result<()> {
 #[test]
 fn test_custom_payout() -> anyhow::Result<()> {
     let mut env = TestEnv::new()?;
-    let (alice, bob) = initial_tx_creation(&mut env)?;
+    let (mut alice, mut bob) = initial_tx_creation(&mut env)?;
     let mut builder = CustomPayoutTxBuilder::default();
     builder
         .set_buyer_input(alice.deposit_tx.builder.buyer_payout()?.clone())
@@ -213,11 +249,11 @@ fn test_custom_payout() -> anyhow::Result<()> {
         .set_seller_payout_amount_excluding_fee(Amount::from_sat(30_000_000))
         .set_fee_rate(FeeRate::from_sat_per_vb_unchecked(15))
         .compute_unsigned_tx()?
-        .sign_partial(&alice.ctx.funds)?
-        .sign_partial(&bob.ctx.funds)?;
+        .sign_partial(&mut *alice.ctx.funds)?
+        .sign_partial(&mut *bob.ctx.funds)?;
     let tx = builder.signed_tx()?;
 
-    dbg!(alice.ctx.funds.transaction_broadcast(&tx)?);
+    dbg!(alice.ctx.chain.transaction_broadcast(&tx)?);
     env.mine_block()?;
     Ok(())
 }
@@ -281,7 +317,7 @@ fn test_q_tik() -> anyhow::Result<()> {
     let tx = bob.swap_tx.unsigned_tx()?.clone()
         .with_key_spend_witness(0, &signature_secp);
 
-    let txid = alice.ctx.funds.transaction_broadcast(&tx)?;
+    let txid = alice.ctx.chain.transaction_broadcast(&tx)?;
     dbg!(txid);
     env.mine_block()?;
     Ok(())

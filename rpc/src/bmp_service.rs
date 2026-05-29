@@ -3,7 +3,6 @@ use std::sync::Mutex;
 
 use bdk_wallet::bitcoin::Amount;
 use protocol::protocol_musig_adaptor::{BMPContext, BMPProtocol, ProtocolRole, Round1Parameter};
-use protocol::wallet_service::WalletService;
 use testenv::TestEnv;
 use tonic::{Request, Response, Result, Status};
 use tracing::info;
@@ -31,8 +30,8 @@ impl BmpProtocolService for BmpServiceImpl {
         //todo retrieve the actual wallet
         let mut env = TestEnv::new().unwrap(); // TODO move Wallet loading
         let mock_wallet = MemWallet::funded_wallet(&mut env);
-        let wallet_service = WalletService::new().load(mock_wallet);
 
+        let chain = Box::new(env.new_testchain().unwrap());
         let role =
             Role::try_from(req.role).map_err(|_| Status::invalid_argument("Unrecognised role"))?;
         let role = match role {
@@ -41,7 +40,8 @@ impl BmpProtocolService for BmpServiceImpl {
         };
 
         let context = BMPContext::new(
-            wallet_service,
+            chain,
+            Box::new(mock_wallet),
             role,
             Amount::from_sat(req.seller_amount_sats),
             Amount::from_sat(req.buyer_amount_sats),

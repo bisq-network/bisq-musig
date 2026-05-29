@@ -4,7 +4,7 @@ use std::{fs, vec};
 
 use base64::Engine as _;
 use base64::engine::general_purpose;
-use bdk_electrum::bdk_core::bitcoin::{Address, FeeRate, OutPoint, absolute};
+use bdk_electrum::bdk_core::bitcoin::{Address, FeeRate, OutPoint};
 use bdk_kyoto::bip157::{Builder, tokio};
 use bdk_kyoto::{BuilderExt as _, LightClient, Requester, ScanType, TrustedPeer, UpdateSubscriber};
 use bdk_wallet::bitcoin::bip32::Xpriv;
@@ -19,15 +19,18 @@ use bdk_wallet::rusqlite::{self, Connection, named_params};
 use bdk_wallet::signer::{InputSigner as _, SignerContext, SignerError, SignerWrapper};
 use bdk_wallet::template::{Bip86, DescriptorTemplate as _};
 use bdk_wallet::{
-    AddressInfo, Balance, ChangeSet, KeychainKind, PersistedWallet, SignOptions, TxBuilder,
-    TxOrdering, Utxo, Wallet, WalletPersister, WeightedUtxo,
+    AddressInfo, Balance, ChangeSet, KeychainKind, PersistedWallet, SignOptions, TxBuilder, Utxo,
+    Wallet, WalletPersister, WeightedUtxo,
 };
 use rand::RngCore as _;
 use secp::Scalar;
 
 use crate::chain_data_source::ChainDataSource;
 use crate::coin_selection::{AlwaysSpendImportedFirst, SpendImportedOnly};
-use crate::protocol_wallet_api::ProtocolWalletApi;
+use crate::protocol_wallet_api::{
+    ProtocolWalletApi, WalletExt, finish_standard_psbt, internal_key_at_index,
+    sign_selected_inputs_with,
+};
 use crate::utils::{derive_key_from_password, get_salt, trace_logs};
 
 pub trait BMPWalletPersister: WalletPersister {
@@ -307,6 +310,12 @@ impl BMPWallet<Connection> {
     }
 }
 
+impl WalletExt for BMPWallet<Connection> {
+    fn update_psbt_with_derivation_paths(&self, psbt: &mut Psbt) {
+        self.wallet.update_psbt_with_derivation_paths(psbt);
+    }
+}
+
 impl ProtocolWalletApi for BMPWallet<Connection> {
     fn network(&self) -> Network {
         self.wallet.network()
@@ -316,18 +325,19 @@ impl ProtocolWalletApi for BMPWallet<Connection> {
         Ok(self.next_address(KeychainKind::External)?.address)
     }
 
+    fn new_internal_key(&mut self) -> anyhow::Result<XOnlyPublicKey> {
+        // Use `next_address` (gap-filling) rather than `reveal_next_address` directly so
+        // that the internal key's index stays in step with what `new_address` would yield.
+        let index = self.next_address(KeychainKind::External)?.index;
+        Ok(internal_key_at_index(self, index)?)
+    }
+
     fn create_psbt(
         &mut self,
         recipients: Vec<(ScriptBuf, Amount)>,
         fee_rate: FeeRate,
     ) -> anyhow::Result<Psbt> {
-        let mut builder = self.build_tx();
-        builder
-            .ordering(TxOrdering::Untouched)
-            .nlocktime(absolute::LockTime::ZERO)
-            .fee_rate(fee_rate)
-            .set_recipients(recipients);
-        Ok(builder.finish()?)
+        finish_standard_psbt(self.build_tx(), recipients, fee_rate)
     }
 
     fn sign_selected_inputs(
@@ -335,16 +345,10 @@ impl ProtocolWalletApi for BMPWallet<Connection> {
         psbt: &mut Psbt,
         is_selected: &dyn Fn(&OutPoint) -> bool,
     ) -> anyhow::Result<()> {
-        let mut psbt_copy = psbt.clone();
-        self.sign(&mut psbt_copy, SignOptions::default())?;
-        for i in 0..psbt.inputs.len() {
-            if is_selected(&psbt.unsigned_tx.input[i].previous_output) {
-                psbt.inputs[i].final_script_sig = psbt_copy.inputs[i].final_script_sig.take();
-                psbt.inputs[i].final_script_witness =
-                    psbt_copy.inputs[i].final_script_witness.take();
-            }
-        }
-        Ok(())
+        // TODO unify signing
+        sign_selected_inputs_with(self, psbt, is_selected, |w, p, opts| {
+            <Self as WalletApi>::sign(w, p, opts).map_err(Into::into)
+        })
     }
 
     // Import an external private from the HD wallet
@@ -542,8 +546,10 @@ impl WalletApi for BMPWallet<Connection> {
             self.signers_loaded = true;
         }
 
-        let finalized = self.wallet.sign(psbt, sign_options)?;
-        assert!(finalized, "PSBT should be finalized");
+        // BDK returns `true` only when every input of the PSBT got finalized. Partial-sign use
+        // cases (e.g. the trade protocol's half-deposit PSBTs that also carry the peer's still-
+        // unsigned inputs) legitimately leave inputs un-finalized, so we don't assert here.
+        let _finalized = self.wallet.sign(psbt, sign_options)?;
 
         Ok(())
     }
