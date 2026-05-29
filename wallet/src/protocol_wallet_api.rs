@@ -78,39 +78,6 @@ impl MemWallet {
         self.wallet.public_descriptor(chain)
     }
 
-    pub fn sign_the_selected_inputs(
-        &self,
-        psbt: &mut Psbt,
-        is_selected: &dyn Fn(&OutPoint) -> bool,
-    ) -> anyhow::Result<()> {
-        let mut psbt_copy = psbt.clone();
-        self.update_psbt_with_derivation_paths(&mut psbt_copy);
-        self.wallet.sign(
-            &mut psbt_copy,
-            SignOptions {
-                trust_witness_utxo: true,
-                ..SignOptions::default()
-            },
-        )?;
-
-        for i in 0..psbt.inputs.len() {
-            if is_selected(&psbt.unsigned_tx.input[i].previous_output) {
-                psbt.inputs[i].final_script_sig = psbt_copy.inputs[i].final_script_sig.take();
-                psbt.inputs[i].final_script_witness =
-                    psbt_copy.inputs[i].final_script_witness.take();
-                psbt.inputs[i].tap_script_sigs =
-                    std::mem::take(&mut psbt_copy.inputs[i].tap_script_sigs);
-
-                if !psbt.inputs[i].tap_script_sigs.is_empty() {
-                    // BDK couldn't finalize the selected input. Try to finalize it ourselves using
-                    // the `miniscript` lib, ignoring any errors that might occur.
-                    let _ = psbt.finalize_inp_mut(&*LIBSECP256K1_CTX, i);
-                }
-            }
-        }
-        Ok(())
-    }
-
     pub fn new(client: BdkElectrumClient<Client>) -> anyhow::Result<Self> {
         let mut seed: [u8; 32] = [0u8; 32];
         rand::rng().fill_bytes(&mut seed);
@@ -253,7 +220,11 @@ impl ProtocolWalletApi for MemWallet {
         psbt: &mut Psbt,
         is_selected: &dyn Fn(&OutPoint) -> bool,
     ) -> anyhow::Result<()> {
-        self.sign_the_selected_inputs(psbt, is_selected)
+        // TODO unify signing
+        sign_selected_inputs_with(&mut self.wallet, psbt, is_selected, |w, p, opts| {
+            w.sign(p, opts)?;
+            Ok(())
+        })
     }
 
     fn import_private_key(&mut self, _pk: Scalar) {
@@ -295,32 +266,11 @@ impl ProtocolWalletApi for Wallet {
         if !is_well_formed_psbt(psbt) {
             anyhow::bail!("PSBT is not well-formed");
         }
-        let mut psbt_copy = psbt.clone();
-        self.update_psbt_with_derivation_paths(&mut psbt_copy);
-        Wallet::sign(
-            self,
-            &mut psbt_copy,
-            SignOptions {
-                trust_witness_utxo: true,
-                ..SignOptions::default()
-            },
-        )?;
-        for i in 0..psbt.inputs.len() {
-            if is_selected(&psbt.unsigned_tx.input[i].previous_output) {
-                psbt.inputs[i].final_script_sig = psbt_copy.inputs[i].final_script_sig.take();
-                psbt.inputs[i].final_script_witness =
-                    psbt_copy.inputs[i].final_script_witness.take();
-                psbt.inputs[i].tap_script_sigs =
-                    mem::take(&mut psbt_copy.inputs[i].tap_script_sigs);
-
-                if !psbt.inputs[i].tap_script_sigs.is_empty() {
-                    // BDK couldn't finalize the selected input. Try to finalize it ourselves
-                    // using the `miniscript` lib, ignoring any errors that might occur.
-                    let _ = psbt.finalize_inp_mut(&*LIBSECP256K1_CTX, i);
-                }
-            }
-        }
-        Ok(())
+        // TODO unify signing
+        sign_selected_inputs_with(self, psbt, is_selected, |w, p, opts| {
+            Wallet::sign(w, p, opts)?;
+            Ok(())
+        })
     }
 
     fn import_private_key(&mut self, _pk: Scalar) {
@@ -331,6 +281,55 @@ impl ProtocolWalletApi for Wallet {
             use BMPWallet for that"
         )
     }
+}
+
+/// Sign the wallet-owned inputs of `psbt` using the supplied `sign` closure, then transfer the
+/// resulting signatures and witness data for any input matched by `is_selected` back into the
+/// caller's PSBT — finalizing any selected input that BDK left only partially signed (e.g. a
+/// multi-sig Taproot script-path spend) via the `miniscript` library.
+///
+/// The signing step is delegated to a closure so each `ProtocolWalletApi` flavour can plug in
+/// its own primitive (`Wallet::sign`, `BMPWallet::sign`, etc.) while the surrounding
+/// PSBT-clone / derivation-path-update / signature-transfer / finalize boilerplate stays in
+/// one place. Mirrors how `internal_key_at_index` is shared.
+pub(crate) fn sign_selected_inputs_with<W, F>(
+    wallet: &mut W,
+    psbt: &mut Psbt,
+    is_selected: &dyn Fn(&OutPoint) -> bool,
+    sign: F,
+) -> anyhow::Result<()>
+where
+    W: WalletExt + ?Sized,
+    F: FnOnce(&mut W, &mut Psbt, SignOptions) -> anyhow::Result<()>,
+{
+    let mut psbt_copy = psbt.clone();
+    // Populate the BIP32 derivation paths before BDK can finalize the inputs we own. Also
+    // tell BDK to trust the witness UTXO since the full previous transactions are not
+    // carried in the PSBT.
+    wallet.update_psbt_with_derivation_paths(&mut psbt_copy);
+    sign(
+        wallet,
+        &mut psbt_copy,
+        SignOptions {
+            trust_witness_utxo: true,
+            ..SignOptions::default()
+        },
+    )?;
+    for i in 0..psbt.inputs.len() {
+        if is_selected(&psbt.unsigned_tx.input[i].previous_output) {
+            psbt.inputs[i].final_script_sig = psbt_copy.inputs[i].final_script_sig.take();
+            psbt.inputs[i].final_script_witness = psbt_copy.inputs[i].final_script_witness.take();
+            psbt.inputs[i].tap_script_sigs = mem::take(&mut psbt_copy.inputs[i].tap_script_sigs);
+
+            if !psbt.inputs[i].tap_script_sigs.is_empty() {
+                // BDK couldn't finalize the selected input (e.g. a multi-sig Taproot script
+                // path). Try to finalize it ourselves using the `miniscript` lib, ignoring
+                // any errors that might occur.
+                let _ = psbt.finalize_inp_mut(&*LIBSECP256K1_CTX, i);
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Apply the standard PSBT-builder configuration used by the trade protocol — untouched output
