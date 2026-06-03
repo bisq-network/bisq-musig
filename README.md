@@ -39,9 +39,14 @@ If you have any knowledge in one of these areas, you please consider contributin
 ## contribution
 
 You can contact us at [matrix](https://matrix.to/#/#bisq-muSig-dev:matrix.org).
-If you want to get a feeling about this project, check it out and start the testcase
-`tests::test_musig`. However, running this needs a working installation of [nigiri](https://nigiri.vulpem.com/)
-, please see this section [Running Integration Tests](./adaptor/README.md).
+If you want to get a feeling about this project, check it out and start the test case:
+
+```bash
+cargo test
+```
+
+See the [rpc/README.md](rpc/README.md) for details on running the Java integration tests.
+
 Accepted contributions are eligible for compensation, so you could earn money for your work.
 
 ## Setting up precommit hooks (Optional)
@@ -73,21 +78,24 @@ setting `RUST_LOG=off`.
 
 ## running the tests
 
-The tests spin up bitcoind, Electrs and other servers as needed, so you may need quite some RAM and patience.
+The Rust tests automatically spin up a TestEnv with bitcoind and electrs as needed, so you may need some RAM and patience.
 
 ```bash
 cargo test
 ```
 
-the test are run as single threaded by default, because in the multithreaded case they are flaky.
-due to some timing issue not addressed yet.
-If you want to speed up the tests use
+Tests are run single-threaded by default for stability. To run them in parallel (faster but may be flaky):
 
 ```bash
 TEST_MULTITHREADED=true cargo test
 ```
 
-If they run through, everything is good, if not start the test as single threaded again.
+The Java integration tests are orchestrated via Maven:
+
+```bash
+cd rpc
+mvn clean verify
+```
 
 ## reading the Markdown files
 

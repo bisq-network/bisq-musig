@@ -19,6 +19,14 @@
             <artifactId>netty-codec-http2</artifactId>
             <version>4.1.119.Final</version>
         </dependency>
+
+        <!-- Bitcoin RPC Client -->
+        <dependency>
+            <groupId>org.bitcoinj</groupId>
+            <artifactId>bitcoinj-core</artifactId>
+            <version>0.17.1</version>
+        </dependency>
+
         <dependency>
             <groupId>io.netty</groupId>
             <artifactId>netty-transport-native-unix-common</artifactId>
@@ -45,6 +53,20 @@
             <artifactId>grpc-stub</artifactId>
             <version>1.71.0</version>
         </dependency>
+
+        <!-- Protobuf Java runtime for well-known types support -->
+        <dependency>
+            <groupId>com.google.protobuf</groupId>
+            <artifactId>protobuf-java</artifactId>
+            <version>3.24.4</version>
+        </dependency>
+
+        <dependency>
+            <groupId>com.google.protobuf</groupId>
+            <artifactId>protobuf-java-util</artifactId>
+            <version>3.24.4</version>
+        </dependency>
+
         <dependency>
             <groupId>org.apache.tomcat</groupId>
             <artifactId>annotations-api</artifactId>
@@ -121,6 +143,11 @@
                 <version>3.5.3</version>
                 <configuration>
                     <includes>**/*IntegrationTest.java</includes>
+                    <systemPropertyVariables>
+                        <bitcoinRpcUrl>${env.TESTENV_RPC_URL}</bitcoinRpcUrl>
+                        <bitcoinRpcUser>${env.TESTENV_RPC_USER}</bitcoinRpcUser>
+                        <bitcoinRpcPass>${env.TESTENV_RPC_PASS}</bitcoinRpcPass>
+                    </systemPropertyVariables>
                 </configuration>
                 <executions>
                     <execution>

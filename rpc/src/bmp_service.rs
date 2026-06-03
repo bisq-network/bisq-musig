@@ -153,7 +153,7 @@ impl BmpProtocolService for BmpServiceImpl {
     async fn execute_round5(
         &self,
         request: Request<bmp_protocol::Round5Request>,
-    ) -> Result<Response<()>> {
+    ) -> Result<Response<bmp_protocol::ExecuteRound5Response>> {
         let req = request.into_inner();
         let trade_id = req.trade_id;
 
@@ -169,6 +169,6 @@ impl BmpProtocolService for BmpServiceImpl {
             .map_err(|e| Status::aborted(e.to_string()))?;
 
         drop(protocols);
-        Ok(Response::new(()))
+        Ok(Response::new(bmp_protocol::ExecuteRound5Response {}))
     }
 }
