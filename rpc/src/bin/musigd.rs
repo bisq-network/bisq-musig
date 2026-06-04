@@ -79,7 +79,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
         BitcoinCoreClient::new(rpc_url, auth)?
     } else {
-        panic!("Can't proceed without bitcoin_rpc_url set")
+        return Err("Can't proceed without bitcoin_rpc_url".into())
     };
 
     let addr = format!("127.0.0.1:{}", cli.port).parse()?;

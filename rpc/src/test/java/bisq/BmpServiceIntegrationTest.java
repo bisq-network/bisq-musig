@@ -2,6 +2,8 @@ package bisq;
 
 import bmp_protocol.BmpProtocol.*;
 import bmp_protocol.BmpProtocolServiceGrpc;
+
+import com.google.common.util.concurrent.Uninterruptibles;
 import com.google.protobuf.ByteString;
 import io.grpc.ManagedChannel;
 import io.grpc.ManagedChannelBuilder;
@@ -57,21 +59,12 @@ public class BmpServiceIntegrationTest {
      */
     private void waitForGrpcReady(BmpProtocolServiceGrpc.BmpProtocolServiceBlockingStub stub, int maxAttempts) {
         for (int i = 0; i < maxAttempts; i++) {
-            try {
-                // Try to ping by calling getBalance with a dummy request
-                System.out.println("  Checking gRPC server readiness (attempt " + (i + 1) + "/" + maxAttempts + ")");
-                // For now, we'll just wait - a better implementation would actually probe
-                Thread.sleep(500);
-                if (i >= 2) { // Give it at least 1 second before considering it ready
-                    return;
-                }
-            } catch (Exception e) {
-                if (i < maxAttempts - 1) {
-                    try {
-                        Thread.sleep(500);
-                    } catch (InterruptedException ignored) {
-                    }
-                }
+            // Try to ping by calling getBalance with a dummy request
+            System.out.println("  Checking gRPC server readiness (attempt " + (i + 1) + "/" + maxAttempts + ")");
+            Uninterruptibles.sleepUninterruptibly(500, TimeUnit.MILLISECONDS);
+            if (i >= 2) return;
+            if (i < maxAttempts - 1) {
+                Uninterruptibles.sleepUninterruptibly(500, TimeUnit.MILLISECONDS);
             }
         }
         System.out.println("  gRPC server appears ready (or timeout reached)");

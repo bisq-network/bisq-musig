@@ -1,9 +1,4 @@
 package bisq;
-
-import org.bitcoinj.base.Address;
-import org.bitcoinj.base.BitcoinNetwork;
-import org.bitcoinj.params.RegTestParams;
-
 import java.io.IOException;
 import java.net.URI;
 import java.net.http.HttpClient;
@@ -118,7 +113,7 @@ public class TestEnvClient {
      */
     private static Properties loadTestEnvProperties() {
         try {
-            // Try to load from target/testenv.properties (created by testenv-setup.sh)
+            // Try to load from target/testenv.properties
             Path propFile = Path.of("target/testenv.properties");
             if (Files.exists(propFile)) {
                 Properties props = new Properties();
@@ -224,7 +219,6 @@ public class TestEnvClient {
      * Get current block height
      */
     public int getBlockCount() {
-
         String result = rpcCall(
                 "getblockcount",
                 "[]"
@@ -233,7 +227,7 @@ public class TestEnvClient {
         try {
             return Integer.parseInt(extractResult(result));
         } catch (Exception e) {
-            return -1;
+            throw e;
         }
     }
 
@@ -241,16 +235,14 @@ public class TestEnvClient {
      * Get wallet balance
      */
     public double getBalance() {
-
         String result = rpcCall(
                 "getbalance",
                 "[]"
         );
-
         try {
             return Double.parseDouble(extractResult(result));
         } catch (Exception e) {
-            return 0.0;
+            throw e;
         }
     }
 
@@ -265,13 +257,6 @@ public class TestEnvClient {
         );
 
         String address = extractResult(result);
-
-        // Validate with bitcoinj
-        Address.fromString(
-                RegTestParams.get(),
-                address
-        );
-
         return address;
     }
 
@@ -320,16 +305,12 @@ public class TestEnvClient {
         Matcher matcher = pattern.matcher(json);
 
         if (matcher.find()) {
-
             String full = matcher.group(1);
-
             if (full.startsWith("\"")) {
                 return matcher.group(2);
             }
-
             return full;
         }
-
         throw new RuntimeException("Invalid RPC response: " + json);
     }
 
