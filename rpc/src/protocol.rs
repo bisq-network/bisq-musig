@@ -9,7 +9,7 @@ use guardian::ArcMutexGuardian;
 use musig2::secp::{MaybeScalar, Point, Scalar};
 use musig2::{PartialSignature, PubNonce};
 use protocol::multisig::{KeyCtx, KeyPair, PointExt as _, SigCtx};
-use protocol::psbt::{self, TradeWallet};
+use protocol::psbt::{self, MockWallet, TradeWallet};
 use protocol::receiver::{Receiver, ReceiverList};
 use protocol::script_paths;
 use protocol::transaction::{
@@ -17,6 +17,7 @@ use protocol::transaction::{
     RedirectTxBuilder, TransactionExt as _, WarningTxBuilder,
 };
 use thiserror::Error;
+use wallet::protocol_wallet_api::ProtocolWalletApi as _;
 
 use crate::storage::{ByRef, ByVal, Storage};
 
@@ -40,11 +41,10 @@ impl TradeModelStore for TradeModelMemoryStore {
 
 pub static TRADE_MODELS: LazyLock<TradeModelMemoryStore> = LazyLock::new(|| Mutex::new(BTreeMap::new()));
 
-#[derive(Default)]
-pub struct TradeModel {
+pub struct TradeModel<W: TradeWallet + Send + 'static = MockWallet> {
     trade_id: String,
     my_role: Role,
-    trade_wallet: Option<Arc<Mutex<dyn TradeWallet + Send + 'static>>>,
+    trade_wallet: Option<Arc<Mutex<W>>>,
     keys: Keys,
     deposit_tx: DepositTx,
     swap_tx: SwapTx,
@@ -53,9 +53,28 @@ pub struct TradeModel {
     seller_txs: ArbitrationTxs,
 }
 
+// `#[derive(Default)]` can't be used on a generic struct without requiring `W: Default`, so the
+// `Default` impl is written by hand (the wallet field defaults to `None`).
+impl<W: TradeWallet + Send + 'static> Default for TradeModel<W> {
+    fn default() -> Self {
+        Self {
+            trade_id: String::default(),
+            my_role: Role::default(),
+            trade_wallet: None,
+            keys: Keys::default(),
+            deposit_tx: DepositTx::default(),
+            swap_tx: SwapTx::default(),
+            custom_payout_tx: CustomPayoutTx::default(),
+            buyer_txs: ArbitrationTxs::default(),
+            seller_txs: ArbitrationTxs::default(),
+        }
+    }
+}
+
 #[derive(Default, Eq, PartialEq)]
 pub enum Role {
-    #[default] SellerAsMaker,
+    #[default]
+    SellerAsMaker,
     SellerAsTaker,
     BuyerAsMaker,
     BuyerAsTaker,
@@ -167,29 +186,44 @@ pub struct ContractualTxids {
     pub sellers_redirect: Txid,
 }
 
-impl TradeModel {
+impl TradeModel<MockWallet> {
     pub fn new(trade_id: String, my_role: Role) -> Self {
-        let mut trade_model = Self { trade_id, my_role, ..Default::default() };
-        let network = trade_model.trade_wallet.insert(if trade_model.am_buyer() {
-            Arc::new(Mutex::new(psbt::mock_buyer_trade_wallet()))
-        } else {
-            Arc::new(Mutex::new(psbt::mock_seller_trade_wallet()))
-        }).lock().unwrap().network();
+        let mut trade_model = Self {
+            trade_id,
+            my_role,
+            ..Default::default()
+        };
+        let network = trade_model
+            .trade_wallet
+            .insert(if trade_model.am_buyer() {
+                Arc::new(Mutex::new(psbt::mock_buyer_trade_wallet()))
+            } else {
+                Arc::new(Mutex::new(psbt::mock_seller_trade_wallet()))
+            })
+            .lock()
+            .unwrap()
+            .network();
         for txs in [&mut trade_model.buyer_txs, &mut trade_model.seller_txs] {
-            txs.warning.builder.set_lock_time(network.warning_lock_time());
-            txs.redirect.builder.set_lock_time(network.redirect_lock_time());
+            txs.warning
+                .builder
+                .set_lock_time(network.warning_lock_time());
+            txs.redirect
+                .builder
+                .set_lock_time(network.redirect_lock_time());
             txs.claim.builder.set_lock_time(network.claim_lock_time());
         }
         trade_model.swap_tx.builder.disable_lock_time();
         trade_model.keys.am_buyer = trade_model.am_buyer();
         trade_model
     }
+}
 
+impl<W: TradeWallet + Send + 'static> TradeModel<W> {
     pub const fn am_buyer(&self) -> bool {
         matches!(self.my_role, Role::BuyerAsMaker | Role::BuyerAsTaker)
     }
 
-    fn trade_wallet(&self) -> Result<ArcMutexGuardian<dyn TradeWallet + Send + 'static>> {
+    fn trade_wallet(&self) -> Result<ArcMutexGuardian<W>> {
         Ok(ArcMutexGuardian::take(self.trade_wallet.clone()
             .ok_or(ProtocolErrorKind::MissingTradeWallet)?).unwrap())
     }

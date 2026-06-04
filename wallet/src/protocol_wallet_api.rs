@@ -18,6 +18,8 @@ use rand::RngCore;
 use secp::Scalar;
 use thiserror::Error;
 
+use crate::chain_data_source::ChainDataSource;
+
 /// The Protocol Wallet API is used by the protocol to create and sign transactions.
 /// It's the part of functionality being exposed only to the protocol.
 /// The protocol will see `protocol_wallet_api` and the GUI will see `WalletApi`, both are
@@ -54,6 +56,7 @@ pub trait ProtocolWalletApi {
     // Import an external private from the HD wallet
     // After importing a rescan should be triggered
     fn import_private_key(&mut self, pk: Scalar);
+    fn sync_all<D: ChainDataSource>(&mut self, data_source: &D) -> anyhow::Result<bool>;
 }
 pub struct MemWallet {
     wallet: Wallet,
@@ -232,6 +235,9 @@ impl ProtocolWalletApi for MemWallet {
         // If/when this is needed, mirror the `BMPWallet` implementation.
         todo!("MemWallet does not yet support importing private keys")
     }
+    fn sync_all<D: ChainDataSource>(&mut self, _data_source: &D) -> anyhow::Result<bool> {
+        unimplemented!()
+    }
 }
 
 impl ProtocolWalletApi for Wallet {
@@ -280,6 +286,9 @@ impl ProtocolWalletApi for Wallet {
             "bdk_wallet::Wallet does not support importing external private keys; \
             use BMPWallet for that"
         )
+    }
+    fn sync_all<D: ChainDataSource>(&mut self, _data_source: &D) -> anyhow::Result<bool> {
+        unimplemented!()
     }
 }
 

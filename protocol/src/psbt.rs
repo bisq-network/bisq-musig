@@ -16,6 +16,7 @@ use musig2::secp::Scalar;
 use rand::{RngCore, SeedableRng as _};
 use rand_chacha::ChaCha20Rng;
 use wallet::bmp_wallet::BMPWallet;
+use wallet::chain_data_source::ChainDataSource;
 use wallet::protocol_wallet_api::{MemWallet, ProtocolWalletApi};
 
 use crate::receiver::Receiver;
@@ -71,11 +72,7 @@ pub trait TradeWallet: ProtocolWalletApi {
     }
 }
 
-/// Type-erased wallet handle used by the trade protocol. The concrete wallet may be a
-/// `MemWallet`, a `BMPWallet<Connection>`, or any other type that implements [`TradeWallet`].
-pub type BoxedTradeWallet = Box<dyn TradeWallet + Send>;
-
-struct MockTradeWallet<Cs: Iterator<Item=TxOutput>, As: Iterator<Item=Address>> {
+pub struct MockTradeWallet<Cs: Iterator<Item = TxOutput>, As: Iterator<Item = Address>> {
     funding_coins: Cs,
     new_addresses: As,
     signature_map: BTreeMap<OutPoint, Signature>,
@@ -162,6 +159,10 @@ impl<Cs: Iterator<Item = TxOutput>, As: Iterator<Item = Address>> ProtocolWallet
     fn import_private_key(&mut self, _pk: Scalar) {
         unimplemented!("MockTradeWallet does not support importing private keys")
     }
+
+    fn sync_all<D: ChainDataSource>(&mut self, _data_source: &D) -> anyhow::Result<bool> {
+        unimplemented!("MockTradeWallet does not support sync_all")
+    }
 }
 
 impl<Cs: Iterator<Item = TxOutput>, As: Iterator<Item = Address>> TradeWallet
@@ -238,56 +239,99 @@ impl<Cs: Iterator<Item = TxOutput>, As: Iterator<Item = Address>> TradeWallet
     }
 }
 
+/// Concrete type returned by [`mock_buyer_trade_wallet`] and [`mock_seller_trade_wallet`]. Both
+/// mocks use `Vec`-backed iterators (rather than fixed-size array iterators) so they share a
+/// single concrete type, allowing callers to be statically generic over one `W: TradeWallet`
+/// instead of using `dyn TradeWallet`.
+pub type MockWallet = MockTradeWallet<std::vec::IntoIter<TxOutput>, std::vec::IntoIter<Address>>;
+
 //noinspection SpellCheckingInspection
-pub fn mock_buyer_trade_wallet() -> impl TradeWallet {
-    let funding_coins = [
-        "658654575bbbeb46e965bd9eb37fd3be550a7e0fa2d64bc5f218763155602300:0",
-    ].map(TxOutput::mock_1_btc_coin).into_iter();
-    let signature_map = signature_map(funding_coins.as_slice(), &[
-        "f631ae99b4743315b237af9c48ae1f9bb87b6c5404e84d8e3907269218d1bba5\
+pub fn mock_buyer_trade_wallet() -> MockWallet {
+    let funding_coins = vec!["658654575bbbeb46e965bd9eb37fd3be550a7e0fa2d64bc5f218763155602300:0"]
+        .into_iter()
+        .map(TxOutput::mock_1_btc_coin)
+        .collect::<Vec<_>>()
+        .into_iter();
+    let signature_map = signature_map(
+        funding_coins.as_slice(),
+        &[
+            "f631ae99b4743315b237af9c48ae1f9bb87b6c5404e84d8e3907269218d1bba5\
          4c397158aa233fd3f2227f4dc46922ef62eb8cc39a06b7a339b33e2401d512c1",
-    ]);
-    let new_addresses = [
+        ],
+    );
+    let new_addresses = vec![
         "bcrt1pgsj9aw0wvs5h6zj780djnu267v6jazmfekwm4g4q4s6ax3w3t0lseqqnjc",
         "bcrt1pkar3gerekw8f9gef9vn9xz0qypytgacp9wa5saelpksdgct33qdqan7c89",
         "bcrt1pv537m7m6w0gdrcdn3mqqdpgrk3j400yrdrjwf5c9whyl2f8f4p6q9dn3l9",
         "bcrt1pzvynlely05x82u40cts3znctmvyskue74xa5zwy0t5ueuv92726szpgpaa",
-    ].map(|a| a.parse::<Address<_>>()
-        .expect("hardcoded addresses should be valid").assume_checked()).into_iter();
-    let internal_key =
-        "51494dc22e24a32fe9dcfbd7e85faf345fa1df296fb49d156e859ef345201295".parse().ok();
-    let script_sigs = script_sigs(internal_key.as_slice(), &[
-        "5564448d3c5f024eaf2c65024a0c6e7a9066eb0390f8ffaeee2feacde310fabf\
+    ]
+    .into_iter()
+    .map(|a| {
+        a.parse::<Address<_>>()
+            .expect("hardcoded addresses should be valid")
+            .assume_checked()
+    })
+    .collect::<Vec<_>>()
+    .into_iter();
+    let internal_key = "51494dc22e24a32fe9dcfbd7e85faf345fa1df296fb49d156e859ef345201295"
+        .parse()
+        .ok();
+    let script_sigs = script_sigs(
+        internal_key.as_slice(),
+        &[
+            "5564448d3c5f024eaf2c65024a0c6e7a9066eb0390f8ffaeee2feacde310fabf\
          87f3a8d8ad7fb125d7a6f68a282cfab8cd3178262a1fd0c2d06a598c8c454af8",
-        "652d0abaa3b4f8c7dd85ac9d523d44f768c8e1541aded79165c3cdfb3ba35d62\
+            "652d0abaa3b4f8c7dd85ac9d523d44f768c8e1541aded79165c3cdfb3ba35d62\
          eef114e89becb490a80cfdab946d2d91748ccea501ceb4f08655dcc2868c0463",
-    ]);
+        ],
+    );
 
-    MockTradeWallet { funding_coins, new_addresses, signature_map, internal_key, script_sigs }
+    MockTradeWallet {
+        funding_coins,
+        new_addresses,
+        signature_map,
+        internal_key,
+        script_sigs,
+    }
 }
 
 //noinspection SpellCheckingInspection
-pub fn mock_seller_trade_wallet() -> impl TradeWallet {
-    let funding_coins = [
+pub fn mock_seller_trade_wallet() -> MockWallet {
+    let funding_coins = vec![
         "4a5ecc72ec8db78f11c6785f560a13f6f32eac66d160a8157d30956695ccf523:0",
         "373b3ca0b9135e9649672772d4659bb5597d06b4694f1fbdbece285823fde0a3:1",
-    ].map(TxOutput::mock_1_btc_coin).into_iter();
-    let signature_map = signature_map(funding_coins.as_slice(), &[
-        "2376111ed79dac9ff6f2d85dfe57d142f6075f4df9381aeab87a941477425224\
+    ]
+    .into_iter()
+    .map(TxOutput::mock_1_btc_coin)
+    .collect::<Vec<_>>()
+    .into_iter();
+    let signature_map = signature_map(
+        funding_coins.as_slice(),
+        &[
+            "2376111ed79dac9ff6f2d85dfe57d142f6075f4df9381aeab87a941477425224\
          7555f791ddf82354a3d73fa24955f6c5330ae44b2b238fa74be2eee9a46fcb72",
-        "637f4a624bfc46bdb52e01b923d157a97148210f1a2669716815d3249c615673\
+            "637f4a624bfc46bdb52e01b923d157a97148210f1a2669716815d3249c615673\
          17d543868698f30130e0aaf693ce265c544e3db5eda568bffb6ccd03d25a31df",
-    ]);
-    let new_addresses = [
+        ],
+    );
+    let new_addresses = vec![
         "bcrt1p80xu5f0nqjarfnechsmlt488jf3tykx8cva9zeeczlsu4c7x557qr499gz",
         "bcrt1pt5xd4aqe9whmvlz78mt39rvdlgpp6hujs5ggwan5285zjnsf73rq20k456",
         "bcrt1pwxlp4v9v7v03nx0e7vunlc87d4936wnyqegw0fuahudypan64wysefpqzy",
         "bcrt1pw4s5zvfm665fq9u6uwn9g7gwna658s939dvvf9wg63yede8kvyms5pmalx",
         "bcrt1pe3kcs085e8qej9aqqx6qryv2qsfxzywy9xd8pryzwemv2dghdqgscylr69",
-    ].map(|a| a.parse::<Address<_>>()
-        .expect("hardcoded addresses should be valid").assume_checked()).into_iter();
-    let internal_key =
-        "fcba7ecf41bc7e1be4ee122d9d22e3333671eb0a3a87b5cdf099d59874e1940f".parse().ok();
+    ]
+    .into_iter()
+    .map(|a| {
+        a.parse::<Address<_>>()
+            .expect("hardcoded addresses should be valid")
+            .assume_checked()
+    })
+    .collect::<Vec<_>>()
+    .into_iter();
+    let internal_key = "fcba7ecf41bc7e1be4ee122d9d22e3333671eb0a3a87b5cdf099d59874e1940f"
+        .parse()
+        .ok();
     let script_sigs = script_sigs(internal_key.as_slice(), &[
         "87790f7eb3e98eb1b4dadc55ff5762275c4e3c02c6491abb26c8eabfada55b4b\
          3f2627f627919d667be8f191a1b275b01549ab24e5eeda0019f83c658840500e",

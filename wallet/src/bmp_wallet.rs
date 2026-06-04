@@ -356,6 +356,9 @@ impl ProtocolWalletApi for BMPWallet<Connection> {
     fn import_private_key(&mut self, pk: Scalar) {
         self.import_private_key(pk);
     }
+    fn sync_all<D: ChainDataSource>(&mut self, data_source: &D) -> anyhow::Result<bool> {
+        <Self as WalletApi>::sync_all(self, data_source)
+    }
 }
 
 pub trait WalletApi {
@@ -388,7 +391,7 @@ pub trait WalletApi {
         sign_options: SignOptions,
     ) -> anyhow::Result<(), SignerError>;
 
-    fn sync_all(&mut self, data_source: &impl ChainDataSource) -> anyhow::Result<bool>;
+    fn sync_all<D: ChainDataSource>(&mut self, data_source: &D) -> anyhow::Result<bool>;
     fn sync_cbf(
         &mut self,
         scan_type: ScanType,
@@ -640,7 +643,7 @@ impl WalletApi for BMPWallet<Connection> {
         Ok(())
     }
 
-    fn sync_all(&mut self, data_source: &impl ChainDataSource) -> anyhow::Result<bool> {
+    fn sync_all<D: ChainDataSource>(&mut self, data_source: &D) -> anyhow::Result<bool> {
         // 1. Sync the main wallet
         data_source.sync(&mut self.wallet)?;
 

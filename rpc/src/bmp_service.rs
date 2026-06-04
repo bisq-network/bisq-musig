@@ -14,8 +14,9 @@ use crate::pb::convert::TryProtoInto as _;
 
 #[derive(Default)]
 pub struct BmpServiceImpl {
-    // Each trade protocol is stored against a unique ID.
-    active_protocols: Mutex<HashMap<String, BMPProtocol>>,
+    // Each trade protocol is stored against a unique ID. The protocol is generic over its wallet
+    // type; this service pins it to `MemWallet` (the wallet it constructs below).
+    active_protocols: Mutex<HashMap<String, BMPProtocol<MemWallet>>>,
 }
 
 #[tonic::async_trait]
@@ -41,7 +42,7 @@ impl BmpProtocolService for BmpServiceImpl {
 
         let context = BMPContext::new(
             chain,
-            Box::new(mock_wallet),
+            mock_wallet,
             role,
             Amount::from_sat(req.seller_amount_sats),
             Amount::from_sat(req.buyer_amount_sats),

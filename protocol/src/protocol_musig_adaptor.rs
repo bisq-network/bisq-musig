@@ -10,7 +10,7 @@ use musig2::secp::{MaybeScalar, Point};
 use musig2::{PartialSignature, PubNonce};
 
 use crate::multisig::{KeyCtx, PointExt as _, SigCtx};
-use crate::psbt::BoxedTradeWallet;
+use crate::psbt::TradeWallet;
 use crate::receiver::{Receiver, ReceiverList};
 use crate::script_paths;
 use crate::transaction::{
@@ -87,19 +87,20 @@ pub struct Round4Parameter {
 }
 
 /// this context is for the whole process and need to be persisted by the caller
-pub struct BMPContext {
+pub struct BMPContext<W: TradeWallet> {
     // first of all, everything which is general to the protocol itself.
-    // `funds` is type-erased so the protocol works against any [`TradeWallet`]
-    // implementation (e.g. `MemWallet`, `BMPWallet`, mocks).
-    pub funds: BoxedTradeWallet,
+    // `funds` is the concrete wallet the protocol operates against (e.g. `MemWallet`,
+    // `BMPWallet`, mocks); it is a generic type parameter rather than a trait object so the
+    // protocol stays statically dispatched over the chosen [`TradeWallet`] implementation.
+    pub funds: W,
     pub chain: Box<dyn ChainApi>,
     pub role: ProtocolRole,
     pub seller_amount: Amount,
     pub buyer_amount: Amount,
 }
 
-pub struct BMPProtocol {
-    pub ctx: BMPContext,
+pub struct BMPProtocol<W: TradeWallet> {
+    pub ctx: BMPContext<W>,
     // Point securing Seller deposit and trade amount:
     pub p_tik: KeyCtx,
     // Point securing Buyer deposit:
@@ -118,10 +119,10 @@ pub struct BMPProtocol {
     redirect_tx_peer: RedirectTx,
 }
 
-impl BMPContext {
+impl<W: TradeWallet> BMPContext<W> {
     pub fn new(
         chain: Box<dyn ChainApi>,
-        funds: BoxedTradeWallet,
+        funds: W,
         role: ProtocolRole,
         seller_amount: Amount,
         buyer_amount: Amount,
@@ -135,11 +136,13 @@ impl BMPContext {
         })
     }
 
-    const fn am_buyer(&self) -> bool { matches!(self.role, ProtocolRole::Buyer) }
+    const fn am_buyer(&self) -> bool {
+        matches!(self.role, ProtocolRole::Buyer)
+    }
 }
 
-impl BMPProtocol {
-    pub fn new(ctx: BMPContext) -> anyhow::Result<Self> {
+impl<W: TradeWallet> BMPProtocol<W> {
+    pub fn new(ctx: BMPContext<W>) -> anyhow::Result<Self> {
         let role = ctx.role;
         let [mut p_tik, mut q_tik] = [KeyCtx::default(), KeyCtx::default()];
         p_tik.init_my_key_share();
@@ -399,7 +402,7 @@ impl RedirectTx {
         Ok(())
     }
 
-    pub fn broadcast(&self, me: &BMPContext) -> anyhow::Result<Txid> {
+    pub fn broadcast<W: TradeWallet>(&self, me: &BMPContext<W>) -> anyhow::Result<Txid> {
         me.chain.transaction_broadcast(self.builder.signed_tx()?)
     }
 
@@ -461,7 +464,7 @@ impl ClaimTx {
         Ok(())
     }
 
-    pub fn broadcast(&self, me: &BMPContext) -> anyhow::Result<Txid> {
+    pub fn broadcast<W: TradeWallet>(&self, me: &BMPContext<W>) -> anyhow::Result<Txid> {
         me.chain.transaction_broadcast(self.signed_tx()?)
     }
 }
@@ -497,7 +500,13 @@ impl WarningTx {
         }
     }
 
-    fn build(&mut self, ctx: &mut BMPContext, p_tik: &KeyCtx, q_tik: &KeyCtx, deposit_tx: &DepositTx) -> anyhow::Result<()> {
+    fn build<W: TradeWallet>(
+        &mut self,
+        ctx: &mut BMPContext<W>,
+        p_tik: &KeyCtx,
+        q_tik: &KeyCtx,
+        deposit_tx: &DepositTx,
+    ) -> anyhow::Result<()> {
         self.sig_p.set_tweaked_key_ctx(p_tik.with_taproot_tweak(deposit_tx.merkle_root.as_ref())?);
         self.sig_p.init_my_nonce_share()?;
         self.sig_q.set_tweaked_key_ctx(q_tik.with_taproot_tweak(deposit_tx.merkle_root.as_ref())?);
@@ -553,7 +562,7 @@ impl WarningTx {
         Ok(())
     }
 
-    pub fn broadcast(&self, me: &BMPContext) -> anyhow::Result<Txid> {
+    pub fn broadcast<W: TradeWallet>(&self, me: &BMPContext<W>) -> anyhow::Result<Txid> {
         me.chain.transaction_broadcast(self.signed_tx()?)
     }
 }
@@ -569,9 +578,9 @@ pub struct SwapTx {
 }
 
 impl SwapTx {
-    pub(crate) fn spend_condition(
+    pub(crate) fn spend_condition<W: TradeWallet>(
         &mut self,
-        ctx: &mut BMPContext,
+        ctx: &mut BMPContext<W>,
     ) -> anyhow::Result<Option<ScriptBuf>> {
         self.swap_spend = match self.role {
             ProtocolRole::Seller => Some(ctx.funds.new_address()?.script_pubkey()),
@@ -664,7 +673,7 @@ impl SwapTx {
         Ok(())
     }
 
-    pub fn broadcast(&self, me: &BMPContext) -> anyhow::Result<Txid> {
+    pub fn broadcast<W: TradeWallet>(&self, me: &BMPContext<W>) -> anyhow::Result<Txid> {
         me.chain.transaction_broadcast(self.builder.signed_tx()?)
     }
 }
@@ -684,7 +693,10 @@ impl DepositTx {
 
     fn txid(&self) -> anyhow::Result<Txid> { Ok(*self.builder.txid()?) }
 
-    pub fn generate_part_tx(&mut self, ctx: &mut BMPContext) -> anyhow::Result<Psbt> {
+    pub fn generate_part_tx<W: TradeWallet>(
+        &mut self,
+        ctx: &mut BMPContext<W>,
+    ) -> anyhow::Result<Psbt> {
         self.builder
             .set_trade_amount(ctx.seller_amount - ctx.buyer_amount)
             .set_buyers_security_deposit(ctx.buyer_amount)
@@ -694,19 +706,19 @@ impl DepositTx {
 
         let psbt = if ctx.am_buyer() {
             self.builder
-                .init_buyers_half_psbt(&mut *ctx.funds, &mut rand::rng())?
+                .init_buyers_half_psbt(&mut ctx.funds, &mut rand::rng())?
                 .buyers_half_psbt()?
         } else {
             self.builder
-                .init_sellers_half_psbt(&mut *ctx.funds, &mut rand::rng())?
+                .init_sellers_half_psbt(&mut ctx.funds, &mut rand::rng())?
                 .sellers_half_psbt()?
         };
         Ok(psbt.clone())
     }
 
-    pub fn build_and_merge_tx(
+    pub fn build_and_merge_tx<W: TradeWallet>(
         &mut self,
-        ctx: &mut BMPContext,
+        ctx: &mut BMPContext<W>,
         other_psbt: Psbt,
         p_tik: &KeyCtx,
         q_tik: &KeyCtx,
@@ -718,31 +730,48 @@ impl DepositTx {
         } else {
             self.builder.set_buyers_half_psbt(other_psbt);
         }
-        self.merkle_root = Some(script_paths::deposit_payout_merkle_root(&buyer_pub_key, &seller_pub_key)?);
+        self.merkle_root = Some(script_paths::deposit_payout_merkle_root(
+            &buyer_pub_key,
+            &seller_pub_key,
+        )?);
         self.p_descriptor = Some(script_paths::deposit_payout_descriptor(
-            &p_tik.aggregated_key()?.pub_key().to_public_key().into(), &buyer_pub_key, &seller_pub_key)?);
+            &p_tik.aggregated_key()?.pub_key().to_public_key().into(),
+            &buyer_pub_key,
+            &seller_pub_key,
+        )?);
         self.q_descriptor = Some(script_paths::deposit_payout_descriptor(
-            &q_tik.aggregated_key()?.pub_key().to_public_key().into(), &buyer_pub_key, &seller_pub_key)?);
+            &q_tik.aggregated_key()?.pub_key().to_public_key().into(),
+            &buyer_pub_key,
+            &seller_pub_key,
+        )?);
         let merkle_root = self.merkle_root.as_ref();
         self.builder
-            .set_buyer_payout_address(p_tik.with_taproot_tweak(merkle_root)?.p2tr_address(Network::Regtest))
-            .set_seller_payout_address(q_tik.with_taproot_tweak(merkle_root)?.p2tr_address(Network::Regtest))
+            .set_buyer_payout_address(
+                p_tik
+                    .with_taproot_tweak(merkle_root)?
+                    .p2tr_address(Network::Regtest),
+            )
+            .set_seller_payout_address(
+                q_tik
+                    .with_taproot_tweak(merkle_root)?
+                    .p2tr_address(Network::Regtest),
+            )
             .compute_unsigned_tx()?;
         Ok(())
     }
 
-    fn sign(&mut self, ctx: &mut BMPContext) -> anyhow::Result<()> {
+    fn sign<W: TradeWallet>(&mut self, ctx: &mut BMPContext<W>) -> anyhow::Result<()> {
         if ctx.am_buyer() {
-            self.builder.sign_buyer_inputs(&mut *ctx.funds)?;
+            self.builder.sign_buyer_inputs(&mut ctx.funds)?;
         } else {
-            self.builder.sign_seller_inputs(&mut *ctx.funds)?;
+            self.builder.sign_seller_inputs(&mut ctx.funds)?;
         }
         Ok(())
     }
 
-    fn transfer_sig_and_broadcast(
+    fn transfer_sig_and_broadcast<W: TradeWallet>(
         &mut self,
-        ctx: &mut BMPContext,
+        ctx: &mut BMPContext<W>,
         psbt_bob: Psbt, // bobs psbt should be same as mine but have bob's sig
     ) -> anyhow::Result<Txid> {
         self.builder.combine_psbts(psbt_bob)?;

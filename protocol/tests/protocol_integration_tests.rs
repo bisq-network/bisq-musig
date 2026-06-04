@@ -7,11 +7,9 @@ use bmp_tracing::tracing;
 use musig2::KeyAggContext;
 use musig2::secp::Point;
 use protocol::protocol_musig_adaptor::{BMPContext, BMPProtocol, ProtocolRole};
-use protocol::psbt::BoxedTradeWallet;
 use protocol::transaction::{CustomPayoutTxBuilder, TransactionExt as _};
 use testenv::TestEnv;
 use wallet::bmp_wallet::{BMPWallet, WalletApi as _};
-use wallet::protocol_wallet_api::MemWallet;
 
 #[test]
 fn test_initial_tx_creation() -> anyhow::Result<()> {
@@ -21,21 +19,12 @@ fn test_initial_tx_creation() -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Single entry point used by every test below to obtain a funded trade wallet. The concrete
-/// backend (`MemWallet` vs `BMPWallet<Connection>`) is selected by the `WALLET_BACKEND`
-/// environment variable (`mem` or `bmp`); it defaults to `bmp` when unset. Both implement
-/// [`TradeWallet`] and are interchangeable from the protocol's point of view.
-pub fn funded_wallet(env: &mut TestEnv) -> BoxedTradeWallet {
-    // TODO need to abstract sync(), so we can simplify this.
-    match std::env::var("WALLET_BACKEND")
-        .unwrap_or_else(|_| "bmp".to_owned())
-        .to_ascii_lowercase()
-        .as_str()
-    {
-        "mem" => Box::new(MemWallet::funded_wallet(env)),
-        "bmp" => Box::new(funded_bmp_wallet(env)),
-        other => panic!("unknown WALLET_BACKEND={other:?}, expected `mem` or `bmp`"),
-    }
+/// Single entry point used by every test below to obtain a funded trade wallet. The protocol is
+/// now statically generic over its wallet type, so the tests are pinned to the `BMPWallet`
+/// backend (the previous `WALLET_BACKEND` `mem`/`bmp` switch is gone, since one function can no
+/// longer return two distinct concrete wallet types).
+pub fn funded_wallet(env: &mut TestEnv) -> BMPWallet<Connection> {
+    funded_bmp_wallet(env)
 }
 
 fn funded_bmp_wallet(env: &mut TestEnv) -> BMPWallet<Connection> {
@@ -54,11 +43,11 @@ fn funded_bmp_wallet(env: &mut TestEnv) -> BMPWallet<Connection> {
     wallet
 }
 
-fn initial_tx_creation(env: &mut TestEnv) -> anyhow::Result<(BMPProtocol, BMPProtocol)> {
-    tracing::debug!(
-        "running with wallet backend: {}",
-        std::env::var("WALLET_BACKEND").unwrap_or_else(|_| "bmp (default)".to_owned())
-    );
+/// The trade protocol monomorphized to the `BMPWallet` backend the integration tests use.
+type TradeProtocol = BMPProtocol<BMPWallet<Connection>>;
+
+fn initial_tx_creation(env: &mut TestEnv) -> anyhow::Result<(TradeProtocol, TradeProtocol)> {
+    tracing::debug!("running with wallet backend: bmp");
 
     let alice_funds = funded_wallet(env);
     let bob_funds = funded_wallet(env);
@@ -249,8 +238,8 @@ fn test_custom_payout() -> anyhow::Result<()> {
         .set_seller_payout_amount_excluding_fee(Amount::from_sat(30_000_000))
         .set_fee_rate(FeeRate::from_sat_per_vb_unchecked(15))
         .compute_unsigned_tx()?
-        .sign_partial(&mut *alice.ctx.funds)?
-        .sign_partial(&mut *bob.ctx.funds)?;
+        .sign_partial(&mut alice.ctx.funds)?
+        .sign_partial(&mut bob.ctx.funds)?;
     let tx = builder.signed_tx()?;
 
     dbg!(alice.ctx.chain.transaction_broadcast(&tx)?);
