@@ -1,19 +1,53 @@
-use std::collections::HashMap;
-use std::sync::Mutex;
+//! Integration-test home of the `musigd` daemon (formerly the `rpc/src/bin/musigd.rs` binary).
+//!
+//! The full gRPC server — the `MuSig` trade-protocol service, the wallet service, and the two BMP
+//! services — is built by [`spawn_musigd`] and backed by a real `bitcoind`/`electrs`
+//! [`TestEnv`], so the daemon can be started as a test case rather than as a standalone process.
+//!
+//! Two entry points are provided:
+//!
+//! * [`test_musigd_starts_and_serves`] — a fast smoke test on an OS-assigned port that asserts the
+//!   server comes up and serves, then tears it down.
+//! * [`run_musigd_server`] — an `#[ignore]`d, long-running server on a fixed port (taken from the
+//!   `MUSIGD_PORT` env var, default `50051`). It serves until the process is killed, replacing
+//!   `cargo run --bin musigd -- --port <PORT>` for e.g. the Java integration test client. Run it
+//!   with, for example:
+//!
+//!   ```sh
+//!   MUSIGD_PORT=50051 cargo test -p rpc --test musigd -- --ignored run_musigd_server --nocapture
+//!   ```
 
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
+
+use anyhow::Result;
 use bdk_wallet::bitcoin::Amount;
 use protocol::protocol_musig_adaptor::{BMPContext, BMPProtocol, ProtocolRole, Round1Parameter};
+use rpc::bmp_wallet_service::BmpWalletServiceImpl;
+use rpc::pb::bmp_protocol::bmp_protocol_service_server::{
+    BmpProtocolService, BmpProtocolServiceServer,
+};
+use rpc::pb::bmp_protocol::{self, InitializeRequest, InitializeResponse, Role};
+use rpc::pb::bmp_wallet::wallet_server::WalletServer as BmpWalletServer;
+use rpc::pb::convert::TryProtoInto as _;
+use rpc::server::{MusigImpl, MusigServer, WalletImpl, WalletServer};
+use rpc::wallet::WalletServiceImpl;
 use testenv::TestEnv;
-use tonic::{Request, Response, Result, Status};
+use tokio::net::TcpListener;
+use tokio::task::{self, JoinHandle};
+use tonic::transport::server::TcpIncoming;
+use tonic::transport::{self, Server};
+use tonic::{Request, Response, Status};
 use tracing::info;
 use wallet::protocol_wallet_api::MemWallet;
 
-use crate::pb::bmp_protocol::bmp_protocol_service_server::BmpProtocolService;
-use crate::pb::bmp_protocol::{self, InitializeRequest, InitializeResponse, Role};
-use crate::pb::convert::TryProtoInto as _;
-
+/// gRPC implementation of the BMP trade-protocol service.
+///
+/// Moved here from the `rpc::bmp_service` library module: it is only wired into the `musigd`
+/// daemon, which now lives as this integration test, so the impl lives alongside it rather than
+/// in the shipped library.
 #[derive(Default)]
-pub struct BmpServiceImpl {
+struct BmpServiceImpl {
     // Each trade protocol is stored against a unique ID.
     active_protocols: Mutex<HashMap<String, BMPProtocol>>,
 }
@@ -23,7 +57,7 @@ impl BmpProtocolService for BmpServiceImpl {
     async fn initialize(
         &self,
         request: Request<InitializeRequest>,
-    ) -> Result<Response<InitializeResponse>> {
+    ) -> tonic::Result<Response<InitializeResponse>> {
         let req = request.into_inner();
         info!("Received initialize request: {req:?}");
 
@@ -45,7 +79,8 @@ impl BmpProtocolService for BmpServiceImpl {
             role,
             Amount::from_sat(req.seller_amount_sats),
             Amount::from_sat(req.buyer_amount_sats),
-        ).map_err(|e| Status::internal(e.to_string()))?;
+        )
+        .map_err(|e| Status::internal(e.to_string()))?;
 
         let protocol = BMPProtocol::new(context).map_err(|e| Status::internal(e.to_string()))?;
 
@@ -66,7 +101,7 @@ impl BmpProtocolService for BmpServiceImpl {
     async fn execute_round1(
         &self,
         request: Request<bmp_protocol::Round1Request>,
-    ) -> Result<Response<bmp_protocol::Round1Response>> {
+    ) -> tonic::Result<Response<bmp_protocol::Round1Response>> {
         let req = request.into_inner();
         let trade_id = req.trade_id;
 
@@ -86,7 +121,7 @@ impl BmpProtocolService for BmpServiceImpl {
     async fn execute_round2(
         &self,
         request: Request<bmp_protocol::Round2Request>,
-    ) -> Result<Response<bmp_protocol::Round2Response>> {
+    ) -> tonic::Result<Response<bmp_protocol::Round2Response>> {
         let req = request.into_inner();
         let trade_id = req.trade_id;
 
@@ -109,7 +144,7 @@ impl BmpProtocolService for BmpServiceImpl {
     async fn execute_round3(
         &self,
         request: Request<bmp_protocol::Round3Request>,
-    ) -> Result<Response<bmp_protocol::Round3Response>> {
+    ) -> tonic::Result<Response<bmp_protocol::Round3Response>> {
         let req = request.into_inner();
         let trade_id = req.trade_id;
 
@@ -131,7 +166,7 @@ impl BmpProtocolService for BmpServiceImpl {
     async fn execute_round4(
         &self,
         request: Request<bmp_protocol::Round4Request>,
-    ) -> Result<Response<bmp_protocol::Round4Response>> {
+    ) -> tonic::Result<Response<bmp_protocol::Round4Response>> {
         let req = request.into_inner();
         let trade_id = req.trade_id;
 
@@ -153,7 +188,7 @@ impl BmpProtocolService for BmpServiceImpl {
     async fn execute_round5(
         &self,
         request: Request<bmp_protocol::Round5Request>,
-    ) -> Result<Response<()>> {
+    ) -> tonic::Result<Response<()>> {
         let req = request.into_inner();
         let trade_id = req.trade_id;
 
@@ -171,4 +206,77 @@ impl BmpProtocolService for BmpServiceImpl {
         drop(protocols);
         Ok(Response::new(()))
     }
+}
+
+/// Builds and spawns the full `musigd` gRPC server, mirroring the former `musigd` binary's
+/// `main`, but on a caller-supplied listener (instead of a fixed port) so it can run inside a
+/// test harness.
+fn spawn_musigd(
+    listener: TcpListener,
+    testenv: &TestEnv,
+) -> Result<JoinHandle<Result<(), transport::Error>>> {
+    let musig = MusigImpl::default();
+    let wallet = WalletImpl {
+        wallet_service: Arc::new(WalletServiceImpl::create_with_rpc_params(
+            testenv.bitcoin_core_rpc_client()?,
+        )),
+    };
+    wallet.wallet_service.clone().spawn_connection();
+
+    let bmp_protocol_impl = BmpServiceImpl::default();
+    let bmp_wallet_service = BmpWalletServiceImpl::default();
+
+    let incoming = TcpIncoming::from(listener);
+    let handle = task::spawn(async move {
+        Server::builder()
+            .add_service(MusigServer::new(musig))
+            .add_service(WalletServer::new(wallet))
+            .add_service(BmpProtocolServiceServer::new(bmp_protocol_impl))
+            .add_service(BmpWalletServer::new(bmp_wallet_service))
+            .serve_with_incoming(incoming)
+            .await
+    });
+    Ok(handle)
+}
+
+/// Smoke test: start the daemon on an OS-assigned port, assert it's serving, then tear it down.
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn test_musigd_starts_and_serves() -> Result<()> {
+    let testenv = TestEnv::new()?;
+    let (_port, listener) = TestEnv::get_bound_port().await?;
+
+    let handle = spawn_musigd(listener, &testenv)?;
+
+    // The server task should be running (still serving), not have exited with an error.
+    assert!(
+        !handle.is_finished(),
+        "musigd server task exited before it could serve"
+    );
+
+    handle.abort();
+    Ok(())
+}
+
+/// Long-running server on a fixed port, the test-case replacement for the old `musigd` binary.
+///
+/// Ignored by default so it doesn't block the test suite; run it explicitly when you need a live
+/// server (e.g. for the Java integration test client). The port is read from the `MUSIGD_PORT`
+/// env var, defaulting to `50051`. Serves until the process is killed.
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+#[ignore = "long-running server; start manually for the Java integration test client"]
+async fn run_musigd_server() -> Result<()> {
+    bmp_tracing::init("info");
+
+    let port: u16 = std::env::var("MUSIGD_PORT")
+        .ok()
+        .and_then(|p| p.parse().ok())
+        .unwrap_or(50051);
+
+    let testenv = TestEnv::new()?;
+    let listener = TcpListener::bind(("127.0.0.1", port)).await?;
+
+    bmp_tracing::tracing::info!(port, "Starting musigd gRPC server.");
+    spawn_musigd(listener, &testenv)?.await??;
+
+    Ok(())
 }

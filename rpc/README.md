@@ -47,10 +47,11 @@ The Rust gRPC server listens on localhost port 50051.
 
 > https://github.com/protocolbuffers/protobuf/releases
 
-2. To build and run the Rust server, run:
+2. To build and run the Rust server, run (it now lives as an `#[ignore]`d test case rather than a
+   binary; `MUSIGD_PORT` defaults to 50051):
 
 ```sh
-cargo run --bin musigd
+cargo test -p rpc --test musigd -- --ignored run_musigd_server --nocapture
 ```
 
 3. To build and run the Rust wallet CLI client (default-run), just run:
@@ -121,16 +122,18 @@ verifies it on-chain, follow these steps. This requires `nigiri`, `cargo`, and `
 
 2. **Start two `musigd` gRPC servers:**
 
-The test requires two server instances to represent the two parties in the trade (Alice and Bob). Run these commands
-from the project's root directory. It's best to run them in separate terminal windows so you can monitor their output.
+The test requires two server instances to represent the two parties in the trade (Alice and Bob). The server now runs
+as the `#[ignore]`d `run_musigd_server` test case (in `rpc/tests/musigd.rs`) rather than a binary; the listening port is
+taken from the `MUSIGD_PORT` env var. Run these commands from the project's root directory. It's best to run them in
+separate terminal windows so you can monitor their output.
 
     *   Server for Bob (port 50051):
         ```sh
-        cargo run --bin musigd --manifest-path rpc/Cargo.toml -- --port 50051
+        MUSIGD_PORT=50051 cargo test -p rpc --test musigd -- --ignored run_musigd_server --nocapture
         ```
     *   Server for Alice (port 50052):
         ```sh
-        cargo run --bin musigd --manifest-path rpc/Cargo.toml -- --port 50052
+        MUSIGD_PORT=50052 cargo test -p rpc --test musigd -- --ignored run_musigd_server --nocapture
         ```
 
 3. **Run the Maven test command:**
