@@ -17,16 +17,21 @@
 //!   MUSIGD_PORT=50051 cargo test -p rpc --test musigd -- --ignored run_musigd_server --nocapture
 //!   ```
 use std::collections::HashMap;
-use std::path::Path;
 use std::sync::{Arc, Mutex};
 
 use bdk_bitcoind_rpc::bitcoincore_rpc::{Auth, Client as BitcoinCoreClient};
 use bdk_wallet::bitcoin::Amount;
 use protocol::protocol_musig_adaptor::{BMPContext, BMPProtocol, ProtocolRole, Round1Parameter};
 use rpc::bmp_wallet_service::BmpWalletServiceImpl;
- use rpc::server::{MusigImpl, MusigServer, WalletImpl, WalletServer};
+use rpc::pb::bmp_protocol::bmp_protocol_service_server::{
+    BmpProtocolService, BmpProtocolServiceServer,
+};
+use rpc::pb::bmp_protocol::{self, InitializeRequest, InitializeResponse, Role};
+use rpc::pb::bmp_wallet::wallet_server::WalletServer as BmpWalletServer;
+use rpc::pb::convert::TryProtoInto as _;
+use rpc::server::{MusigImpl, MusigServer, WalletImpl, WalletServer};
 use rpc::wallet::WalletServiceImpl;
-use testenv::{TestEnv, TestEnvBuilder};
+use testenv::TestEnv;
 use tokio::net::TcpListener;
 use tokio::task::{self, JoinHandle};
 use tonic::transport::Server;
@@ -34,10 +39,6 @@ use tonic::transport::server::TcpIncoming;
 use tonic::{Request, Response, Result, Status, transport};
 use tracing::info;
 use wallet::protocol_wallet_api::MemWallet;
-use rpc::pb::bmp_wallet::wallet_server::WalletServer as BmpWalletServer;
-use rpc::pb::bmp_protocol::bmp_protocol_service_server::{BmpProtocolService, BmpProtocolServiceServer};
-use rpc::pb::bmp_protocol::{self, InitializeRequest, InitializeResponse, Role};
-use rpc::pb::convert::TryProtoInto as _;
 
 #[derive(Default)]
 pub struct BmpServiceImpl {
@@ -207,7 +208,7 @@ impl BmpProtocolService for BmpServiceImpl {
 fn spawn_musigd(
     listener: TcpListener,
     client: Arc<BitcoinCoreClient>,
-) -> Result<JoinHandle<Result<(), transport::Error>>> {
+) -> JoinHandle<Result<(), transport::Error>> {
     let musig = MusigImpl::default();
     let wallet = WalletImpl {
         wallet_service: Arc::new(WalletServiceImpl::create_with_rpc_params()),
@@ -228,7 +229,7 @@ fn spawn_musigd(
             .serve_with_incoming(incoming)
             .await
     });
-    Ok(handle)
+    handle
 }
 
 /// Long-running server on a fixed port, the test-case replacement for the old `musigd` binary.
@@ -257,9 +258,9 @@ async fn run_musigd_server() -> Result<()> {
         info!(rpc_url, "Connecting to external Bitcoin Core RPC");
 
         // Determine authentication method
-        let auth = if let (Some(user), Some(pass)) = (&rpc_user, &rpc_pass)
+        let auth = if let (Some(user), Some(pass)) = (&rpc_user, rpc_pass)
         {
-            Auth::UserPass(user.to_string(), pass.to_string())
+            Auth::UserPass(user.to_string(), pass)
         } else {
             // Try cookie file as fallback
             Auth::CookieFile(std::path::PathBuf::from("~/.bitcoin/.cookie"))
@@ -273,7 +274,7 @@ async fn run_musigd_server() -> Result<()> {
     let listener = TcpListener::bind(("127.0.0.1", port)).await?;
 
     bmp_tracing::tracing::info!(port, "Starting musigd gRPC server.");
-    let _ = spawn_musigd(listener, Arc::new(rpc_client.unwrap())).unwrap().await;
+    let _ = spawn_musigd(listener, Arc::new(rpc_client.unwrap())).await;
 
     Ok(())
 }

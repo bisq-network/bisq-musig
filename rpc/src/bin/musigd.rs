@@ -23,7 +23,7 @@ struct Cli {
 
     /// Bitcoin Core RPC URL.
     /// Can also be set via BITCOIN_RPC_URL environment variable.
-    #[arg(long)]
+    #[arg(long, default_value = "https://localhost:18443")]
     bitcoin_rpc_url: Option<String>,
 
     /// Bitcoin Core RPC username
@@ -44,24 +44,8 @@ struct Cli {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
-    let mut cli: Cli = Cli::parse();
-
+    let cli: Cli = Cli::parse();
     bmp_tracing::init("info");
-
-    // Check environment variables as fallback
-    if cli.bitcoin_rpc_url.is_none() {
-        cli.bitcoin_rpc_url = std::env::var("BITCOIN_RPC_URL").ok();
-    }
-    if cli.bitcoin_rpc_user.is_none() {
-        cli.bitcoin_rpc_user = std::env::var("BITCOIN_RPC_USER").ok();
-    }
-    if cli.bitcoin_rpc_pass.is_none() {
-        cli.bitcoin_rpc_pass = std::env::var("BITCOIN_RPC_PASS").ok();
-    }
-    if cli.electrum_url.is_none() {
-        cli.electrum_url = std::env::var("ELECTRUM_URL").ok();
-    }
-
     // Create or use provided RPC client
     let rpc_client = if let Some(rpc_url) = &cli.bitcoin_rpc_url {
         info!(rpc_url, "Connecting to external Bitcoin Core RPC");

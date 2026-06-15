@@ -78,46 +78,23 @@ mvn exec:java -Pwallet
 mvn exec:java -P bmp
 ```
 
-### Integration tests using Nigiri
+### Integration tests using testenv crate
 
-Some of the integration tests require [Nigiri](https://github.com/vulpemventures/nigiri) to run, which is a command-line
-interface managing a selection of `docker-compose` containers providing a local regtest network. A custom datadir
-relative to the root of the `rpc` crate is assumed, with currently only the `bitcoin` component being used by the tests,
-though later `electrs` will be likely also be used to test and develop an Electrum wallet backend.
+1. Start the testenv-server binary crate
 
-To start Nigiri with the project-local datadir, run:
+The integration tests require you to have a running instance of the testenv binary crate.
+To do so run the following command:
 
-```sh
-nigiri --datadir "$PWD/.nigiri" start
+```
+cargo run --bin testenv-server -p testenv
 ```
 
-This will also fetch and install the containers and their configuration in `$PWD/.nigiri` if run for the first time. The
-Rust integration and unit tests may be run by:
+Take note of the Bitcoinc RPC server credentials as they'll be used for starting the 
+bmp_service clients.
 
-```sh
-cargo test
-```
-
-as usual, which will automatically start Nigiri (with the `--ci` flag to exclude Esplora) if it isn't running already.
-
-It continues to run after the tests finish, so to stop Nigiri, subsequently run:
-
-```sh
-nigiri --datadir "$PWD/.nigiri" stop
-```
-
-### Java Integration Test
 
 To run the full Java integration test suite (`BmpServiceIntegrationTest.java`), which simulates a complete trade and
-verifies it on-chain, follow these steps. This requires `nigiri`, `cargo`, and `mvn` to be installed.
-
-1. **Start Nigiri:**
-
-   This provides the local Bitcoin regtest network.
-
-   ```sh
-   nigiri start
-   ```
+verifies it on-chain.
 
 2. **Start two `musigd` gRPC servers:**
 
@@ -126,11 +103,11 @@ from the project's root directory. It's best to run them in separate terminal wi
 
     *   Server for Bob (port 50051):
         ```sh
-        cargo run --bin musigd --manifest-path rpc/Cargo.toml -- --port 50051
+        RPC_URL=http://127.0.0.1:46111 RPC_PASS=pass MUSIGD_PORT=50051 cargo test -p rpc --test bmp_service -- --ignored run_musigd_server --nocapture
         ```
     *   Server for Alice (port 50052):
         ```sh
-        cargo run --bin musigd --manifest-path rpc/Cargo.toml -- --port 50052
+        RPC_URL=http://127.0.0.1:46111 RPC_PASS=pass MUSIGD_PORT=50052 cargo test -p rpc --test bmp_service -- --ignored run_musigd_server --nocapture
         ```
 
 3. **Run the Maven test command:**
@@ -138,5 +115,7 @@ from the project's root directory. It's best to run them in separate terminal wi
    This command will compile the Java code and execute the integration test. Run it from the project's root directory.
 
    ```sh
-   mvn -f rpc/pom.xml clean verify
+     mvn -DbitcoinRpcUrl=http://localhost:45049 -DbitcoinRpcUser=bitcoin -DbitcoinRpcPass=pass -f rpc/pom.xml clean verify
    ```
+
+NOTE: make sure to replace the RPC URL and password with the output from step 1.

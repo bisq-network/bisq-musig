@@ -98,7 +98,7 @@ impl Default for Config<'_> {
 const NETWORK: Network = Network::Regtest;
 
 /// Builder for TestEnv configuration with optional data directory support
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct TestEnvBuilder {
     config: Config<'static>,
     data_dir: Option<std::path::PathBuf>,
@@ -106,10 +106,7 @@ pub struct TestEnvBuilder {
 
 impl TestEnvBuilder {
     pub fn new() -> Self {
-        Self {
-            config: Config::default(),
-            data_dir: None,
-        }
+        TestEnvBuilder::default()
     }
 
     /// Set a persistent data directory for bitcoind and electrs data
@@ -132,19 +129,12 @@ impl TestEnvBuilder {
                     e
                 )
             })?;
-
-            unsafe { std::env::set_var("ELECTRSD_DIR", data_dir) };
         }
 
         TestEnv::new_with_conf(self.config)
     }
 }
 
-impl Default for TestEnvBuilder {
-    fn default() -> Self {
-        Self::new()
-    }
-}
 
 // Type alias for Hmac-Sha256
 type HmacSha256 = Hmac<Sha256>;
