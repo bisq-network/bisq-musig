@@ -4,9 +4,7 @@ use std::sync::Arc;
 use bdk_bitcoind_rpc::bitcoincore_rpc::{Auth, Client as BitcoinCoreClient};
 use bmp_tracing::tracing::info;
 use clap::Parser;
-use rpc::bmp_service::BmpServiceImpl;
 use rpc::bmp_wallet_service::BmpWalletServiceImpl;
-use rpc::pb::bmp_protocol::bmp_protocol_service_server::BmpProtocolServiceServer;
 use rpc::pb::bmp_wallet::wallet_server::WalletServer as BmpWalletServer;
 use rpc::server::{MusigImpl, MusigServer, WalletImpl, WalletServer};
 use rpc::wallet::WalletServiceImpl;
@@ -85,18 +83,19 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let addr = format!("127.0.0.1:{}", cli.port).parse()?;
     let musig = MusigImpl::default();
     let wallet = WalletImpl {
-        wallet_service: Arc::new(WalletServiceImpl::create_with_rpc_params(rpc_client)),
+        wallet_service: Arc::new(WalletServiceImpl::create_with_rpc_params()),
     };
-    wallet.wallet_service.clone().spawn_connection();
+    wallet
+        .wallet_service
+        .clone()
+        .spawn_connection(Arc::new(rpc_client));
 
-    let bmp_protocol_impl = BmpServiceImpl::default();
     let bmp_wallet_service = BmpWalletServiceImpl::default();
 
     info!(port = cli.port, "Starting gRPC server.");
     Server::builder()
         .add_service(MusigServer::new(musig))
         .add_service(WalletServer::new(wallet))
-        .add_service(BmpProtocolServiceServer::new(bmp_protocol_impl))
         .add_service(BmpWalletServer::new(bmp_wallet_service))
         .serve(addr)
         .await?;

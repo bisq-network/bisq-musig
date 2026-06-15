@@ -32,7 +32,7 @@ const INTERNAL_DESCRIPTOR: &str = "tr(tprv8ZgxMBicQKsPdrjwWCyXqqJ4YqcyG4DmKtjjsR
 pub trait WalletService {
     /// # Errors
     /// Will return `Err` if connection or continual sync fails at any point
-    async fn connect(&self) -> Result<Never>;
+    async fn connect(&self, rpc: Arc<Client>) -> Result<Never>;
 
     fn balance(&self) -> Balance;
     fn reveal_next_address(&self) -> AddressInfo;
@@ -41,9 +41,12 @@ pub trait WalletService {
 
     /// # Panics
     /// Will panic if called outside the context of a Tokio runtime
-    fn spawn_connection(self: Arc<Self>) -> JoinHandle<Result<Never>> where Self: Send + Sync + 'static {
+    fn spawn_connection(self: Arc<Self>, client: Arc<Client>) -> JoinHandle<Result<Never>>
+    where
+        Self: Send + Sync + 'static,
+    {
         task::spawn(async move {
-            self.connect().await
+            self.connect(client).await
                 .inspect_err(|e| error!("Wallet connection error: {e}"))
         })
     }
@@ -56,8 +59,8 @@ pub struct WalletServiceImpl {
     wallet: RwLock<Wallet>,
     tx_confidence_map: Mutex<ObservableHashMap<Txid, TxConfidence>>,
 
-    // Make the following RPC parameters configurable for testing:
-    rpc_client: Client,
+    // // Make the following RPC parameters configurable for testing:
+    // rpc_client: Client,
     poll_period: Duration,
 }
 
@@ -65,7 +68,7 @@ const BITCOIND_POLLING_PERIOD: Duration = Duration::from_millis(100);
 
 impl WalletServiceImpl {
     // TODO: Make wallet setup properly configurable, not just the RPC authentication method and polling period.
-    pub fn create_with_rpc_params(rpc_client: Client) -> Self {
+    pub fn create_with_rpc_params() -> Self {
         let wallet = Wallet::create(EXTERNAL_DESCRIPTOR, INTERNAL_DESCRIPTOR)
             .network(Network::Regtest)
             .create_wallet_no_persist()
@@ -74,7 +77,11 @@ impl WalletServiceImpl {
         let mut tx_confidence_map = ObservableHashMap::new();
         tx_confidence_map.sync(tx_confidence_entries(&wallet));
 
-        Self { wallet: RwLock::new(wallet), tx_confidence_map: Mutex::new(tx_confidence_map), rpc_client, poll_period: BITCOIND_POLLING_PERIOD }
+        Self {
+            wallet: RwLock::new(wallet),
+            tx_confidence_map: Mutex::new(tx_confidence_map),
+            poll_period: BITCOIND_POLLING_PERIOD,
+        }
     }
 
     fn sync_tx_confidence_map(&self) {
@@ -128,8 +135,8 @@ fn tx_confidence_entries(wallet: &Wallet) -> impl Iterator<Item=(Txid, TxConfide
 
 #[tonic::async_trait]
 impl WalletService for WalletServiceImpl {
-    async fn connect(&self) -> Result<Never> {
-        let blockchain_info = task::block_in_place(|| self.rpc_client.get_blockchain_info())?;
+    async fn connect(&self, rpc: Arc<Client>) -> Result<Never> {
+        let blockchain_info = task::block_in_place(|| rpc.get_blockchain_info())?;
         info!(chain = %blockchain_info.chain, best_block_hash = %blockchain_info.best_block_hash,
             blocks = blockchain_info.blocks, "Connected to Bitcoin Core RPC.");
 
@@ -137,7 +144,7 @@ impl WalletService for WalletServiceImpl {
         let start_height = wallet_tip.height();
         info!(start_hash = %wallet_tip.hash(), start_height, "Fetched latest wallet checkpoint.");
 
-        let mut emitter = Emitter::new(&self.rpc_client, wallet_tip, start_height,
+        let mut emitter = Emitter::new(rpc.as_ref(), wallet_tip, start_height,
             unconfirmed_txs(&self.wallet.read().unwrap()));
         self.sync_from_rpc_emitter(&mut emitter)?;
         info!(wallet_balance_total = %self.balance().total(), "Finished initial sync.");

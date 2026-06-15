@@ -13,22 +13,22 @@
     </properties>
 
     <dependencies>
-        <!-- Upgrade grpc-netty transitive dependencies to fix vulnerability in netty*:4.1.110.Final -->
+        <!-- Upgrade grpc-netty transitive dependencies to latest 4.1.135 -->
         <dependency>
             <groupId>io.netty</groupId>
             <artifactId>netty-codec-http2</artifactId>
-            <version>4.1.119.Final</version>
+            <version>4.1.135.Final</version>
         </dependency>
 
         <dependency>
             <groupId>io.netty</groupId>
             <artifactId>netty-transport-native-unix-common</artifactId>
-            <version>4.1.119.Final</version>
+            <version>4.1.135.Final</version>
         </dependency>
         <dependency>
             <groupId>io.netty</groupId>
             <artifactId>netty-handler-proxy</artifactId>
-            <version>4.1.119.Final</version>
+            <version>4.1.135.Final</version>
         </dependency>
 
         <dependency>
@@ -47,17 +47,19 @@
             <version>1.71.0</version>
         </dependency>
 
-        <!-- Protobuf Java runtime for well-known types support -->
+        <!-- Protobuf Java runtime for well-known types support
+             Upgraded to fix CVE-2024-7254: Stack overflow/DoS when parsing unknown fields (HIGH)
+        -->
         <dependency>
             <groupId>com.google.protobuf</groupId>
             <artifactId>protobuf-java</artifactId>
-            <version>3.24.4</version>
+            <version>3.25.5</version>
         </dependency>
 
         <dependency>
             <groupId>com.google.protobuf</groupId>
             <artifactId>protobuf-java-util</artifactId>
-            <version>3.24.4</version>
+            <version>3.25.5</version>
         </dependency>
 
         <dependency>
@@ -101,7 +103,7 @@
                 <artifactId>protobuf-maven-plugin</artifactId>
                 <version>0.6.1</version>
                 <configuration>
-                    <protocArtifact>com.google.protobuf:protoc:3.25.6:exe:${os.detected.classifier}</protocArtifact>
+                    <protocArtifact>com.google.protobuf:protoc:3.25.5:exe:${os.detected.classifier}</protocArtifact>
                     <pluginId>grpc-java</pluginId>
                     <pluginArtifact>io.grpc:protoc-gen-grpc-java:1.71.0:exe:${os.detected.classifier}</pluginArtifact>
                 </configuration>

@@ -100,11 +100,10 @@ fn test_cli_no_connection() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn test_cli_wallet_balance() {
-    let testenv = TestEnv::new().expect("testEnv could not start");
     let (port, listener) = TestEnv::get_bound_port().await.expect("listener");
     spawn_wallet_grpc_service(
         listener,
-        WalletServiceImpl::create_with_rpc_params(testenv.bitcoin_core_rpc_client().unwrap()),
+        WalletServiceImpl::create_with_rpc_params(),
     );
 
     task::spawn_blocking(move || assert_cli_with_port(port, ["wallet-balance"]))
@@ -116,11 +115,10 @@ async fn test_cli_wallet_balance() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn test_cli_new_address() {
-    let testenv = TestEnv::new().expect("testEnv could not start"); // TODO: this doesnt make sense as a CLI make only sense if the bitcoind is
     let (port, listener) = TestEnv::get_bound_port().await.expect("listener");
     spawn_wallet_grpc_service(
         listener,
-        WalletServiceImpl::create_with_rpc_params(testenv.bitcoin_core_rpc_client().unwrap()),
+        WalletServiceImpl::create_with_rpc_params(),
     );
 
     task::spawn_blocking(move || assert_cli_with_port(port, ["new-address"]))

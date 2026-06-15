@@ -181,7 +181,7 @@ public class TestEnvClient {
 
         String address = getNewAddress();
 
-        String result = rpcCall(
+        rpcCall(
                 "generatetoaddress",
                 "[" + count + ",\"" + address + "\"]"
         );
@@ -223,12 +223,7 @@ public class TestEnvClient {
                 "getblockcount",
                 "[]"
         );
-
-        try {
-            return Integer.parseInt(extractResult(result));
-        } catch (Exception e) {
-            throw e;
-        }
+        return Integer.parseInt(extractResult(result));
     }
 
     /**
@@ -239,11 +234,7 @@ public class TestEnvClient {
                 "getbalance",
                 "[]"
         );
-        try {
-            return Double.parseDouble(extractResult(result));
-        } catch (Exception e) {
-            throw e;
-        }
+        return Double.parseDouble(extractResult(result));
     }
 
     /**

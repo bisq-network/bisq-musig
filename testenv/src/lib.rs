@@ -133,9 +133,7 @@ impl TestEnvBuilder {
                 )
             })?;
 
-            unsafe {
-                std::env::set_var("ELECTRSD_DIR", data_dir);
-            }
+            unsafe { std::env::set_var("ELECTRSD_DIR", data_dir) };
         }
 
         TestEnv::new_with_conf(self.config)

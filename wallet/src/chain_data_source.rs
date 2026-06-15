@@ -28,8 +28,7 @@ impl ChainDataSource for testenv::Testchain {
         let request = persister.start_full_scan();
 
         let updates = self
-            .full_scan(request, Self::STOP_GAP, Self::BATCH_SIZE, false)
-            .expect("Should be able to start full scan request");
+            .full_scan(request, Self::STOP_GAP, Self::BATCH_SIZE, false)?;
 
         persister.apply_update(updates)?;
 

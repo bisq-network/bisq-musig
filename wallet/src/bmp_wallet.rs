@@ -192,7 +192,6 @@ pub struct BMPWallet<P: BMPWalletPersister> {
     last_unused_address: Option<String>,
 }
 
-// a, b, c, [d - used], [e, f, g, h, i, j, k, l, m, n], o, p, q, r, s
 impl BMPWallet<Connection> {
 
     pub fn list_unused_addresses_since_last_used(&self, key_chain: KeychainKind) -> impl Iterator<Item = AddressInfo> + '_  {

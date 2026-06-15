@@ -5,6 +5,7 @@ import bmp_protocol.BmpProtocolServiceGrpc;
 
 import com.google.common.util.concurrent.Uninterruptibles;
 import com.google.protobuf.ByteString;
+import io.grpc.ConnectivityState;
 import io.grpc.ManagedChannel;
 import io.grpc.ManagedChannelBuilder;
 
@@ -55,19 +56,32 @@ public class BmpServiceIntegrationTest {
     }
 
     /**
-     * Wait for a gRPC service to be ready by attempting to call a method
+     * Wait for a gRPC service to be ready
      */
     private void waitForGrpcReady(BmpProtocolServiceGrpc.BmpProtocolServiceBlockingStub stub, int maxAttempts) {
+        if (stub == null) {
+            throw new IllegalArgumentException("Stub must not be null");
+        }
+
         for (int i = 0; i < maxAttempts; i++) {
-            // Try to ping by calling getBalance with a dummy request
-            System.out.println("  Checking gRPC server readiness (attempt " + (i + 1) + "/" + maxAttempts + ")");
-            Uninterruptibles.sleepUninterruptibly(500, TimeUnit.MILLISECONDS);
-            if (i >= 2) return;
+            System.out.println("  Checking gRPC server readiness channel (attempt " + (i + 1) + "/" + maxAttempts + ")");
+            try {
+                ManagedChannel channel = (ManagedChannel) stub.getChannel();
+                ConnectivityState state = channel.getState(true);
+                System.out.println("  Channel state is " + state + ".");
+                if (state == ConnectivityState.READY) {
+                    return;
+                }
+            } catch (Exception e) {
+                System.out.println("  Channel readiness check failed: " + e.getMessage());
+            }
+
             if (i < maxAttempts - 1) {
-                Uninterruptibles.sleepUninterruptibly(500, TimeUnit.MILLISECONDS);
+                Uninterruptibles.sleepUninterruptibly(1, TimeUnit.SECONDS);
             }
         }
-        System.out.println("  gRPC server appears ready (or timeout reached)");
+
+        throw new IllegalStateException("gRPC server readiness check failed after " + maxAttempts + " attempts");
     }
 
     @AfterAll
