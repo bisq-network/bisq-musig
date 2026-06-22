@@ -15,9 +15,11 @@ hex = { workspace = true }
 rand = { workspace = true }
 secp = { workspace = true }
 tempfile = { workspace = true }
-tokio = { workspace = true, features = ["net"] }
+tokio = { workspace = true, features = ["net", "signal", "rt"] }
 typed-arena = "2"
 
+clap = { version = "4.6.0", features = ["derive"] }
+ctrlc = "3.4.0"
 electrsd = { version = "0.36.1", features = [
 "esplora_a33e97e1",
 "corepc-node_29_0",

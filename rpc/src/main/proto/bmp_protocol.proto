@@ -2,8 +2,6 @@ syntax = "proto3";
 
 package bmp_protocol;
 
-import "google/protobuf/empty.proto";
-
 // Service that wraps the BMPProtocol from the 'protocol' crate.
 // It is stateful and manages the lifecycle of a trade via a trade_id.
 service BmpProtocolService {
@@ -18,7 +16,7 @@ service BmpProtocolService {
 
   rpc ExecuteRound4(Round4Request) returns (Round4Response);
 
-  rpc ExecuteRound5(Round5Request) returns (google.protobuf.Empty);
+  rpc ExecuteRound5(Round5Request) returns (ExecuteRound5Response);
 }
 
 // === Messages ===
@@ -95,4 +93,8 @@ message Round4Response {
 message Round5Request {
   string trade_id = 1;
   Round4Response peer_round4_response = 2;
+}
+
+message ExecuteRound5Response {
+  // Empty response message for Round5 execution completion
 }

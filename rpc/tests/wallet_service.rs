@@ -65,10 +65,12 @@ async fn test_wallet_service_mine_single_tx() -> Result<()> {
 }
 
 async fn start_wallet_service(rpc_client: bitcoincore_rpc::Client) -> Arc<impl WalletService> {
-    let wallet_service = Arc::new(WalletServiceImpl::create_with_rpc_params(rpc_client));
+    let wallet_service = Arc::new(WalletServiceImpl::create_with_rpc_params());
     assert_eq!(wallet_service.balance(), Balance::default());
 
-    wallet_service.clone().spawn_connection();
+    wallet_service
+        .clone()
+        .spawn_connection(Arc::new(rpc_client));
     // Wait for RPC sync...
     // FIXME: A bit hacky -- should add logic to the service to notify when the wallet is synced.
     time::sleep(Duration::from_secs(1)).await;

@@ -7,7 +7,6 @@ pub mod pb {
     pub mod walletrpc;
 }
 
-pub mod bmp_service;
 pub mod bmp_wallet_service;
 mod observable;
 mod protocol;

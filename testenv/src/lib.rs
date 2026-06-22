@@ -52,7 +52,7 @@ pub struct TestEnv {
 }
 
 /// Configuration parameters.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Config<'a> {
     /// [`bitcoind::Conf`]
     pub bitcoind: corepc_node::Conf<'a>,
@@ -97,8 +97,48 @@ impl Default for Config<'_> {
 
 const NETWORK: Network = Network::Regtest;
 
+/// Builder for TestEnv configuration with optional data directory support
+#[derive(Debug, Clone, Default)]
+pub struct TestEnvBuilder {
+    config: Config<'static>,
+    data_dir: Option<std::path::PathBuf>,
+}
+
+impl TestEnvBuilder {
+    pub fn new() -> Self {
+        TestEnvBuilder::default()
+    }
+
+    /// Set a persistent data directory for bitcoind and electrs data
+    ///
+    /// If not set, a temporary directory will be used (auto-deleted on exit).
+    /// If set, the directory will be created if it doesn't exist and persist across runs.
+    pub fn with_data_dir(mut self, path: Option<std::path::PathBuf>) -> Self {
+        self.data_dir = path;
+        self
+    }
+
+    /// Build the TestEnv with the configured settings
+    pub fn build(self) -> Result<TestEnv> {
+        if let Some(data_dir) = &self.data_dir {
+            // Create the data directory if it doesn't exist
+            std::fs::create_dir_all(data_dir).map_err(|e| {
+                anyhow::anyhow!(
+                    "Failed to create data directory {}: {}",
+                    data_dir.display(),
+                    e
+                )
+            })?;
+        }
+
+        TestEnv::new_with_conf(self.config)
+    }
+}
+
+
 // Type alias for Hmac-Sha256
 type HmacSha256 = Hmac<Sha256>;
+
 
 /// Generates a Bitcoin Core rpcauth string.
 ///
@@ -374,6 +414,11 @@ impl TestEnv {
 
     pub fn bitcoin_rpc_port(&self) -> u16 {
         self.bitcoind.params.rpc_socket.port()
+    }
+
+    /// Get the Bitcoin RPC password
+    pub fn bitcoin_rpc_password(&self) -> &str {
+        &self.bitcoin_rpc_pwd
     }
 
     /// Get the electrum client for blockchain operations

@@ -30,9 +30,6 @@ unimock = { version = "0.6.8", optional = true }
 bmp_tracing = { workspace = true }
 clap = { version = "4.6.0", features = ["derive"] }
 wallet = { path = "../wallet" }
-# TODO move this to dev-dependencies — `bmp_service.rs` currently uses `Testchain` as a
-# placeholder `ChainApi` until `rpc` switches to a real chain backend.
-testenv = { path = "../testenv" }
 
 [build-dependencies]
 tonic-prost-build = "0.14.5"
@@ -42,6 +39,7 @@ rpc = { path = ".", features = ["unimock"] }
 assert_cmd = "2.2.0"
 const_format = { workspace = true }
 predicates = "3.1.4"
+testenv = { path = "../testenv" }
 
 [lints]
 workspace = true

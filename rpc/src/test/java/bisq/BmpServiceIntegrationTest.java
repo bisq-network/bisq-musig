@@ -2,7 +2,10 @@ package bisq;
 
 import bmp_protocol.BmpProtocol.*;
 import bmp_protocol.BmpProtocolServiceGrpc;
+
+import com.google.common.util.concurrent.Uninterruptibles;
 import com.google.protobuf.ByteString;
+import io.grpc.ConnectivityState;
 import io.grpc.ManagedChannel;
 import io.grpc.ManagedChannelBuilder;
 
@@ -21,19 +24,64 @@ public class BmpServiceIntegrationTest {
     private ManagedChannel bob_channel;
     private BmpProtocolServiceGrpc.BmpProtocolServiceBlockingStub aliceStub;
     private BmpProtocolServiceGrpc.BmpProtocolServiceBlockingStub bobStub;
-    private final NigiriCli nigiri = new NigiriCli();
+    private TestEnvClient testenv;
 
     @BeforeAll
-    void setup() {
+    void setup() throws InterruptedException {
+        // Initialize TestEnvClient from environment variables set by Maven
+        try {
+            testenv = TestEnvClient.fromEnv();
+            System.out.println("Connected to TestEnv: " + testenv);
+        } catch (RuntimeException e) {
+            throw new RuntimeException(
+                "TestEnv RPC configuration is required to run integration tests.\n" + 
+                e.getMessage(), e);
+        }
+
+        // Set up gRPC channels to both musigd servers (Alice on 50052, Bob on 50051)
         alice_channel = ManagedChannelBuilder.forAddress("localhost", 50052).usePlaintext().build();
         bob_channel = ManagedChannelBuilder.forAddress("localhost", 50051).usePlaintext().build();
 
         aliceStub = BmpProtocolServiceGrpc.newBlockingStub(alice_channel);
         bobStub = BmpProtocolServiceGrpc.newBlockingStub(bob_channel);
 
-        // Mine some blocks on Nigiri to ensure its wallet has funds for any fees.
-        System.out.println("Mining initial blocks for Nigiri...");
-        nigiri.mineBlocks(101);
+        // Wait for gRPC servers to be ready
+        System.out.println("Waiting for gRPC servers to be ready...");
+        waitForGrpcReady(aliceStub, 30);
+        waitForGrpcReady(bobStub, 30);
+
+        // Mine some blocks to ensure test environment has funds
+        System.out.println("Mining initial blocks...");
+        testenv.mineBlocks(101);
+    }
+
+    /**
+     * Wait for a gRPC service to be ready
+     */
+    private void waitForGrpcReady(BmpProtocolServiceGrpc.BmpProtocolServiceBlockingStub stub, int maxAttempts) {
+        if (stub == null) {
+            throw new IllegalArgumentException("Stub must not be null");
+        }
+
+        for (int i = 0; i < maxAttempts; i++) {
+            System.out.println("  Checking gRPC server readiness channel (attempt " + (i + 1) + "/" + maxAttempts + ")");
+            try {
+                ManagedChannel channel = (ManagedChannel) stub.getChannel();
+                ConnectivityState state = channel.getState(true);
+                System.out.println("  Channel state is " + state + ".");
+                if (state == ConnectivityState.READY) {
+                    return;
+                }
+            } catch (Exception e) {
+                System.out.println("  Channel readiness check failed: " + e.getMessage());
+            }
+
+            if (i < maxAttempts - 1) {
+                Uninterruptibles.sleepUninterruptibly(1, TimeUnit.SECONDS);
+            }
+        }
+
+        throw new IllegalStateException("gRPC server readiness check failed after " + maxAttempts + " attempts");
     }
 
     @AfterAll
@@ -43,7 +91,7 @@ public class BmpServiceIntegrationTest {
             alice_channel.shutdown().awaitTermination(5, TimeUnit.SECONDS);
         }
         if (bob_channel != null) {
-            System.out.println("Shutting down bob  gRPC channel.");
+            System.out.println("Shutting down bob gRPC channel.");
             bob_channel.shutdown().awaitTermination(5, TimeUnit.SECONDS);
         }
     }
@@ -178,12 +226,23 @@ public class BmpServiceIntegrationTest {
         // === 3. Verify Transaction on Blockchain ===
         System.out.println("Verifying transaction on the blockchain...");
 
+        if (testenv == null) {
+            System.out.println("WARNING: TestEnv not available, skipping blockchain verification");
+            System.out.println("SUCCESS: Protocol executed successfully (blockchain verification skipped)");
+            return;
+        }
+
         // Give the network a moment to process the transaction, then mine a block.
         Thread.sleep(1000);
-        nigiri.mineBlocks(1);
+        testenv.mineBlocks(1);
         System.out.println("Mined a block to confirm the transaction.");
 
-        String rawTx = nigiri.getRawTransaction(depositTxid);
+        // Wait for transaction to appear in RPC
+        if (!testenv.waitForTransaction(depositTxid)) {
+            System.err.println("WARNING: Transaction did not appear within timeout");
+        }
+
+        String rawTx = testenv.getRawTransaction(depositTxid);
         assertNotNull(rawTx, "FAILURE: Transaction was NOT found on the blockchain!");
         assertFalse(rawTx.isEmpty(), "FAILURE: Transaction was NOT found on the blockchain!");
 
