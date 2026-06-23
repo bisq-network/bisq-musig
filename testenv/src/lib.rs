@@ -61,6 +61,7 @@ pub struct Config<'a> {
     pub timeout: Duration,
     pub delay: Duration,
     pub runmultithreaded: bool,
+    pub password: Option<String>,
 }
 
 impl Default for Config<'_> {
@@ -90,6 +91,7 @@ impl Default for Config<'_> {
             },
             timeout: Duration::from_secs(5),
             delay: Duration::from_millis(200),
+            password: None,
             runmultithreaded: "true" == std::env::var("TEST_MULTITHREADED").unwrap_or_else(|_| "false".to_string()).trim().to_lowercase()
         }
     }
@@ -140,7 +142,7 @@ impl TestEnvBuilder {
             self.config.bitcoind.staticdir = Some(data_dir.join("bitcoind"));
             self.config.electrsd.staticdir = Some(data_dir.join("electrsd"));
         }
-
+        self.config.password = Some("bitcoin".to_string());
         TestEnv::new_with_conf(self.config)
     }
 }
@@ -271,8 +273,7 @@ impl TestEnv {
         // Try to start bitcoind (from environment or downloads)
         tracing::info!("Starting bitcoind...");
         // rpcauth for each bitcoind and save the pwd
-        // let (rpc_auth, bitcoin_rpc_pwd) = generate_rpcauth("bitcoin", Some("bitcoin"));
-        let (rpc_auth, bitcoin_rpc_pwd) = generate_rpcauth("bitcoin", None);
+        let (rpc_auth, bitcoin_rpc_pwd) = generate_rpcauth("bitcoin", config.password.as_deref());
 
         let auth_config = format!("-{rpc_auth}");
         let mut bitcoin_config = config.bitcoind;

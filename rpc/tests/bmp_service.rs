@@ -247,7 +247,7 @@ async fn run_musigd_server() -> Result<()> {
     // let data_dir = std::env::var("MUSIGD_DATADIR").ok().map(|v| Path::new(&v).to_path_buf());
 
     let rpc_url = std::env::var("RPC_URL").ok();
-    let rpc_pass = std::env::var("RPC_PASS").ok();
+    let rpc_pass = Some("bitcoin");
     let rpc_user = Some("bitcoin");
 
     // Create RPC client
@@ -257,7 +257,7 @@ async fn run_musigd_server() -> Result<()> {
         // Determine authentication method
         let auth = if let (Some(user), Some(pass)) = (&rpc_user, rpc_pass)
         {
-            Auth::UserPass(user.to_string(), pass)
+            Auth::UserPass(user.to_string(), pass.to_owned())
         } else {
             // Fall back to the default Bitcoin Core cookie file under the user's home directory.
             let home = std::env::home_dir()
