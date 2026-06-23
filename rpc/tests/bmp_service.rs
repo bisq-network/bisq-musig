@@ -1,20 +1,17 @@
 //! Integration-test home of the `musigd` daemon (formerly the `rpc/src/bin/musigd.rs` binary).
 //!
 //! The full gRPC server — the `MuSig` trade-protocol service, the wallet service, and the two BMP
-//! services — is built by [`spawn_musigd`] and backed by a real `bitcoind`/`electrs`
-//! [`TestEnv`], so the daemon can be started as a test case rather than as a standalone process.
+//! services — is built by [`spawn_musigd`] and backed by an external `bitcoind`, so the daemon
+//! can be started as a test case rather than as a standalone process.
 //!
-//! Two entry points are provided:
-//!
-//! * [`test_musigd_starts_and_serves`] — a fast smoke test on an OS-assigned port that asserts the
-//!   server comes up and serves, then tears it down.
-//! * [`run_musigd_server`] — an `#[ignore]`d, long-running server on a fixed port (taken from the
-//!   `MUSIGD_PORT` env var, default `50051`). It serves until the process is killed, replacing
-//!   `cargo run --bin musigd -- --port <PORT>` for e.g. the Java integration test client. Run it
-//!   with, for example:
+//! The entry point is [`run_musigd_server`] — an `#[ignore]`d, long-running server on a fixed port
+//! (taken from the `MUSIGD_PORT` env var, default `50051`). It serves until the process is killed,
+//! replacing `cargo run --bin musigd -- --port <PORT>` for e.g. the Java integration test client.
+//! Run it with, for example:
 //!
 //!   ```sh
-//!   MUSIGD_PORT=50051 cargo test -p rpc --test musigd -- --ignored run_musigd_server --nocapture
+//!   RPC_URL=http://127.0.0.1:18443 RPC_PASS=<pass> MUSIGD_PORT=50051 \
+//!       cargo test -p rpc --test bmp_service -- --ignored run_musigd_server --nocapture
 //!   ```
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
