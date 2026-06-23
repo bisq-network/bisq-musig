@@ -32,10 +32,6 @@ struct Cli {
     /// Bitcoin Core RPC password
     #[arg(long)]
     bitcoin_rpc_pass: Option<String>,
-
-    /// Electrum server URL (optional, for wallet sync optimization)
-    #[arg(long)]
-    electrum_url: Option<String>,
 }
 
 #[tokio::main]
