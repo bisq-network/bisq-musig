@@ -22,22 +22,18 @@ struct Cli {
     port: u16,
 
     /// Bitcoin Core RPC URL.
-    /// Can also be set via BITCOIN_RPC_URL environment variable.
     #[arg(long, default_value = "http://localhost:18443")]
     bitcoin_rpc_url: Option<String>,
 
     /// Bitcoin Core RPC username
-    /// Can also be set via BITCOIN_RPC_USER environment variable.
     #[arg(long)]
     bitcoin_rpc_user: Option<String>,
 
     /// Bitcoin Core RPC password
-    /// Can also be set via BITCOIN_RPC_PASS environment variable.
     #[arg(long)]
     bitcoin_rpc_pass: Option<String>,
 
     /// Electrum server URL (optional, for wallet sync optimization)
-    /// Can also be set via ELECTRUM_URL environment variable.
     #[arg(long)]
     electrum_url: Option<String>,
 }
