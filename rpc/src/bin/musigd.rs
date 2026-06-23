@@ -23,7 +23,7 @@ struct Cli {
 
     /// Bitcoin Core RPC URL.
     /// Can also be set via BITCOIN_RPC_URL environment variable.
-    #[arg(long, default_value = "https://localhost:18443")]
+    #[arg(long, default_value = "http://localhost:18443")]
     bitcoin_rpc_url: Option<String>,
 
     /// Bitcoin Core RPC username
