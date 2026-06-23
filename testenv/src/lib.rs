@@ -119,7 +119,7 @@ impl TestEnvBuilder {
     }
 
     /// Build the TestEnv with the configured settings
-    pub fn build(self) -> Result<TestEnv> {
+    pub fn build(mut self) -> Result<TestEnv> {
         if let Some(data_dir) = &self.data_dir {
             // Create the data directory if it doesn't exist
             std::fs::create_dir_all(data_dir).map_err(|e| {
@@ -129,6 +129,16 @@ impl TestEnvBuilder {
                     e
                 )
             })?;
+
+            // Wire the persistent directory into bitcoind and electrs. Both back-ends treat a
+            // `staticdir` as a persistent work directory (reused across runs), whereas the
+            // default `tmpdir`/`None` behaviour creates a throwaway temp dir. They must not share
+            // the same directory, so each gets its own sub-directory under `data_dir`.
+            //
+            // Note: `staticdir` and `tmpdir` are mutually exclusive in both `corepc_node::Conf`
+            // and `electrsd::Conf`, so we leave `tmpdir` as its default `None`.
+            self.config.bitcoind.staticdir = Some(data_dir.join("bitcoind"));
+            self.config.electrsd.staticdir = Some(data_dir.join("electrsd"));
         }
 
         TestEnv::new_with_conf(self.config)
@@ -805,6 +815,80 @@ mod tests {
 
         assert_eq!(receive_amount, amount);
         tracing::info!("Transaction amount verified: {receive_amount}");
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_persistent_data_dir() -> Result<()> {
+        // A persistent `data_dir` should make bitcoind's chain state survive a full
+        // shut-down/restart cycle, in contrast to the default throwaway temp dirs.
+        let data_root = TempDir::new()?;
+        let data_dir = data_root.path().to_path_buf();
+        let bitcoind_dir = data_dir.join("bitcoind");
+        let electrsd_dir = data_dir.join("electrsd");
+
+        // Number of blocks beyond the initial height we mine in the first run.
+        const MINED: usize = 5;
+
+        let persisted_height = {
+            let mut env = TestEnvBuilder::new()
+                .with_data_dir(Some(data_dir.clone()))
+                .build()?;
+
+            // The configured sub-directories must actually be the ones in use.
+            assert!(
+                bitcoind_dir.is_dir(),
+                "bitcoind data dir should exist: {}",
+                bitcoind_dir.display()
+            );
+            assert!(
+                electrsd_dir.is_dir(),
+                "electrs data dir should exist: {}",
+                electrsd_dir.display()
+            );
+            // bitcoind writes its regtest data (incl. the cookie) under its sub-directory.
+            assert!(
+                bitcoind_dir.join("regtest").is_dir(),
+                "bitcoind should populate its regtest dir: {}",
+                bitcoind_dir.join("regtest").display()
+            );
+            // electrs reports the persistent dir we asked for as its workdir.
+            assert_eq!(
+                env.workdir(),
+                electrsd_dir,
+                "electrs workdir should be the persistent dir"
+            );
+
+            let initial_height = env.block_count()?;
+            env.mine_blocks(MINED)?;
+            let height = env.block_count()?;
+            assert_eq!(height, initial_height + MINED as u64);
+            tracing::info!("First run mined up to height {height}");
+
+            height
+            // `env` is dropped here, shutting down bitcoind and electrs.
+        };
+
+        // Re-create the environment against the same data dir. bitcoind should reload the
+        // existing chain state rather than starting from a fresh genesis-only chain.
+        let env2 = TestEnvBuilder::new()
+            .with_data_dir(Some(data_dir.clone()))
+            .build()?;
+        let reloaded_height = env2.block_count()?;
+        tracing::info!("Second run reloaded chain at height {reloaded_height}");
+
+        assert_eq!(
+            reloaded_height, persisted_height,
+            "block height should persist across restarts when a data dir is set"
+        );
+
+        // Sanity check: a default (non-persistent) env is independent and starts fresh.
+        let ephemeral = TestEnv::new()?;
+        assert!(
+            ephemeral.block_count()? < persisted_height,
+            "a fresh ephemeral env should not see the persisted blocks"
+        );
 
         Ok(())
     }
