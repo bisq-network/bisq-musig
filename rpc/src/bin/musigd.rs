@@ -47,8 +47,10 @@ async fn main() -> Result<(), Box<dyn Error>> {
         {
             Auth::UserPass(user.clone(), pass.clone())
         } else {
-            // Try cookie file as fallback
-            Auth::CookieFile(std::path::PathBuf::from("~/.bitcoin/.cookie"))
+            // Fall back to the default Bitcoin Core cookie file under the user's home directory.
+            let home = std::env::home_dir()
+                .ok_or("Can't determine home directory for cookie-file fallback; pass --bitcoin-rpc-user/--bitcoin-rpc-pass")?;
+            Auth::CookieFile(home.join(".bitcoin").join(".cookie"))
         };
 
         BitcoinCoreClient::new(rpc_url, auth)?

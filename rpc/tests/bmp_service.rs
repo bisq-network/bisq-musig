@@ -262,8 +262,10 @@ async fn run_musigd_server() -> Result<()> {
         {
             Auth::UserPass(user.to_string(), pass)
         } else {
-            // Try cookie file as fallback
-            Auth::CookieFile(std::path::PathBuf::from("~/.bitcoin/.cookie"))
+            // Fall back to the default Bitcoin Core cookie file under the user's home directory.
+            let home = std::env::home_dir()
+                .expect("Can't determine home directory for cookie-file fallback; set RPC_PASS");
+            Auth::CookieFile(home.join(".bitcoin").join(".cookie"))
         };
 
         BitcoinCoreClient::new(rpc_url, auth)
