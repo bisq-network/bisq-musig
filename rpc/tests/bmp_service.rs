@@ -16,8 +16,11 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
-use bdk_bitcoind_rpc::bitcoincore_rpc::{Auth, Client as BitcoinCoreClient};
-use bdk_wallet::bitcoin::Amount;
+use bdk_bitcoind_rpc::bitcoincore_rpc::{Auth, Client as BitcoinCoreClient, RpcApi as _};
+use bdk_electrum::BdkElectrumClient;
+use bdk_electrum::electrum_client::Client as ElectrumClient;
+use bdk_wallet::bitcoin::{Amount, Transaction, Txid};
+use chain::ChainApi;
 use protocol::protocol_musig_adaptor::{BMPContext, BMPProtocol, ProtocolRole, Round1Parameter};
 use rpc::bmp_wallet_service::BmpWalletServiceImpl;
 use rpc::pb::bmp_protocol::bmp_protocol_service_server::{
@@ -28,7 +31,6 @@ use rpc::pb::bmp_wallet::wallet_server::WalletServer as BmpWalletServer;
 use rpc::pb::convert::TryProtoInto as _;
 use rpc::server::{MusigImpl, MusigServer, WalletImpl, WalletServer};
 use rpc::wallet::WalletServiceImpl;
-use testenv::TestEnv;
 use tokio::net::TcpListener;
 use tokio::task::{self, JoinHandle};
 use tonic::transport::Server;
@@ -37,10 +39,75 @@ use tonic::{Request, Response, Result, Status, transport};
 use tracing::info;
 use wallet::protocol_wallet_api::MemWallet;
 
-#[derive(Default)]
 pub struct BmpServiceImpl {
     // Each trade protocol is stored against a unique ID.
     active_protocols: Mutex<HashMap<String, BMPProtocol>>,
+    bitcoin_rpc_client: Arc<BitcoinCoreClient>,
+    electrum_url: Option<String>,
+}
+
+struct BitcoindChain {
+    client: Arc<BitcoinCoreClient>,
+}
+
+impl ChainApi for BitcoindChain {
+    fn transaction_broadcast(&self, tx: &Transaction) -> anyhow::Result<Txid> {
+        self.client.send_raw_transaction(tx).map_err(Into::into)
+    }
+}
+
+fn funded_wallet_from_rpc(
+    rpc: &BitcoinCoreClient,
+    electrum_url: &str,
+) -> anyhow::Result<MemWallet> {
+    const MAX_RETRIES: u32 = 20;
+    const RETRY_DELAY_MS: u64 = 500;
+
+    let client = BdkElectrumClient::new(ElectrumClient::new(electrum_url)?);
+
+    let mut wallet = MemWallet::new(client)?;
+    let address = wallet.reveal_next_address();
+    rpc.send_to_address(
+        &address,
+        Amount::from_btc(10f64).unwrap(),
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+    )?;
+    rpc.generate_to_address(1, &address)?;
+
+    for attempt in 0..MAX_RETRIES {
+        wallet.sync()?;
+        if wallet.balance() > Amount::from_sat(0) {
+            info!("Wallet funded after {} retries", attempt);
+            return Ok(wallet);
+        }
+        if attempt < MAX_RETRIES - 1 {
+            info!(
+                "Wallet still unfunded, attempt {}/{}, retrying...",
+                attempt + 1,
+                MAX_RETRIES
+            );
+            std::thread::sleep(std::time::Duration::from_millis(RETRY_DELAY_MS));
+        }
+    }
+
+    Err(anyhow::anyhow!(
+        "Wallet failed to sync funded balance after {MAX_RETRIES} attempts"
+    ))
+}
+
+impl BmpServiceImpl {
+    pub fn new(client: Arc<BitcoinCoreClient>, electrum_url: Option<String>) -> Self {
+        Self {
+            active_protocols: Mutex::new(HashMap::new()),
+            bitcoin_rpc_client: client,
+            electrum_url,
+        }
+    }
 }
 
 #[tonic::async_trait]
@@ -52,11 +119,20 @@ impl BmpProtocolService for BmpServiceImpl {
         let req = request.into_inner();
         info!("Received initialize request: {req:?}");
 
-        //todo retrieve the actual wallet
-        let mut env = TestEnv::new().unwrap(); // TODO move Wallet loading
-        let mock_wallet = MemWallet::funded_wallet(&mut env);
+        let electrum_url = self.electrum_url.as_ref().ok_or_else(|| {
+            Status::failed_precondition("BMP initialization requires an electrum URL")
+        })?;
 
-        let chain = Box::new(env.new_testchain().unwrap());
+        let mock_wallet = funded_wallet_from_rpc(self.bitcoin_rpc_client.as_ref(), electrum_url)
+            .map_err(|e: anyhow::Error| Status::internal(e.to_string()))?;
+
+        info!(
+            "mock_wallet initialized balance: {:?}",
+            mock_wallet.balance()
+        );
+        let chain = Box::new(BitcoindChain {
+            client: self.bitcoin_rpc_client.clone(),
+        });
         let role =
             Role::try_from(req.role).map_err(|_| Status::invalid_argument("Unrecognised role"))?;
         let role = match role {
@@ -205,15 +281,19 @@ impl BmpProtocolService for BmpServiceImpl {
 fn spawn_musigd(
     listener: TcpListener,
     client: Arc<BitcoinCoreClient>,
+    electrum_url: Option<String>,
 ) -> JoinHandle<Result<(), transport::Error>> {
     let musig = MusigImpl::default();
     let wallet = WalletImpl {
         wallet_service: Arc::new(WalletServiceImpl::create_with_rpc_params()),
     };
 
-    wallet.wallet_service.clone().spawn_connection(client);
+    wallet
+        .wallet_service
+        .clone()
+        .spawn_connection(client.clone());
 
-    let bmp_protocol_impl = BmpServiceImpl::default();
+    let bmp_protocol_impl = BmpServiceImpl::new(client, electrum_url);
     let bmp_wallet_service = BmpWalletServiceImpl::default();
 
     let incoming = TcpIncoming::from(listener);
@@ -247,6 +327,7 @@ async fn run_musigd_server() -> Result<()> {
     // let data_dir = std::env::var("MUSIGD_DATADIR").ok().map(|v| Path::new(&v).to_path_buf());
 
     let rpc_url = std::env::var("RPC_URL").ok();
+    let electrum_url = std::env::var("ELECTRUM_URL").ok();
     let rpc_pass = Some("bitcoin");
     let rpc_user = Some("bitcoin");
 
@@ -273,7 +354,7 @@ async fn run_musigd_server() -> Result<()> {
     let listener = TcpListener::bind(("127.0.0.1", port)).await?;
 
     bmp_tracing::tracing::info!(port, "Starting musigd gRPC server.");
-    let _ = spawn_musigd(listener, Arc::new(rpc_client.unwrap())).await;
+    let _ = spawn_musigd(listener, Arc::new(rpc_client.unwrap()), electrum_url).await;
 
     Ok(())
 }
