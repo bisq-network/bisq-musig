@@ -22,24 +22,16 @@ struct Cli {
     port: u16,
 
     /// Bitcoin Core RPC URL.
-    /// Can also be set via BITCOIN_RPC_URL environment variable.
-    #[arg(long, default_value = "https://localhost:18443")]
+    #[arg(long, default_value = "http://localhost:18443")]
     bitcoin_rpc_url: Option<String>,
 
     /// Bitcoin Core RPC username
-    /// Can also be set via BITCOIN_RPC_USER environment variable.
     #[arg(long)]
     bitcoin_rpc_user: Option<String>,
 
     /// Bitcoin Core RPC password
-    /// Can also be set via BITCOIN_RPC_PASS environment variable.
     #[arg(long)]
     bitcoin_rpc_pass: Option<String>,
-
-    /// Electrum server URL (optional, for wallet sync optimization)
-    /// Can also be set via ELECTRUM_URL environment variable.
-    #[arg(long)]
-    electrum_url: Option<String>,
 }
 
 #[tokio::main]
@@ -55,8 +47,10 @@ async fn main() -> Result<(), Box<dyn Error>> {
         {
             Auth::UserPass(user.clone(), pass.clone())
         } else {
-            // Try cookie file as fallback
-            Auth::CookieFile(std::path::PathBuf::from("~/.bitcoin/.cookie"))
+            // Fall back to the default Bitcoin Core cookie file under the user's home directory.
+            let home = std::env::home_dir()
+                .ok_or("Can't determine home directory for cookie-file fallback; pass --bitcoin-rpc-user/--bitcoin-rpc-pass")?;
+            Auth::CookieFile(home.join(".bitcoin").join(".cookie"))
         };
 
         BitcoinCoreClient::new(rpc_url, auth)?
