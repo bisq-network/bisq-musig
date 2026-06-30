@@ -107,8 +107,14 @@ pub struct TestEnvBuilder {
 }
 
 impl TestEnvBuilder {
-    pub fn new() -> Self {
-        TestEnvBuilder::default()
+    pub fn new(password: Option<String>) -> Self {
+        Self {
+            config: Config {
+                password,
+                ..Default::default()
+            },
+            data_dir: Default::default(),
+        }
     }
 
     /// Set a persistent data directory for bitcoind and electrs data
@@ -142,7 +148,6 @@ impl TestEnvBuilder {
             self.config.bitcoind.staticdir = Some(data_dir.join("bitcoind"));
             self.config.electrsd.staticdir = Some(data_dir.join("electrsd"));
         }
-        self.config.password = Some("bitcoin".to_string());
         TestEnv::new_with_conf(self.config)
     }
 }
@@ -833,7 +838,7 @@ mod tests {
         const MINED: usize = 5;
 
         let persisted_height = {
-            let mut env = TestEnvBuilder::new()
+            let mut env = TestEnvBuilder::new(None)
                 .with_data_dir(Some(data_dir.clone()))
                 .build()?;
 
@@ -873,7 +878,7 @@ mod tests {
 
         // Re-create the environment against the same data dir. bitcoind should reload the
         // existing chain state rather than starting from a fresh genesis-only chain.
-        let env2 = TestEnvBuilder::new()
+        let env2 = TestEnvBuilder::new(None)
             .with_data_dir(Some(data_dir.clone()))
             .build()?;
         let reloaded_height = env2.block_count()?;

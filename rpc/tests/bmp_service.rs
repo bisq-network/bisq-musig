@@ -19,8 +19,7 @@ use std::sync::{Arc, Mutex};
 use bdk_bitcoind_rpc::bitcoincore_rpc::{Auth, Client as BitcoinCoreClient, RpcApi as _};
 use bdk_electrum::BdkElectrumClient;
 use bdk_electrum::electrum_client::Client as ElectrumClient;
-use bdk_wallet::bitcoin::{Amount, Transaction, Txid};
-use chain::ChainApi;
+use bdk_wallet::bitcoin::Amount;
 use protocol::protocol_musig_adaptor::{BMPContext, BMPProtocol, ProtocolRole, Round1Parameter};
 use rpc::bmp_wallet_service::BmpWalletServiceImpl;
 use rpc::pb::bmp_protocol::bmp_protocol_service_server::{
@@ -43,27 +42,15 @@ pub struct BmpServiceImpl {
     // Each trade protocol is stored against a unique ID.
     active_protocols: Mutex<HashMap<String, BMPProtocol>>,
     bitcoin_rpc_client: Arc<BitcoinCoreClient>,
-    electrum_url: Option<String>,
-}
-
-struct BitcoindChain {
-    client: Arc<BitcoinCoreClient>,
-}
-
-impl ChainApi for BitcoindChain {
-    fn transaction_broadcast(&self, tx: &Transaction) -> anyhow::Result<Txid> {
-        self.client.send_raw_transaction(tx).map_err(Into::into)
-    }
+    electrum_url: String,
 }
 
 fn funded_wallet_from_rpc(
     rpc: &BitcoinCoreClient,
-    electrum_url: &str,
+    client: BdkElectrumClient<ElectrumClient>,
 ) -> anyhow::Result<MemWallet> {
     const MAX_RETRIES: u32 = 20;
     const RETRY_DELAY_MS: u64 = 500;
-
-    let client = BdkElectrumClient::new(ElectrumClient::new(electrum_url)?);
 
     let mut wallet = MemWallet::new(client)?;
     let address = wallet.reveal_next_address();
@@ -101,7 +88,7 @@ fn funded_wallet_from_rpc(
 }
 
 impl BmpServiceImpl {
-    pub fn new(client: Arc<BitcoinCoreClient>, electrum_url: Option<String>) -> Self {
+    pub fn new(client: Arc<BitcoinCoreClient>, electrum_url: String) -> Self {
         Self {
             active_protocols: Mutex::new(HashMap::new()),
             bitcoin_rpc_client: client,
@@ -119,20 +106,19 @@ impl BmpProtocolService for BmpServiceImpl {
         let req = request.into_inner();
         info!("Received initialize request: {req:?}");
 
-        let electrum_url = self.electrum_url.as_ref().ok_or_else(|| {
-            Status::failed_precondition("BMP initialization requires an electrum URL")
-        })?;
+        let client = BdkElectrumClient::new(ElectrumClient::new(&self.electrum_url).unwrap());
+        let client2 = BdkElectrumClient::new(ElectrumClient::new(&self.electrum_url).unwrap());
 
-        let mock_wallet = funded_wallet_from_rpc(self.bitcoin_rpc_client.as_ref(), electrum_url)
+        let mock_wallet = funded_wallet_from_rpc(self.bitcoin_rpc_client.as_ref(), client)
             .map_err(|e: anyhow::Error| Status::internal(e.to_string()))?;
 
         info!(
             "mock_wallet initialized balance: {:?}",
             mock_wallet.balance()
         );
-        let chain = Box::new(BitcoindChain {
-            client: self.bitcoin_rpc_client.clone(),
-        });
+
+        let chain = Box::new(testenv::Testchain::new(client2));
+
         let role =
             Role::try_from(req.role).map_err(|_| Status::invalid_argument("Unrecognised role"))?;
         let role = match role {
@@ -281,7 +267,7 @@ impl BmpProtocolService for BmpServiceImpl {
 fn spawn_musigd(
     listener: TcpListener,
     client: Arc<BitcoinCoreClient>,
-    electrum_url: Option<String>,
+    electrum_url: String,
 ) -> JoinHandle<Result<(), transport::Error>> {
     let musig = MusigImpl::default();
     let wallet = WalletImpl {
@@ -324,37 +310,40 @@ async fn run_musigd_server() -> Result<()> {
         .and_then(|p| p.parse().ok())
         .unwrap_or(50051);
     
-    // let data_dir = std::env::var("MUSIGD_DATADIR").ok().map(|v| Path::new(&v).to_path_buf());
-
     let rpc_url = std::env::var("RPC_URL").ok();
     let electrum_url = std::env::var("ELECTRUM_URL").ok();
     let rpc_pass = Some("bitcoin");
     let rpc_user = Some("bitcoin");
 
     // Create RPC client
-    let rpc_client = if let Some(rpc_url) = &rpc_url {
+    let rpc_client = rpc_url
+        .as_ref()
+        .map(|rpc_url| {
         info!(rpc_url, "Connecting to external Bitcoin Core RPC");
 
-        // Determine authentication method
-        let auth = if let (Some(user), Some(pass)) = (&rpc_user, rpc_pass)
-        {
-            Auth::UserPass(user.to_string(), pass.to_owned())
-        } else {
-            // Fall back to the default Bitcoin Core cookie file under the user's home directory.
-            let home = std::env::home_dir()
+            let auth = if let (Some(user), Some(pass)) = (&rpc_user, rpc_pass) {
+                Auth::UserPass(user.to_string(), pass.to_owned())
+            } else {
+                let home = std::env::var_os("HOME")
+                .map(std::path::PathBuf::from)
                 .expect("Can't determine home directory for cookie-file fallback; set RPC_PASS");
             Auth::CookieFile(home.join(".bitcoin").join(".cookie"))
         };
 
-        BitcoinCoreClient::new(rpc_url, auth)
-    } else {
-        panic!("");
-    };
+            BitcoinCoreClient::new(rpc_url, auth)
+            .expect("Failed to construct Bitcoin Core RPC client")
+        })
+        .expect("RPC_URL must be set");
 
     let listener = TcpListener::bind(("127.0.0.1", port)).await?;
 
     bmp_tracing::tracing::info!(port, "Starting musigd gRPC server.");
-    let _ = spawn_musigd(listener, Arc::new(rpc_client.unwrap()), electrum_url).await;
+    let _ = spawn_musigd(
+        listener,
+        Arc::new(rpc_client),
+        electrum_url.unwrap(),
+    )
+    .await;
 
     Ok(())
 }
