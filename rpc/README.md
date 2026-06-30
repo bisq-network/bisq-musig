@@ -102,11 +102,11 @@ from the project's root directory. It's best to run them in separate terminal wi
 
     *   Server for Bob (port 50051):
         ```sh
-        RPC_URL=http://127.0.0.1:46111 RPC_PASS=pass MUSIGD_PORT=50051 cargo test -p rpc --test bmp_service -- --ignored run_musigd_server --nocapture
+        ELECTRUM_URL=127.0.0.1:33575 RPC_URL=http://127.0.0.1:46111  MUSIGD_PORT=50051 cargo test -p rpc --test bmp_service -- --ignored run_musigd_server --nocapture
         ```
     *   Server for Alice (port 50052):
         ```sh
-        RPC_URL=http://127.0.0.1:46111 RPC_PASS=pass MUSIGD_PORT=50052 cargo test -p rpc --test bmp_service -- --ignored run_musigd_server --nocapture
+        ELECTRUM_URL=127.0.0.1:33575 RPC_URL=http://127.0.0.1:46111 MUSIGD_PORT=50052 cargo test -p rpc --test bmp_service -- --ignored run_musigd_server --nocapture
         ```
 
 3. **Run the Maven test command:**
@@ -114,7 +114,7 @@ from the project's root directory. It's best to run them in separate terminal wi
    This command will compile the Java code and execute the integration test. Run it from the project's root directory.
 
    ```sh
-     mvn -DbitcoinRpcUrl=http://localhost:45049 -DbitcoinRpcUser=bitcoin -DbitcoinRpcPass=pass -f rpc/pom.xml clean verify
+     mvn -DbitcoinRpcUrl=http://localhost:45049 -DbitcoinRpcUser=bitcoin -DbitcoinRpcPass=bitcoin -f rpc/pom.xml clean verify
    ```
 
-NOTE: make sure to replace the RPC URL and password with the output from step 1.
+NOTE: make sure to replace the RPC URL and ELECTRUM_URL with the output from step 1.

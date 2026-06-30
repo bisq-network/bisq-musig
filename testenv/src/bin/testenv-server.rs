@@ -23,7 +23,7 @@ fn main() -> Result<()> {
     let args = Args::parse();
 
     // Create TestEnv with optional data directory
-    let env = TestEnvBuilder::new()
+    let env = TestEnvBuilder::new(Some("bitcoin".to_string()))
         .with_data_dir(args.data_dir.clone())
         .build()?;
 

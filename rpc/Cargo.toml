@@ -40,6 +40,8 @@ assert_cmd = "2.2.0"
 const_format = { workspace = true }
 predicates = "3.1.4"
 testenv = { path = "../testenv" }
+chain = { workspace = true }
+bdk_electrum = { workspace = true }
 
 [lints]
 workspace = true
