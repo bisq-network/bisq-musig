@@ -156,7 +156,7 @@ message CustomPayoutPsbtRequest {
 
 message CustomPayoutPsbt {
   bytes psbt = 1;
-  string txid = 2;
+  string txId = 2;
   uint64 buyersPayoutAmountIncludingFee = 3;  // sats
   uint64 sellersPayoutAmountIncludingFee = 4; // sats
 }

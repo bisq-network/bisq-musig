@@ -271,7 +271,7 @@ fn spawn_musigd(
 ) -> JoinHandle<Result<(), transport::Error>> {
     let musig = MusigImpl::default();
     let wallet = WalletImpl {
-        wallet_service: Arc::new(WalletServiceImpl::create_with_rpc_params()),
+        wallet_service: Arc::new(WalletServiceImpl::new()),
     };
 
     wallet
@@ -309,7 +309,7 @@ async fn run_musigd_server() -> Result<()> {
         .ok()
         .and_then(|p| p.parse().ok())
         .unwrap_or(50051);
-    
+
     let rpc_url = std::env::var("RPC_URL").ok();
     let electrum_url = std::env::var("ELECTRUM_URL").ok();
     let rpc_pass = Some("bitcoin");
@@ -319,31 +319,30 @@ async fn run_musigd_server() -> Result<()> {
     let rpc_client = rpc_url
         .as_ref()
         .map(|rpc_url| {
-        info!(rpc_url, "Connecting to external Bitcoin Core RPC");
+            info!(rpc_url, "Connecting to external Bitcoin Core RPC");
 
-            let auth = if let (Some(user), Some(pass)) = (&rpc_user, rpc_pass) {
-                Auth::UserPass(user.to_string(), pass.to_owned())
+            let auth = if let (Some(user), Some(pass)) = (rpc_user, rpc_pass) {
+                Auth::UserPass(user.to_owned(), pass.to_owned())
             } else {
                 let home = std::env::var_os("HOME")
-                .map(std::path::PathBuf::from)
-                .expect("Can't determine home directory for cookie-file fallback; set RPC_PASS");
-            Auth::CookieFile(home.join(".bitcoin").join(".cookie"))
-        };
+                    .map(std::path::PathBuf::from)
+                    .expect("Can't determine home directory for cookie-file fallback; set RPC_PASS");
+                Auth::CookieFile(home.join(".bitcoin").join(".cookie"))
+            };
 
             BitcoinCoreClient::new(rpc_url, auth)
-            .expect("Failed to construct Bitcoin Core RPC client")
+                .expect("Failed to construct Bitcoin Core RPC client")
         })
         .expect("RPC_URL must be set");
 
     let listener = TcpListener::bind(("127.0.0.1", port)).await?;
 
-    bmp_tracing::tracing::info!(port, "Starting musigd gRPC server.");
+    info!(port, "Starting musigd gRPC server.");
     let _ = spawn_musigd(
         listener,
         Arc::new(rpc_client),
         electrum_url.unwrap(),
-    )
-    .await;
+    ).await;
 
     Ok(())
 }

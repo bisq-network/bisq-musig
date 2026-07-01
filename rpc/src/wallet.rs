@@ -1,7 +1,4 @@
-#![cfg_attr(
-    feature = "unimock",
-    expect(clippy::ignored_unit_patterns, reason = "macro-generated code")
-)]
+#![cfg_attr(feature = "unimock", expect(clippy::ignored_unit_patterns, reason = "macro-generated code"))]
 
 use std::sync::{Arc, Mutex, RwLock};
 
@@ -26,6 +23,7 @@ const EXTERNAL_DESCRIPTOR: &str = "tr(tprv8ZgxMBicQKsPdrjwWCyXqqJ4YqcyG4DmKtjjsR
 //noinspection SpellCheckingInspection
 const INTERNAL_DESCRIPTOR: &str = "tr(tprv8ZgxMBicQKsPdrjwWCyXqqJ4YqcyG4DmKtjjsRt29v1PtD3r3PuFJAj\
     WytzcvSTKnZAGAkPSmnrdnuHWxCAwy3i1iPhrtKAfXRH7dVCNGp6/86'/1'/0'/1/*)#e3rjrmea";
+const BITCOIND_POLLING_PERIOD: Duration = Duration::from_secs(1);
 
 #[cfg_attr(feature = "unimock", unimock::unimock(api = WalletServiceMock))]
 #[tonic::async_trait]
@@ -42,8 +40,7 @@ pub trait WalletService {
     /// # Panics
     /// Will panic if called outside the context of a Tokio runtime
     fn spawn_connection(self: Arc<Self>, client: Arc<Client>) -> JoinHandle<Result<Never>>
-    where
-        Self: Send + Sync + 'static,
+        where Self: Send + Sync + 'static
     {
         task::spawn(async move {
             self.connect(client).await
@@ -59,16 +56,17 @@ pub struct WalletServiceImpl {
     wallet: RwLock<Wallet>,
     tx_confidence_map: Mutex<ObservableHashMap<Txid, TxConfidence>>,
 
-    // // Make the following RPC parameters configurable for testing:
-    // rpc_client: Client,
+    // Make the following RPC parameters configurable for testing:
     poll_period: Duration,
 }
 
-const BITCOIND_POLLING_PERIOD: Duration = Duration::from_millis(100);
+impl Default for WalletServiceImpl {
+    fn default() -> Self { Self::new() }
+}
 
 impl WalletServiceImpl {
     // TODO: Make wallet setup properly configurable, not just the RPC authentication method and polling period.
-    pub fn create_with_rpc_params() -> Self {
+    pub fn new() -> Self {
         let wallet = Wallet::create(EXTERNAL_DESCRIPTOR, INTERNAL_DESCRIPTOR)
             .network(Network::Regtest)
             .create_wallet_no_persist()
@@ -83,6 +81,9 @@ impl WalletServiceImpl {
             poll_period: BITCOIND_POLLING_PERIOD,
         }
     }
+
+    #[must_use]
+    pub fn with_poll_period(self, poll_period: Duration) -> Self { Self { poll_period, ..self } }
 
     fn sync_tx_confidence_map(&self) {
         let wallet = self.wallet.read().unwrap();
