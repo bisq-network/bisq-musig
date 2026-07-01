@@ -12,10 +12,7 @@ use tonic::transport::Server;
 
 #[derive(Debug, Parser)]
 #[command(version, about, long_about = None)]
-#[expect(
-    clippy::doc_markdown,
-    reason = "doc comments are used verbatim by Clap and not intended to be markdown"
-)]
+#[expect(clippy::doc_markdown, reason = "doc comments are used verbatim by Clap and not intended to be markdown")]
 struct Cli {
     /// The port of the MuSig daemon
     #[arg(short, long, default_value_t = 50051)]
@@ -61,12 +58,9 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let addr = format!("127.0.0.1:{}", cli.port).parse()?;
     let musig = MusigImpl::default();
     let wallet = WalletImpl {
-        wallet_service: Arc::new(WalletServiceImpl::create_with_rpc_params()),
+        wallet_service: Arc::new(WalletServiceImpl::new()),
     };
-    wallet
-        .wallet_service
-        .clone()
-        .spawn_connection(Arc::new(rpc_client));
+    wallet.wallet_service.clone().spawn_connection(Arc::new(rpc_client));
 
     let bmp_wallet_service = BmpWalletServiceImpl::default();
 
