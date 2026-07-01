@@ -20,7 +20,7 @@ struct Cli {
 
     /// Bitcoin Core RPC URL.
     #[arg(long, default_value = "http://localhost:18443")]
-    bitcoin_rpc_url: Option<String>,
+    bitcoin_rpc_url: String,
 
     /// Bitcoin Core RPC username
     #[arg(long)]
@@ -35,24 +35,14 @@ struct Cli {
 async fn main() -> Result<(), Box<dyn Error>> {
     let cli: Cli = Cli::parse();
     bmp_tracing::init("info");
-    // Create or use provided RPC client
-    let rpc_client = if let Some(rpc_url) = &cli.bitcoin_rpc_url {
-        info!(rpc_url, "Connecting to external Bitcoin Core RPC");
-
-        // Determine authentication method
-        let auth = if let (Some(user), Some(pass)) = (&cli.bitcoin_rpc_user, &cli.bitcoin_rpc_pass)
-        {
+    // Create RPC client. (No connection is made at this point.)
+    let rpc_client = {
+        let auth = if let (Some(user), Some(pass)) = (&cli.bitcoin_rpc_user, &cli.bitcoin_rpc_pass) {
             Auth::UserPass(user.clone(), pass.clone())
         } else {
-            // Fall back to the default Bitcoin Core cookie file under the user's home directory.
-            let home = std::env::home_dir()
-                .ok_or("Can't determine home directory for cookie-file fallback; pass --bitcoin-rpc-user/--bitcoin-rpc-pass")?;
-            Auth::CookieFile(home.join(".bitcoin").join(".cookie"))
+            Auth::None
         };
-
-        BitcoinCoreClient::new(rpc_url, auth)?
-    } else {
-        return Err("Can't proceed without bitcoin_rpc_url".into())
+        BitcoinCoreClient::new(&cli.bitcoin_rpc_url, auth)?
     };
 
     let addr = format!("127.0.0.1:{}", cli.port).parse()?;
