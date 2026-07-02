@@ -1,6 +1,6 @@
 name: CI
 
-on: [push, pull_request]
+on: [push, pull_request, workflow_dispatch]
 
 permissions:
   contents: read
@@ -14,7 +14,7 @@ jobs:
       wallet: ${{ steps.filter.outputs.wallet }}
       protocol: ${{ steps.filter.outputs.protocol }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Check changed paths
         id: filter
         uses: dorny/paths-filter@v3
@@ -36,7 +36,7 @@ jobs:
           - stable
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
       - name: Generate cache key
         run: echo "${{ matrix.rust }}" | tee .cache_key
       - name: Cache
@@ -78,7 +78,7 @@ jobs:
           - stable
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
       - name: Generate cache key
         run: echo "${{ matrix.rust }}" | tee .cache_key
       - name: Cache
