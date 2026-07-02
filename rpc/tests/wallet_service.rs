@@ -30,7 +30,6 @@ async fn test_wallet_service_mine_single_tx() -> Result<()> {
     // Open up a tx confidence stream on the (unconfirmed) paying tx.
     let mut stream = wallet_service.get_tx_confidence_stream(txid);
     let mut expect = stream.next().await;
-    // dbg!(&expect);
     assert!(matches!(expect, Some(Some(TxConfidence { num_confirmations: 0, .. }))));
 
     let balance2 = wallet_service.balance();
@@ -65,7 +64,8 @@ async fn test_wallet_service_mine_single_tx() -> Result<()> {
 }
 
 async fn start_wallet_service(rpc_client: bitcoincore_rpc::Client) -> Arc<impl WalletService> {
-    let wallet_service = Arc::new(WalletServiceImpl::create_with_rpc_params());
+    let wallet_service = Arc::new(WalletServiceImpl::new()
+        .with_poll_period(Duration::from_millis(100)));
     assert_eq!(wallet_service.balance(), Balance::default());
 
     wallet_service

@@ -242,7 +242,7 @@ impl musig_server::Musig for MusigImpl {
 
             Ok(CustomPayoutPsbt {
                 psbt: psbt.serialize(),
-                txid: psbt.unsigned_tx.compute_txid().to_string(),
+                tx_id: psbt.unsigned_tx.compute_txid().to_string(),
                 buyers_payout_amount_including_fee: psbt.unsigned_tx.output[0].value.to_sat(),
                 sellers_payout_amount_including_fee: psbt.unsigned_tx.output[1].value.to_sat(),
             })

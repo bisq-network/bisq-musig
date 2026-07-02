@@ -103,7 +103,7 @@ async fn test_cli_wallet_balance() {
     let (port, listener) = TestEnv::get_bound_port().await.expect("listener");
     spawn_wallet_grpc_service(
         listener,
-        WalletServiceImpl::create_with_rpc_params(),
+        WalletServiceImpl::new(),
     );
 
     task::spawn_blocking(move || assert_cli_with_port(port, ["wallet-balance"]))
@@ -118,7 +118,7 @@ async fn test_cli_new_address() {
     let (port, listener) = TestEnv::get_bound_port().await.expect("listener");
     spawn_wallet_grpc_service(
         listener,
-        WalletServiceImpl::create_with_rpc_params(),
+        WalletServiceImpl::new(),
     );
 
     task::spawn_blocking(move || assert_cli_with_port(port, ["new-address"]))
