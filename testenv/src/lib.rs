@@ -92,7 +92,7 @@ impl Default for Config<'_> {
             timeout: Duration::from_secs(5),
             delay: Duration::from_millis(200),
             password: None,
-            runmultithreaded: "true" == std::env::var("TEST_MULTITHREADED").unwrap_or_else(|_| "false".to_string()).trim().to_lowercase()
+            runmultithreaded: "true" == std::env::var("TEST_MULTITHREADED").unwrap_or_default().trim().to_lowercase(),
         }
     }
 }
@@ -152,10 +152,8 @@ impl TestEnvBuilder {
     }
 }
 
-
 // Type alias for Hmac-Sha256
 type HmacSha256 = Hmac<Sha256>;
-
 
 /// Generates a Bitcoin Core rpcauth string.
 ///
@@ -222,6 +220,7 @@ pub fn validate_rpcauth(rpcauth_line: &str, username: &str, password: &str) -> b
     // but you can use `subtle` crate if you want constant-time equality.
     hmac_hex_actual.eq_ignore_ascii_case(hmac_hex_expected)
 }
+
 static TESTENV_LOCK: Mutex<()> = Mutex::new(());
 
 impl TestEnv {
@@ -650,7 +649,7 @@ impl ChainScanner for TestEnv {
         stop_gap: usize,
         batch_size: usize,
         fetch_prev_txouts: bool,
-    ) -> anyhow::Result<FullScanResponse<K>> {
+    ) -> Result<FullScanResponse<K>> {
         self.bdk_electrum_client
             .full_scan(request, stop_gap, batch_size, fetch_prev_txouts)
             .map_err(Into::into)
@@ -673,7 +672,7 @@ impl Testchain {
 }
 
 impl ChainApi for Testchain {
-    fn transaction_broadcast(&self, tx: &Transaction) -> anyhow::Result<Txid> {
+    fn transaction_broadcast(&self, tx: &Transaction) -> Result<Txid> {
         broadcast_via(&self.client, tx)
     }
 }
@@ -689,7 +688,7 @@ impl ChainScanner for Testchain {
         stop_gap: usize,
         batch_size: usize,
         fetch_prev_txouts: bool,
-    ) -> anyhow::Result<FullScanResponse<K>> {
+    ) -> Result<FullScanResponse<K>> {
         self.client
             .full_scan(request, stop_gap, batch_size, fetch_prev_txouts)
             .map_err(Into::into)
@@ -698,7 +697,7 @@ impl ChainScanner for Testchain {
 
 /// Shared `ChainApi::transaction_broadcast` body — swallows the idempotent
 /// "Transaction already in block chain" Electrum error and returns the computed txid.
-fn broadcast_via(client: &BdkElectrumClient<Client>, tx: &Transaction) -> anyhow::Result<Txid> {
+fn broadcast_via(client: &BdkElectrumClient<Client>, tx: &Transaction) -> Result<Txid> {
     match client.transaction_broadcast(tx) {
         Ok(txid) => Ok(txid),
         Err(e) if e.to_string().contains("Transaction already in block chain") => {

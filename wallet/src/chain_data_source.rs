@@ -1,5 +1,5 @@
 use bdk_wallet::PersistedWallet;
-use chain::ChainScanner;
+use chain::ChainScanner as _;
 
 use crate::bmp_wallet::BMPWalletPersister;
 

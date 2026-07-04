@@ -27,15 +27,15 @@ public class BmpServiceIntegrationTest {
     private TestEnvClient testenv;
 
     @BeforeAll
-    void setup() throws InterruptedException {
+    void setup() {
         // Initialize TestEnvClient from environment variables set by Maven
         try {
             testenv = TestEnvClient.fromEnv();
             System.out.println("Connected to TestEnv: " + testenv);
         } catch (RuntimeException e) {
             throw new RuntimeException(
-                "TestEnv RPC configuration is required to run integration tests.\n" + 
-                e.getMessage(), e);
+                    "TestEnv RPC configuration is required to run integration tests.\n" +
+                            e.getMessage(), e);
         }
 
         // Set up gRPC channels to both musigd servers (Alice on 50052, Bob on 50051)

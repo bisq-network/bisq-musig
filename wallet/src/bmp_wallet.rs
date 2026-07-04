@@ -193,11 +193,13 @@ pub struct BMPWallet<P: BMPWalletPersister> {
 }
 
 impl BMPWallet<Connection> {
-
-    pub fn list_unused_addresses_since_last_used(&self, key_chain: KeychainKind) -> impl Iterator<Item = AddressInfo> + '_  {
+    pub fn list_unused_addresses_since_last_used(
+        &self,
+        key_chain: KeychainKind,
+    ) -> impl Iterator<Item = AddressInfo> + '_ {
         let last_used = self.spk_index().last_used_index(key_chain);
         self.list_unused_addresses(key_chain)
-           .filter(move |info| last_used.is_none_or(|idx| info.index > idx))
+            .filter(move |info| last_used.is_none_or(|idx| info.index > idx))
     }
 
     pub fn next_address(&mut self, key_chain: KeychainKind) -> anyhow::Result<AddressInfo> {
@@ -216,10 +218,10 @@ impl BMPWallet<Connection> {
             };
 
             let selected = unused[next_index].clone();
-            
+
             // Update index to track the address just given out
             self.last_unused_address = Some(selected.address.to_string());
-            
+
             selected
         } else {
             let addr = self.reveal_next_address(key_chain);
@@ -1227,6 +1229,7 @@ mod tests {
 
         Ok(())
     }
+
     #[test]
     fn test_list_unused_addresses_since_last_used() -> anyhow::Result<()> {
         let dir = get_dir();

@@ -83,9 +83,7 @@ struct MockTradeWallet<Cs: Iterator<Item=TxOutput>, As: Iterator<Item=Address>> 
     script_sigs: BTreeMap<XOnlyPublicKey, Vec<Signature>>,
 }
 
-impl<Cs: Iterator<Item = TxOutput>, As: Iterator<Item = Address>> ProtocolWalletApi
-    for MockTradeWallet<Cs, As>
-{
+impl<Cs: Iterator<Item = TxOutput>, As: Iterator<Item=Address>> ProtocolWalletApi for MockTradeWallet<Cs, As> {
     fn network(&self) -> Network { Network::Regtest }
 
     fn new_address(&mut self) -> anyhow::Result<Address> {
@@ -118,12 +116,8 @@ impl<Cs: Iterator<Item = TxOutput>, As: Iterator<Item = Address>> ProtocolWallet
     ) -> anyhow::Result<()> {
         let mut script_sigs = self.script_sigs.clone();
 
-        for (
-            input,
-            TxIn {
-                previous_output, ..
-            },
-        ) in psbt.inputs.iter_mut().zip(&psbt.unsigned_tx.input)
+        for (input, TxIn { previous_output, .. })
+        in psbt.inputs.iter_mut().zip(&psbt.unsigned_tx.input)
         {
             if is_selected(previous_output) {
                 for (key, (leaf_hashes, _)) in &input.tap_key_origins {
@@ -164,9 +158,7 @@ impl<Cs: Iterator<Item = TxOutput>, As: Iterator<Item = Address>> ProtocolWallet
     }
 }
 
-impl<Cs: Iterator<Item = TxOutput>, As: Iterator<Item = Address>> TradeWallet
-    for MockTradeWallet<Cs, As>
-{
+impl<Cs: Iterator<Item=TxOutput>, As: Iterator<Item=Address>> TradeWallet for MockTradeWallet<Cs, As> {
     fn create_half_deposit_psbt(
         &mut self,
         deposit_amount: Amount,
