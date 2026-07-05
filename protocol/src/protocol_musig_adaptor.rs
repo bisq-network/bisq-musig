@@ -363,7 +363,7 @@ impl RedirectTx {
         self.sig.init_my_nonce_share()?;
 
         let receiver_shares = Self::get_dao_bm();
-        let fee_rate = FeeRate::from_sat_per_vb_unchecked(10); // TODO: feerates shall come from pricenodes
+        let fee_rate = FeeRate::from_sat_per_vb_u32(10); // TODO: feerates shall come from pricenodes
 
         let escrow_amount = warn_tx.builder.escrow()?.prevout.value;
         let available_amount_msat = RedirectTxBuilder::available_amount_msat(escrow_amount, fee_rate)?;
@@ -438,7 +438,7 @@ impl ClaimTx {
             .set_input(warn_tx.builder.escrow()?)
             .set_payout_address(Address::from_script(self.claim_spend.as_ref().unwrap(), Network::Regtest)?) // TODO: Improve.
             .set_lock_time(t2)
-            .set_fee_rate(FeeRate::from_sat_per_vb_unchecked(10)) // TODO: feerates shall come from pricenodes
+            .set_fee_rate(FeeRate::from_sat_per_vb_u32(10)) // TODO: feerates shall come from pricenodes
             .compute_unsigned_tx()?;
         Ok(())
     }
@@ -515,7 +515,7 @@ impl WarningTx {
             .set_escrow_address(key_spend.p2tr_address(Network::Regtest))
             .set_anchor_address(Address::from_script(self.anchor_spend.as_ref().unwrap(), Network::Regtest)?) // TODO: Improve.
             .set_lock_time(relative::LockTime::ZERO)
-            .set_fee_rate(FeeRate::from_sat_per_vb_unchecked(10)) // TODO: feerates shall come from pricenodes
+            .set_fee_rate(FeeRate::from_sat_per_vb_u32(10)) // TODO: feerates shall come from pricenodes
             .compute_unsigned_tx()?
             .txid()?;
 
@@ -614,7 +614,7 @@ impl SwapTx {
             .set_input(deposit_tx.builder.seller_payout()?.clone())
             .set_payout_address(Address::from_script(use_spend, Network::Regtest)?) // TODO: Improve.
             .disable_lock_time()
-            .set_fee_rate(FeeRate::from_sat_per_vb_unchecked(10)) // TODO: feerates shall come from pricenodes
+            .set_fee_rate(FeeRate::from_sat_per_vb_u32(10)) // TODO: feerates shall come from pricenodes
             .compute_unsigned_tx()?;
         Ok(())
     }
@@ -690,7 +690,7 @@ impl DepositTx {
             .set_buyers_security_deposit(ctx.buyer_amount)
             .set_sellers_security_deposit(ctx.buyer_amount)
             .set_trade_fee_receivers(ReceiverList::default())
-            .set_fee_rate(FeeRate::from_sat_per_vb_unchecked(20)); // TODO: feerates shall come from pricenodes
+            .set_fee_rate(FeeRate::from_sat_per_vb_u32(20)); // TODO: feerates shall come from pricenodes
 
         let psbt = if ctx.am_buyer() {
             self.builder

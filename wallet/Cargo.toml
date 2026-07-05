@@ -10,17 +10,16 @@ base64 = { workspace = true }
 bdk_electrum = { workspace = true }
 bdk_kyoto = { workspace = true }
 bdk_wallet = { workspace = true }
+chain = { workspace = true }
 hex = { workspace = true }
 rand = { workspace = true }
 rusqlite = { workspace = true }
 secp = { workspace = true }
 tracing = { workspace = true }
 zeroize = { workspace = true }
-thiserror =  { workspace = true }
-
-chain = { workspace = true }
+thiserror = { workspace = true }
 # TODO move this to dev-dependencies:
-testenv = { path = "../testenv" }
+testenv = { workspace = true }
 
 [dev-dependencies]
 bdk_wallet = { workspace = true, features = ["test-utils"] }

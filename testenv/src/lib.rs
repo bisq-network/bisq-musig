@@ -731,6 +731,7 @@ impl Drop for TestEnv {
 #[cfg(test)]
 mod tests {
     use bdk_bitcoind_rpc::bitcoincore_rpc::RpcApi as _;
+    use bdk_wallet::serde_json;
     use bmp_tracing::tracing;
 
     use super::*;

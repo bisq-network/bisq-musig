@@ -557,7 +557,7 @@ mod tests {
         let mut rng = rand::rng();
 
         let deposit_amount = Amount::from_sat(40_000);
-        let fee_rate = FeeRate::from_sat_per_vb_unchecked(10);
+        let fee_rate = FeeRate::from_sat_per_vb_u32(10);
         let receiver_address = "bcrt1qwk6p86mzqmstcsg99qlu2mhsp3766u68jktv6k"
             .parse::<Address<_>>()?.require_network(Network::Regtest)?;
         let trade_fee_receivers = [

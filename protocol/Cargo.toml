@@ -6,21 +6,20 @@ edition = "2024"
 [dependencies]
 anyhow = { workspace = true }
 bdk_wallet = { workspace = true }
+chain = { workspace = true }
 musig2 = { workspace = true }
 paste = "1.0.15"
 rand = { workspace = true }
 rand_chacha = { workspace = true }
-chain = { workspace = true }
-# TODO move this to dev-dependencies:
-testenv = { path = "../testenv" }
 thiserror = { workspace = true }
 tracing = { workspace = true }
-wallet = { path = "../wallet" }
+wallet = { workspace = true }
 
 [dev-dependencies]
 bdk_wallet = { workspace = true, features = ["test-utils"] }
 bmp_tracing = { workspace = true }
 const_format = { workspace = true }
+testenv = { workspace = true }
 
 [lints]
 workspace = true

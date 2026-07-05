@@ -1036,7 +1036,7 @@ mod tests {
             .set_buyer_payout_address(buyer_payout_address)
             .set_seller_payout_address(seller_payout_address)
             .set_seller_payout_amount_excluding_fee(Amount::from_sat(30_000_000))
-            .set_fee_rate(FeeRate::from_sat_per_vb_unchecked(15))
+            .set_fee_rate(FeeRate::from_sat_per_vb_u32(15))
             .compute_unsigned_tx()?;
         Ok(builder)
     }
