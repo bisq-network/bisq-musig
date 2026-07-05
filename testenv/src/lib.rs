@@ -887,6 +887,7 @@ mod tests {
             reloaded_height, persisted_height,
             "block height should persist across restarts when a data dir is set"
         );
+        drop(env2);
 
         // Sanity check: a default (non-persistent) env is independent and starts fresh.
         let ephemeral = TestEnv::new()?;
