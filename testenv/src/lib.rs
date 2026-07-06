@@ -99,7 +99,7 @@ impl Default for Config<'_> {
 
 const NETWORK: Network = Network::Regtest;
 
-/// Builder for TestEnv configuration with optional data directory support
+/// Builder for `TestEnv` configuration with optional data directory support
 #[derive(Debug, Clone, Default)]
 pub struct TestEnvBuilder {
     config: Config<'static>,
@@ -111,9 +111,9 @@ impl TestEnvBuilder {
         Self {
             config: Config {
                 password,
-                ..Default::default()
+                ..Config::default()
             },
-            data_dir: Default::default(),
+            data_dir: Option::default(),
         }
     }
 
@@ -121,12 +121,13 @@ impl TestEnvBuilder {
     ///
     /// If not set, a temporary directory will be used (auto-deleted on exit).
     /// If set, the directory will be created if it doesn't exist and persist across runs.
+    #[must_use]
     pub fn with_data_dir(mut self, path: Option<std::path::PathBuf>) -> Self {
         self.data_dir = path;
         self
     }
 
-    /// Build the TestEnv with the configured settings
+    /// Build the `TestEnv` with the configured settings
     pub fn build(mut self) -> Result<TestEnv> {
         if let Some(data_dir) = &self.data_dir {
             // Create the data directory if it doesn't exist
@@ -262,13 +263,13 @@ impl TestEnv {
 
     /// ZMQ socket for raw block notifications (set when created via
     /// [`enable_zmq`](Self::enable_zmq)).
-    pub fn zmq_pub_raw_block_socket(&self) -> Option<SocketAddrV4> {
+    pub const fn zmq_pub_raw_block_socket(&self) -> Option<SocketAddrV4> {
         self.bitcoind.params.zmq_pub_raw_block_socket
     }
 
     /// create environment with automatic downloads
     pub fn new_with_conf(config: Config) -> Result<Self> {
-        let _guard = if config.runmultithreaded {
+        let guard = if config.runmultithreaded {
             None
         } else {
             // can recover because unit type won't corrupt
@@ -333,7 +334,7 @@ impl TestEnv {
             explorer_port: None,
             bitcoin_rpc_pwd,
             mempool: Vec::new(),
-            _guard,
+            _guard: guard,
             dirs: Arena::new(),
         };
         tracing::info!("Bitcoin regtest environment ready!");
@@ -427,7 +428,7 @@ impl TestEnv {
         }
     }
 
-    pub fn bitcoin_rpc_port(&self) -> u16 {
+    pub const fn bitcoin_rpc_port(&self) -> u16 {
         self.bitcoind.params.rpc_socket.port()
     }
 
@@ -442,7 +443,7 @@ impl TestEnv {
         &self.bdk_electrum_client.inner
     }
 
-    pub fn bitcoind_client(&self) -> &corepc_node::Client {
+    pub const fn bitcoind_client(&self) -> &corepc_node::Client {
         &self.bitcoind.client
     }
 
@@ -457,7 +458,7 @@ impl TestEnv {
         self.electrsd.electrum_url.replace("0.0.0.0", "127.0.0.1")
     }
 
-    pub fn bdk_electrum_client(&self) -> &BdkElectrumClient<Client> {
+    pub const fn bdk_electrum_client(&self) -> &BdkElectrumClient<Client> {
         &self.bdk_electrum_client
     }
 
@@ -478,7 +479,7 @@ impl TestEnv {
 
         self.wait_for_block()?;
 
-        for txid in self.mempool.iter() {
+        for txid in &self.mempool {
             let _ = self.wait_for_tx(*txid);
         }
         self.mempool.clear();
@@ -620,7 +621,7 @@ impl TestEnv {
     }
 
     /// Get the running bitcoind socket address
-    pub fn p2p_socket_addr(&self) -> Option<SocketAddrV4> {
+    pub const fn p2p_socket_addr(&self) -> Option<SocketAddrV4> {
         self.bitcoind.params.p2p_socket
     }
 
@@ -774,6 +775,8 @@ mod tests {
 
     #[test]
     fn test_address_operations() -> Result<()> {
+        use electrsd::corepc_node::vtype::TransactionCategory;
+
         let mut env = TestEnv::new()?;
 
         // Create new address
@@ -811,7 +814,6 @@ mod tests {
         let tx = env.bitcoind.client.get_transaction(txid)?;
 
         // Extract the received amount from transaction details
-        use electrsd::corepc_node::vtype::TransactionCategory;
         let receive_amount = tx
             .details
             .iter()
@@ -827,15 +829,15 @@ mod tests {
 
     #[test]
     fn test_persistent_data_dir() -> Result<()> {
+        // Number of blocks beyond the initial height we mine in the first run.
+        const MINED: usize = 5;
+
         // A persistent `data_dir` should make bitcoind's chain state survive a full
         // shut-down/restart cycle, in contrast to the default throwaway temp dirs.
         let data_root = TempDir::new()?;
         let data_dir = data_root.path().to_path_buf();
         let bitcoind_dir = data_dir.join("bitcoind");
         let electrsd_dir = data_dir.join("electrsd");
-
-        // Number of blocks beyond the initial height we mine in the first run.
-        const MINED: usize = 5;
 
         let persisted_height = {
             let mut env = TestEnvBuilder::new(None)

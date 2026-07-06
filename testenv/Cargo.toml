@@ -26,3 +26,6 @@ electrsd = { version = "0.36.1", features = [
 hmac = "0.12.1"
 sha2 = "0.10.9"
 typed-arena = "2"
+
+[lints]
+workspace = true

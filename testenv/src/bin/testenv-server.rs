@@ -1,6 +1,6 @@
 //! Usage:
 //!   cargo run --bin testenv-server -- --data-dir /path/to/persistent/dir
-//!   cargo run --bin testenv-server  # Uses TempDir (auto-deleted on exit)
+//!   cargo run --bin testenv-server  # Uses `TempDir` (auto-deleted on exit)
 
 use std::path::PathBuf;
 
@@ -23,23 +23,23 @@ fn main() -> Result<()> {
     let args = Args::parse();
 
     // Create TestEnv with optional data directory
-    let env = TestEnvBuilder::new(Some("bitcoin".to_string()))
+    let env = TestEnvBuilder::new(Some("bitcoin".to_owned()))
         .with_data_dir(args.data_dir.clone())
         .build()?;
 
     // Output connection information in a parseable format
     let rpc_port = env.bitcoin_rpc_port();
-    let rpc_url = format!("http://127.0.0.1:{}", rpc_port);
+    let rpc_url = format!("http://127.0.0.1:{rpc_port}");
     let electrum_url = env.electrum_url();
     let workdir = env.workdir();
 
     // Output as key=value pairs for easy parsing
     println!("TESTENV_READY=true");
-    println!("TESTENV_RPC_URL={}", rpc_url);
-    println!("TESTENV_RPC_PORT={}", rpc_port);
+    println!("TESTENV_RPC_URL={rpc_url}");
+    println!("TESTENV_RPC_PORT={rpc_port}");
     println!("TESTENV_RPC_USER=bitcoin");
     println!("TESTENV_RPC_PASS={}", env.bitcoin_rpc_password());
-    println!("TESTENV_ELECTRUM_URL={}", electrum_url);
+    println!("TESTENV_ELECTRUM_URL={electrum_url}");
     println!("TESTENV_WORKDIR={}", workdir.display());
     if let Some(data_dir) = &args.data_dir {
         println!("TESTENV_PERSISTENT=true");
@@ -49,8 +49,8 @@ fn main() -> Result<()> {
     }
 
     eprintln!("TestEnv server started successfully");
-    eprintln!("Bitcoin RPC: {} (user: bitcoin)", rpc_url);
-    eprintln!("Electrum: {}", electrum_url);
+    eprintln!("Bitcoin RPC: {rpc_url} (user: bitcoin)");
+    eprintln!("Electrum: {electrum_url}");
     eprintln!("Working directory: {}", workdir.display());
     if let Some(data_dir) = &args.data_dir {
         eprintln!("Persistent data directory: {}", data_dir.display());
