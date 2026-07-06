@@ -48,9 +48,9 @@ struct NoncePair {
 }
 
 impl NoncePair {
-    fn new(nonce_seed: impl Into<NonceSeed>, aggregated_pub_key: Point) -> Self {
-        let sec_nonce = SecNonceBuilder::new(nonce_seed)
-            .with_aggregated_pubkey(aggregated_pub_key)
+    fn new(nonce_seed: impl Into<NonceSeed>, seckey: Scalar, aggregated_pubkey: Point) -> Self {
+        let sec_nonce = SecNonceBuilder::from_seckey(nonce_seed, seckey)
+            .with_aggregated_pubkey(aggregated_pubkey)
             .build();
         Self { pub_nonce: sec_nonce.public_nonce(), sec_nonce: Some(sec_nonce) }
     }
@@ -220,10 +220,11 @@ impl SigCtx {
     }
 
     pub fn init_my_nonce_share(&mut self) -> Result<()> {
-        let aggregated_pub_key = self.tweaked_key_ctx()?.key_agg_ctx.aggregated_pubkey();
+        let seckey = self.tweaked_key_ctx()?.my_prv_key;
+        let aggregated_pubkey = self.tweaked_key_ctx()?.key_agg_ctx.aggregated_pubkey();
         // TODO: Consider making the RNG configurable, to aid unit testing:
         self.my_nonce_pair_share.get_or_insert_with(||
-            NoncePair::new(&mut rand::rng(), aggregated_pub_key));
+            NoncePair::new(&mut rand::rng(), seckey, aggregated_pubkey));
         Ok(())
     }
 
