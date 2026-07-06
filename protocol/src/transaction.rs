@@ -380,7 +380,7 @@ impl WarningTxBuilder {
     make_getter!(signed_tx: Transaction);
     make_getter!(txid: Txid: Transaction);
 
-    pub fn escrow_amount(input_amounts: impl IntoIterator<Item=Amount>, fee_rate: FeeRate) -> Result<Amount> {
+    pub fn escrow_amount(input_amounts: impl IntoIterator<Item = Amount>, fee_rate: FeeRate) -> Result<Amount> {
         (|| input_amounts.into_iter().checked_sum()?
             .checked_sub(ANCHOR_AMOUNT)?
             .checked_sub(fee_rate.checked_mul_by_weight(SIGNED_WARNING_TX_WEIGHT)?)
@@ -593,7 +593,7 @@ impl CustomPayoutTxBuilder {
     make_getter!(psbt: Psbt: Transaction);
 
     fn payout_amounts(
-        input_amounts: impl IntoIterator<Item=Amount>,
+        input_amounts: impl IntoIterator<Item = Amount>,
         seller_payout_amount_excluding_fee: Amount,
         signed_tx_weight: Weight,
         fee_rate: FeeRate,

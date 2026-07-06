@@ -218,14 +218,14 @@ fn mock_confidence_stream() -> BoxStream<'static, Option<TxConfidence>> {
     stream::iter([event1, event2, event3]).chain(stream::pending()).boxed()
 }
 
-fn assert_cli<'a>(args: impl IntoIterator<Item=&'a str>) -> Assert {
+fn assert_cli<'a>(args: impl IntoIterator<Item = &'a str>) -> Assert {
     cargo_bin_cmd!("musig-cli")
         .args(args)
         .timeout(CLI_TIMEOUT)
         .assert()
 }
 
-fn assert_cli_with_port<'a>(port: u16, args: impl IntoIterator<Item=&'a str>) -> Assert {
+fn assert_cli_with_port<'a>(port: u16, args: impl IntoIterator<Item = &'a str>) -> Assert {
     let port = port.to_string();
     #[expect(clippy::map_identity, reason = "change-of-lifetime false positive; see \
         https://github.com/rust-lang/rust-clippy/issues/9280")]

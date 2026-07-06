@@ -417,7 +417,7 @@ impl TradeModel {
     }
 
     pub fn set_redirection_receivers<I, E>(&mut self, receivers: I) -> Result<(), E>
-        where I: IntoIterator<Item=Result<Receiver<NetworkUnchecked>, E>>,
+        where I: IntoIterator<Item = Result<Receiver<NetworkUnchecked>, E>>,
               E: From<ProtocolErrorKind>
     {
         let network = self.trade_wallet()?.network();

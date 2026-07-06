@@ -75,7 +75,7 @@ pub trait TradeWallet: ProtocolWalletApi {
 /// `MemWallet`, a `BMPWallet<Connection>`, or any other type that implements [`TradeWallet`].
 pub type BoxedTradeWallet = Box<dyn TradeWallet + Send>;
 
-struct MockTradeWallet<Cs: Iterator<Item=TxOutput>, As: Iterator<Item=Address>> {
+struct MockTradeWallet<Cs: Iterator<Item = TxOutput>, As: Iterator<Item = Address>> {
     funding_coins: Cs,
     new_addresses: As,
     signature_map: BTreeMap<OutPoint, Signature>,
@@ -83,7 +83,7 @@ struct MockTradeWallet<Cs: Iterator<Item=TxOutput>, As: Iterator<Item=Address>> 
     script_sigs: BTreeMap<XOnlyPublicKey, Vec<Signature>>,
 }
 
-impl<Cs: Iterator<Item = TxOutput>, As: Iterator<Item=Address>> ProtocolWalletApi for MockTradeWallet<Cs, As> {
+impl<Cs: Iterator<Item = TxOutput>, As: Iterator<Item = Address>> ProtocolWalletApi for MockTradeWallet<Cs, As> {
     fn network(&self) -> Network { Network::Regtest }
 
     fn new_address(&mut self) -> anyhow::Result<Address> {
@@ -158,7 +158,7 @@ impl<Cs: Iterator<Item = TxOutput>, As: Iterator<Item=Address>> ProtocolWalletAp
     }
 }
 
-impl<Cs: Iterator<Item=TxOutput>, As: Iterator<Item=Address>> TradeWallet for MockTradeWallet<Cs, As> {
+impl<Cs: Iterator<Item = TxOutput>, As: Iterator<Item = Address>> TradeWallet for MockTradeWallet<Cs, As> {
     fn create_half_deposit_psbt(
         &mut self,
         deposit_amount: Amount,
