@@ -11,6 +11,7 @@ use bdk_bitcoind_rpc::bitcoincore_rpc::{Auth, RpcApi as _};
 use bdk_electrum::BdkElectrumClient;
 use bdk_electrum::bdk_core::bitcoin::{KnownHrp, XOnlyPublicKey};
 use bdk_electrum::electrum_client::Error;
+use bdk_wallet::PersistedWallet;
 use bdk_wallet::bitcoin::address::NetworkChecked;
 use bdk_wallet::bitcoin::key::Secp256k1;
 use bdk_wallet::bitcoin::secp256k1::All;
@@ -29,6 +30,8 @@ use sha2::Sha256;
 use tempfile::TempDir;
 use tokio::net::TcpListener;
 use typed_arena::Arena;
+use wallet::bmp_wallet::BMPWalletPersister;
+use wallet::chain_data_source::ChainDataSource;
 
 /// Bitcoin regtest environment manager
 pub struct TestEnv {
@@ -678,6 +681,22 @@ impl ChainApi for Testchain {
     fn transaction_broadcast(&self, tx: &Transaction) -> Result<Txid> {
         broadcast_via(&self.client, tx)
     }
+
+    fn send_to_address(
+        &self,
+        _address: &bdk_wallet::bitcoin::Address,
+        _amount: bdk_wallet::bitcoin::Amount,
+    ) -> anyhow::Result<()> {
+        anyhow::bail!("send_to_address is not implemented for Testchain")
+    }
+
+    fn generate_to_address(
+        &self,
+        _blocks: u32,
+        _address: &bdk_wallet::bitcoin::Address,
+    ) -> anyhow::Result<()> {
+        anyhow::bail!("generate_to_address is not implemented for Testchain")
+    }
 }
 
 impl ChainScanner for Testchain {
@@ -695,6 +714,33 @@ impl ChainScanner for Testchain {
         self.client
             .full_scan(request, stop_gap, batch_size, fetch_prev_txouts)
             .map_err(Into::into)
+    }
+}
+
+/// `ChainDataSource` implementation for the Electrum-backed [`testenv::Testchain`] handle.
+///
+/// `Testchain` lives in the `testenv` crate alongside `TestEnv`; this impl ties it into the
+/// wallet's sync routine. It mirrors the values previously used by the live Electrum-backed
+/// implementation.
+impl ChainDataSource for Testchain {
+    const RECOVERY_HEIGHT: usize = 190_000;
+    const BATCH_SIZE: usize = 16;
+    const STOP_GAP: usize = 10;
+
+    async fn sync(
+        &self,
+        persister: Vec<&mut PersistedWallet<impl BMPWalletPersister>>,
+    ) -> anyhow::Result<()> {
+        for wallet in persister {
+            let tx_nodes = wallet.tx_graph().full_txs().map(|tx_node| tx_node.tx);
+            self.populate_tx_cache(tx_nodes);
+            let request = wallet.start_full_scan();
+
+            let updates = self.full_scan(request, Self::STOP_GAP, Self::BATCH_SIZE, false)?;
+
+            wallet.apply_update(updates)?;
+        }
+        Ok(())
     }
 }
 

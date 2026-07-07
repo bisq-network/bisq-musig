@@ -1,36 +1,59 @@
-use bdk_wallet::PersistedWallet;
-use chain::ChainScanner as _;
+use std::collections::BTreeMap;
+
+use bdk_kyoto::ScanType;
+use bdk_kyoto::bip157::Network;
+use bdk_wallet::chain::DescriptorExt;
+use bdk_wallet::{KeychainKind, PersistedWallet};
+use chain::CBFScanner;
 
 use crate::bmp_wallet::BMPWalletPersister;
 
+#[trait_variant::make(Send)]
 pub trait ChainDataSource {
     const RECOVERY_HEIGHT: usize;
     const BATCH_SIZE: usize;
     const STOP_GAP: usize;
 
-    fn sync(&self, _persister: &mut PersistedWallet<impl BMPWalletPersister>)
-    -> anyhow::Result<()>;
+    async fn sync(
+        &self,
+        _persister: Vec<&mut PersistedWallet<impl BMPWalletPersister>>,
+    ) -> anyhow::Result<()>;
 }
 
-/// `ChainDataSource` implementation for the Electrum-backed [`testenv::Testchain`] handle.
-///
-/// `Testchain` lives in the `testenv` crate alongside `TestEnv`; this impl ties it into the
-/// wallet's sync routine. It mirrors the values previously used by the live Electrum-backed
-/// implementation.
-impl ChainDataSource for testenv::Testchain {
+impl ChainDataSource for CBFScanner {
     const RECOVERY_HEIGHT: usize = 190_000;
     const BATCH_SIZE: usize = 16;
     const STOP_GAP: usize = 10;
 
-    fn sync(&self, persister: &mut PersistedWallet<impl BMPWalletPersister>) -> anyhow::Result<()> {
-        let tx_nodes = persister.tx_graph().full_txs().map(|tx_node| tx_node.tx);
-        self.populate_tx_cache(tx_nodes);
-        let request = persister.start_full_scan();
+    async fn sync(
+        &self,
+        mut wallets: Vec<&mut PersistedWallet<impl BMPWalletPersister>>,
+    ) -> anyhow::Result<()> {
+        let network = Network::Bitcoin;
+        let wallet_iter = wallets
+            .iter()
+            .map(|w| {
+                let wallet_deref = &***w;
+                (wallet_deref, ScanType::Sync)
+            })
+            .collect::<Vec<_>>();
 
-        let updates = self.full_scan(request, Self::STOP_GAP, Self::BATCH_SIZE, false)?;
+        let descriptors_map = wallets
+            .iter()
+            .enumerate()
+            .map(|(idx, w)| {
+                let key = w.public_descriptor(KeychainKind::External).descriptor_id();
+                (key, idx)
+            })
+            .collect::<BTreeMap<_, _>>();
 
-        persister.apply_update(updates)?;
+        let updates = self.sync_cbf(network, wallet_iter).await?;
 
+        for (descriptor, update) in updates {
+            let idx = *descriptors_map.get(&descriptor).unwrap();
+            let w = &mut *wallets.get_mut(idx).unwrap();
+            w.apply_update(update)?;
+        }
         Ok(())
     }
 }

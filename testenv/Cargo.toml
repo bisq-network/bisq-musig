@@ -9,6 +9,7 @@ anyhow = { workspace = true }
 bdk_bitcoind_rpc = { workspace = true }
 bdk_electrum = { workspace = true }
 bdk_wallet = { workspace = true, features = ["test-utils"] }
+wallet = { path = "../wallet"}
 bmp_tracing = { workspace = true }
 chain = { workspace = true }
 clap = { workspace = true }

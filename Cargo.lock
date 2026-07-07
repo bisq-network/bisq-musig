@@ -292,9 +292,9 @@ dependencies = [
 
 [[package]]
 name = "bdk_kyoto"
-version = "0.15.4"
+version = "0.17.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6f35b9f8b3aa8c4647bec7a92b050c496742d955e0ac1edcb4e7c2deabf63c54"
+checksum = "346c1d502ee4613cf2201db9c3b93a2317772d8eaa372114f34bf5f374be94fd"
 dependencies = [
  "bdk_wallet",
  "bip157",
@@ -302,9 +302,9 @@ dependencies = [
 
 [[package]]
 name = "bdk_wallet"
-version = "2.4.0"
+version = "3.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c99821af39c7df004bd411ece2ef22d9fba5a631b4489f3d9a0ac0d19637e2d0"
+checksum = "1284fb23acc3e3022673712b55f4d5ce7e38aadc2c49bbef830dc3935f0a3289"
 dependencies = [
  "anyhow",
  "bdk_chain",
@@ -325,13 +325,14 @@ checksum = "32637268377fc7b10a8c6d51de3e7fba1ce5dd371a96e342b34e6078db558e7f"
 
 [[package]]
 name = "bip157"
-version = "0.3.4"
+version = "0.6.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "88df5c18baaea9be4219679afbd4fc26491606f89f6ecdaffcdcabd67635b07b"
+checksum = "14485468baff5ec4114d186f1683635f3094de9f5a4b3953bf82ac6cccba40e8"
 dependencies = [
  "bip324",
  "bitcoin",
  "bitcoin-address-book",
+ "bitcoin_hashes 0.20.0",
  "tokio",
 ]
 
@@ -456,6 +457,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e0982261c82a50d89d1a411602afee0498b3e0debe3d36693f0c661352809639"
 dependencies = [
  "bitcoin-io 0.2.0",
+ "hex-conservative 0.3.2",
+]
+
+[[package]]
+name = "bitcoin_hashes"
+version = "0.20.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9a8a45c2b41c457a9a9e4670422fcbdf109afb3b22bc920b4045e8bdfd788a3d"
+dependencies = [
+ "bitcoin-consensus-encoding",
+ "bitcoin-internals 0.5.0",
  "hex-conservative 0.3.2",
 ]
 
@@ -622,7 +634,10 @@ name = "chain"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "bdk_kyoto",
  "bdk_wallet",
+ "bmp_tracing",
+ "tokio",
 ]
 
 [[package]]
@@ -1983,6 +1998,7 @@ name = "protocol"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "bdk_electrum",
  "bdk_wallet",
  "bmp_tracing",
  "chain",
@@ -2632,6 +2648,7 @@ dependencies = [
  "tempfile",
  "tokio",
  "typed-arena",
+ "wallet",
 ]
 
 [[package]]
@@ -2942,6 +2959,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "trait-variant"
+version = "0.1.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "70977707304198400eb4835a78f6a9f928bf41bba420deb8fdb175cd965d77a7"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn",
+]
+
+[[package]]
 name = "try-lock"
 version = "0.2.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3079,6 +3107,7 @@ dependencies = [
  "testenv",
  "thiserror 2.0.18",
  "tracing",
+ "trait-variant",
  "zeroize",
 ]
 

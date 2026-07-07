@@ -11,6 +11,7 @@ musig2 = { workspace = true }
 paste = "1.0.15"
 rand = { workspace = true }
 rand_chacha = { workspace = true }
+
 thiserror = { workspace = true }
 tracing = { workspace = true }
 wallet = { workspace = true }

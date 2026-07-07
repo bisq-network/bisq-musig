@@ -1,3 +1,5 @@
+use bdk_electrum::BdkElectrumClient;
+use bdk_electrum::electrum_client::Client as ElectrumClient;
 use bdk_wallet::bitcoin;
 use bdk_wallet::rusqlite::Connection;
 use bitcoin::key::{Keypair, Secp256k1, TapTweak as _, TweakedKeypair, TweakedPublicKey};
@@ -10,6 +12,7 @@ use protocol::protocol_musig_adaptor::{BMPContext, BMPProtocol, ProtocolRole};
 use protocol::psbt::BoxedTradeWallet;
 use protocol::transaction::{CustomPayoutTxBuilder, TransactionExt as _};
 use testenv::TestEnv;
+use tokio::runtime::Runtime;
 use wallet::bmp_wallet::{BMPWallet, WalletApi as _};
 use wallet::protocol_wallet_api::MemWallet;
 
@@ -32,7 +35,7 @@ pub fn funded_wallet(env: &mut TestEnv) -> BoxedTradeWallet {
         .to_ascii_lowercase()
         .as_str()
     {
-        "mem" => Box::new(MemWallet::funded_wallet(env)),
+        "mem" => Box::new(funded_mem_wallet(env)),
         "bmp" => Box::new(funded_bmp_wallet(env)),
         other => panic!("unknown WALLET_BACKEND={other:?}, expected `mem` or `bmp`"),
     }
@@ -50,7 +53,22 @@ fn funded_bmp_wallet(env: &mut TestEnv) -> BMPWallet<Connection> {
     env.wait_for_tx(txid).unwrap();
 
     let chain = env.new_testchain().unwrap();
-    wallet.sync_all(&chain).unwrap();
+    let rt = Runtime::new().expect("create runtime");
+    rt.block_on(async { wallet.sync_all(&chain).await })
+        .unwrap();
+    wallet
+}
+
+fn funded_mem_wallet(env: &mut TestEnv) -> MemWallet {
+    let client = BdkElectrumClient::new(ElectrumClient::new(&env.electrum_url()).unwrap());
+    let mut wallet = MemWallet::new(client).unwrap();
+    let address = wallet.next_unused_address();
+    let txid = env
+        .fund_address(&address.address, Amount::from_btc(10f64).unwrap())
+        .unwrap();
+    env.mine_block().unwrap();
+    env.wait_for_tx(txid).unwrap();
+    wallet.sync().unwrap();
     wallet
 }
 
