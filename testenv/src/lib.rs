@@ -10,6 +10,7 @@ use bdk_bitcoind_rpc::bitcoincore_rpc;
 use bdk_bitcoind_rpc::bitcoincore_rpc::{Auth, RpcApi as _};
 use bdk_electrum::BdkElectrumClient;
 use bdk_electrum::bdk_core::bitcoin::{KnownHrp, XOnlyPublicKey};
+use bdk_electrum::electrum_client::Error;
 use bdk_wallet::bitcoin::address::NetworkChecked;
 use bdk_wallet::bitcoin::key::Secp256k1;
 use bdk_wallet::bitcoin::secp256k1::All;
@@ -697,11 +698,13 @@ impl ChainScanner for Testchain {
 }
 
 /// Shared `ChainApi::transaction_broadcast` body — swallows the idempotent
-/// "Transaction already in block chain" Electrum error and returns the computed txid.
+/// "Transaction outputs already in utxo set" Electrum error (forwarded bitcoin RPC error -27) and
+/// returns the computed txid.
 fn broadcast_via(client: &BdkElectrumClient<Client>, tx: &Transaction) -> Result<Txid> {
     match client.transaction_broadcast(tx) {
         Ok(txid) => Ok(txid),
-        Err(e) if e.to_string().contains("Transaction already in block chain") => {
+        Err(Error::Protocol(e)) if e.as_str().is_some_and(
+            |s| s.starts_with("sendrawtransaction RPC error: {\"code\":-27,")) => {
             Ok(tx.compute_txid())
         }
         Err(e) => Err(e.into()),
