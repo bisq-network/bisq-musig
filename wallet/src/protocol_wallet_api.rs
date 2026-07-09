@@ -10,7 +10,6 @@ use bdk_wallet::bitcoin::{Address, Amount, FeeRate, Network, OutPoint, Psbt, Scr
 use bdk_wallet::coin_selection::CoinSelectionAlgorithm;
 use bdk_wallet::descriptor::{Descriptor, ExtendedDescriptor};
 use bdk_wallet::miniscript::ToPublicKey as _;
-use bdk_wallet::miniscript::descriptor::ConversionError;
 use bdk_wallet::miniscript::psbt::PsbtExt as _;
 use bdk_wallet::template::{Bip86, DescriptorTemplate as _};
 use bdk_wallet::{AddressInfo, KeychainKind, SignOptions, TxBuilder, TxOrdering, Wallet};
@@ -25,14 +24,14 @@ use thiserror::Error;
 pub trait ProtocolWalletApi {
     fn network(&self) -> Network;
 
-    fn new_address(&mut self) -> anyhow::Result<Address>;
+    fn new_address(&mut self) -> Result<Address>;
 
     /// Reveal a fresh external-keychain Taproot internal key. The returned X-only key shall
     /// correspond to a P2TR address that this wallet would otherwise have produced via
     /// [`Self::new_address`] — the two methods are intentionally tied together so that
     /// callers can use either flavour interchangeably and rely on the wallet to keep its
     /// keychain cursor / gap-fill state consistent.
-    fn new_internal_key(&mut self) -> anyhow::Result<XOnlyPublicKey>;
+    fn new_internal_key(&mut self) -> Result<XOnlyPublicKey>;
 
     /// This creates a PSBT for use with the depositTx (but not limited to). You specify the
     /// recipients, consisting of the deposit- (and trade-)amount and spk, and the
@@ -43,13 +42,13 @@ pub trait ProtocolWalletApi {
         &mut self,
         recipients: Vec<(ScriptBuf, Amount)>,
         fee_rate: FeeRate,
-    ) -> anyhow::Result<Psbt>;
+    ) -> Result<Psbt>;
 
     fn sign_selected_inputs(
         &mut self,
         psbt: &mut Psbt,
         is_selected: &dyn Fn(&OutPoint) -> bool,
-    ) -> anyhow::Result<()>;
+    ) -> Result<()>;
 
     // Import an external private from the HD wallet
     // After importing a rescan should be triggered
@@ -69,12 +68,6 @@ pub(crate) static LIBSECP256K1_CTX: LazyLock<secp256k1::Secp256k1<secp256k1::All
     LazyLock::new(secp256k1::Secp256k1::new);
 
 impl MemWallet {
-    pub fn reveal_next_address(&mut self) -> Address {
-        self.wallet
-            .reveal_next_address(KeychainKind::External)
-            .address
-    }
-
     pub fn public_descriptor(&self, chain: KeychainKind) -> &ExtendedDescriptor {
         self.wallet.public_descriptor(chain)
     }
@@ -133,10 +126,11 @@ impl MemWallet {
         self.wallet.balance().trusted_spendable()
     }
 
+    pub fn reveal_next_address(&mut self) -> AddressInfo {
+        self.wallet.reveal_next_address(KeychainKind::External)
+    }
+
     pub fn next_unused_address(&mut self) -> AddressInfo {
-        // FIXME: `next_unused_address` just returns the same unused address over and over. It has
-        //  to either be marked as used (which change isn't staged and therefore presumably never
-        //  persisted) or a fresh address requested with `reveal_next_address`.
         self.wallet.next_unused_address(KeychainKind::External)
     }
 
@@ -154,7 +148,7 @@ impl MemWallet {
     }
 }
 
-pub trait WalletExt {
+pub(crate) trait WalletExt {
     fn update_psbt_with_derivation_paths(&self, psbt: &mut Psbt);
 }
 
@@ -189,49 +183,38 @@ impl WalletExt for MemWallet {
     }
 }
 
+// Delegates to the `ProtocolWalletAPI` impl of the internal wallet.
 impl ProtocolWalletApi for MemWallet {
     fn network(&self) -> Network {
         self.wallet.network()
     }
 
-    fn new_address(&mut self) -> anyhow::Result<Address> {
-        // For privacy, always get fresh addresses for the trade protocol.
-        // FIXME: Need to find a way to prevent gaps of unused addresses from growing too large.
-        Ok(self.reveal_next_address())
+    fn new_address(&mut self) -> Result<Address> {
+        self.wallet.new_address()
     }
 
-    fn new_internal_key(&mut self) -> anyhow::Result<XOnlyPublicKey> {
-        let index = self
-            .wallet
-            .reveal_next_address(KeychainKind::External)
-            .index;
-        Ok(internal_key_at_index(&self.wallet, index)?)
+    fn new_internal_key(&mut self) -> Result<XOnlyPublicKey> {
+        self.wallet.new_internal_key()
     }
 
     fn create_psbt(
         &mut self,
         recipients: Vec<(ScriptBuf, Amount)>,
         fee_rate: FeeRate,
-    ) -> anyhow::Result<Psbt> {
-        finish_standard_psbt(self.wallet.build_tx(), recipients, fee_rate)
+    ) -> Result<Psbt> {
+        self.wallet.create_psbt(recipients, fee_rate)
     }
 
     fn sign_selected_inputs(
         &mut self,
         psbt: &mut Psbt,
         is_selected: &dyn Fn(&OutPoint) -> bool,
-    ) -> anyhow::Result<()> {
-        // TODO unify signing
-        sign_selected_inputs_with(&mut self.wallet, psbt, is_selected, |w, p, opts| {
-            w.sign(p, opts)?;
-            Ok(())
-        })
+    ) -> Result<()> {
+        self.wallet.sign_selected_inputs(psbt, is_selected)
     }
 
-    fn import_private_key(&mut self, _pk: Scalar) {
-        // `MemWallet` is an in-memory wallet that doesn't currently support imported keys.
-        // If/when this is needed, mirror the `BMPWallet` implementation.
-        todo!("MemWallet does not yet support importing private keys")
+    fn import_private_key(&mut self, pk: Scalar) {
+        self.wallet.import_private_key(pk);
     }
 }
 
@@ -240,22 +223,22 @@ impl ProtocolWalletApi for Wallet {
         self.network()
     }
 
-    fn new_address(&mut self) -> anyhow::Result<Address> {
+    fn new_address(&mut self) -> Result<Address> {
         // For privacy, always get fresh addresses for the trade protocol.
         // FIXME: Need to find a way to prevent gaps of unused addresses from growing too large.
         Ok(self.reveal_next_address(KeychainKind::External).address)
     }
 
-    fn new_internal_key(&mut self) -> anyhow::Result<XOnlyPublicKey> {
+    fn new_internal_key(&mut self) -> Result<XOnlyPublicKey> {
         let index = self.reveal_next_address(KeychainKind::External).index;
-        Ok(internal_key_at_index(self, index)?)
+        internal_key_at_index(self, index)
     }
 
     fn create_psbt(
         &mut self,
         recipients: Vec<(ScriptBuf, Amount)>,
         fee_rate: FeeRate,
-    ) -> anyhow::Result<Psbt> {
+    ) -> Result<Psbt> {
         finish_standard_psbt(self.build_tx(), recipients, fee_rate)
     }
 
@@ -263,10 +246,7 @@ impl ProtocolWalletApi for Wallet {
         &mut self,
         psbt: &mut Psbt,
         is_selected: &dyn Fn(&OutPoint) -> bool,
-    ) -> anyhow::Result<()> {
-        if !is_well_formed_psbt(psbt) {
-            anyhow::bail!("PSBT is not well-formed");
-        }
+    ) -> Result<()> {
         // TODO unify signing
         sign_selected_inputs_with(self, psbt, is_selected, |w, p, opts| {
             Self::sign(w, p, opts)?;
@@ -275,8 +255,6 @@ impl ProtocolWalletApi for Wallet {
     }
 
     fn import_private_key(&mut self, _pk: Scalar) {
-        // `bdk_wallet::Wallet` does not support importing external private keys here.
-        // Use `BMPWallet` for that flow.
         unimplemented!(
             "bdk_wallet::Wallet does not support importing external private keys; \
             use BMPWallet for that"
@@ -298,11 +276,14 @@ pub(crate) fn sign_selected_inputs_with<W, F>(
     psbt: &mut Psbt,
     is_selected: &dyn Fn(&OutPoint) -> bool,
     sign: F,
-) -> anyhow::Result<()>
+) -> Result<()>
 where
     W: WalletExt + ?Sized,
     F: FnOnce(&mut W, &mut Psbt, SignOptions) -> anyhow::Result<()>,
 {
+    if !is_well_formed_psbt(psbt) {
+        return Err(WalletErrorKind::MalformedPsbt);
+    }
     let mut psbt_copy = psbt.clone();
     // Populate the BIP32 derivation paths before BDK can finalize the inputs we own. Also
     // tell BDK to trust the witness UTXO since the full previous transactions are not
@@ -341,7 +322,7 @@ pub(crate) fn finish_standard_psbt<Cs: CoinSelectionAlgorithm>(
     mut builder: TxBuilder<'_, Cs>,
     recipients: Vec<(ScriptBuf, Amount)>,
     fee_rate: FeeRate,
-) -> anyhow::Result<Psbt> {
+) -> Result<Psbt> {
     builder
         .ordering(TxOrdering::Untouched)
         .nlocktime(absolute::LockTime::ZERO)
@@ -381,11 +362,18 @@ fn is_well_formed_psbt(psbt: &Psbt) -> bool {
             .all(|i| i.script_sig.is_empty() && i.witness.is_empty())
 }
 
+type Result<T, E = WalletErrorKind> = std::result::Result<T, E>;
+
 #[derive(Error, Debug)]
 #[error(transparent)]
 #[non_exhaustive]
 pub enum WalletErrorKind {
     #[error("not a Taproot address")]
     NotTaprootAddress,
-    ConversionError(#[from] ConversionError),
+    #[error("malformed PSBT")]
+    MalformedPsbt,
+    ConversionError(#[from] bdk_wallet::miniscript::descriptor::ConversionError),
+    CreateTx(#[from] bdk_wallet::error::CreateTxError),
+    #[error(transparent)]
+    Other(#[from] anyhow::Error),
 }

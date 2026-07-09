@@ -16,8 +16,9 @@ use musig2::secp::Scalar;
 use rand::{RngCore, SeedableRng as _};
 use rand_chacha::ChaCha20Rng;
 use wallet::bmp_wallet::BMPWallet;
-use wallet::protocol_wallet_api::{MemWallet, ProtocolWalletApi};
+use wallet::protocol_wallet_api::{MemWallet, ProtocolWalletApi, WalletErrorKind};
 
+use crate::psbt::WalletErrorKind::Other;
 use crate::receiver::Receiver;
 use crate::swap::Swap as _;
 use crate::transaction::{Result, TransactionErrorKind, TxOutput};
@@ -86,23 +87,19 @@ struct MockTradeWallet<Cs: Iterator<Item = TxOutput>, As: Iterator<Item = Addres
 impl<Cs: Iterator<Item = TxOutput>, As: Iterator<Item = Address>> ProtocolWalletApi for MockTradeWallet<Cs, As> {
     fn network(&self) -> Network { Network::Regtest }
 
-    fn new_address(&mut self) -> anyhow::Result<Address> {
-        self.new_addresses
-            .next()
-            .ok_or_else(|| anyhow::Error::from(TransactionErrorKind::MissingAddress))
+    fn new_address(&mut self) -> Result<Address, WalletErrorKind> {
+        self.new_addresses.next().ok_or_else(|| Other(TransactionErrorKind::MissingAddress.into()))
     }
 
-    fn new_internal_key(&mut self) -> anyhow::Result<XOnlyPublicKey> {
-        self.internal_key
-            .take()
-            .ok_or_else(|| anyhow::Error::from(TransactionErrorKind::MissingAddress))
+    fn new_internal_key(&mut self) -> Result<XOnlyPublicKey, WalletErrorKind> {
+        self.internal_key.take().ok_or_else(|| Other(TransactionErrorKind::MissingAddress.into()))
     }
 
     fn create_psbt(
         &mut self,
         _recipients: Vec<(ScriptBuf, Amount)>,
         _fee_rate: FeeRate,
-    ) -> anyhow::Result<Psbt> {
+    ) -> Result<Psbt, WalletErrorKind> {
         unimplemented!(
             "MockTradeWallet does not implement the generic create_psbt; \
             the trade protocol uses create_half_deposit_psbt instead"
@@ -113,7 +110,7 @@ impl<Cs: Iterator<Item = TxOutput>, As: Iterator<Item = Address>> ProtocolWallet
         &mut self,
         psbt: &mut Psbt,
         is_selected: &dyn Fn(&OutPoint) -> bool,
-    ) -> anyhow::Result<()> {
+    ) -> Result<(), WalletErrorKind> {
         let mut script_sigs = self.script_sigs.clone();
 
         for (input, TxIn { previous_output, .. })

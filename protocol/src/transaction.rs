@@ -668,7 +668,7 @@ impl WithFixedInputs<2> for CustomPayoutTxBuilder {
     fn inputs(&self) -> Result<[&TxOutput; 2]> { Ok([self.buyer_input()?, self.seller_input()?]) }
 }
 
-pub type Result<T, E = TransactionErrorKind> = std::result::Result<T, E>;
+pub(crate) type Result<T, E = TransactionErrorKind> = std::result::Result<T, E>;
 
 #[derive(Error, Debug)]
 #[error(transparent)]
@@ -710,12 +710,9 @@ pub enum TransactionErrorKind {
     SigFromSlice(#[from] bdk_wallet::bitcoin::taproot::SigFromSliceError),
     Psbt(#[from] bdk_wallet::bitcoin::psbt::Error),
     ExtractTx(#[from] Box<ExtractTxError>),
-    CreateTx(#[from] bdk_wallet::error::CreateTxError),
-    Signer(#[from] bdk_wallet::signer::SignerError),
     Miniscript(#[from] bdk_wallet::miniscript::Error),
     Conversion(#[from] bdk_wallet::miniscript::descriptor::ConversionError),
     Wallet(#[from] wallet::protocol_wallet_api::WalletErrorKind),
-    Anyhow(#[from] anyhow::Error),
 }
 
 impl From<ExtractTxError> for TransactionErrorKind {

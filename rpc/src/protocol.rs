@@ -777,5 +777,5 @@ pub enum ProtocolErrorKind {
     AddressParse(#[from] bdk_wallet::bitcoin::address::ParseError),
     Transaction(#[from] protocol::transaction::TransactionErrorKind),
     Multisig(#[from] protocol::multisig::MultisigErrorKind),
-    Anyhow(#[from] anyhow::Error),
+    Wallet(#[from] wallet::protocol_wallet_api::WalletErrorKind),
 }
