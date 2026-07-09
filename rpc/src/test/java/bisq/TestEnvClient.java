@@ -14,11 +14,13 @@ import java.util.regex.Pattern;
 
 /**
  * Bitcoin RPC client for TestEnv integration tests
- * <p>
- * Environment variables:
- * - TESTENV_RPC_URL
- * - TESTENV_RPC_USER
- * - TESTENV_RPC_PASS
+ *
+ * <p>Environment variables:
+ * <ul>
+ *   <li>{@code TESTENV_RPC_URL}
+ *   <li>{@code TESTENV_RPC_USER}
+ *   <li>{@code TESTENV_RPC_PASS}
+ * </ul>
  */
 public class TestEnvClient {
     private final HttpClient httpClient;

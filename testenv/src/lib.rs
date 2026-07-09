@@ -16,6 +16,7 @@ use bdk_wallet::bitcoin::key::Secp256k1;
 use bdk_wallet::bitcoin::secp256k1::All;
 use bdk_wallet::bitcoin::{Address, Amount, BlockHash, Network, Transaction, Txid};
 use bdk_wallet::chain::spk_client::{FullScanRequest, FullScanResponse};
+use bdk_wallet::serde_json;
 use bmp_tracing::tracing;
 use chain::{ChainApi, ChainScanner};
 use electrsd::corepc_node::Node;
@@ -703,8 +704,8 @@ impl ChainScanner for Testchain {
 fn broadcast_via(client: &BdkElectrumClient<Client>, tx: &Transaction) -> Result<Txid> {
     match client.transaction_broadcast(tx) {
         Ok(txid) => Ok(txid),
-        Err(Error::Protocol(e)) if e.as_str().is_some_and(
-            |s| s.starts_with("sendrawtransaction RPC error: {\"code\":-27,")) => {
+        Err(Error::Protocol(serde_json::Value::String(e))) if e.starts_with(
+            "sendrawtransaction RPC error: {\"code\":-27,") => {
             Ok(tx.compute_txid())
         }
         Err(e) => Err(e.into()),
@@ -735,7 +736,6 @@ impl Drop for TestEnv {
 #[cfg(test)]
 mod tests {
     use bdk_bitcoind_rpc::bitcoincore_rpc::RpcApi as _;
-    use bdk_wallet::serde_json;
     use bmp_tracing::tracing;
 
     use super::*;
