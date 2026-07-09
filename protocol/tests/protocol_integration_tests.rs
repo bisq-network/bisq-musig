@@ -247,7 +247,7 @@ fn test_custom_payout() -> anyhow::Result<()> {
         .set_buyer_payout_address(bob.claim_tx_me.builder.payout_address()?.clone())
         .set_seller_payout_address(alice.claim_tx_me.builder.payout_address()?.clone())
         .set_seller_payout_amount_excluding_fee(Amount::from_sat(30_000_000))
-        .set_fee_rate(FeeRate::from_sat_per_vb_unchecked(15))
+        .set_fee_rate(FeeRate::from_sat_per_vb_u32(15))
         .compute_unsigned_tx()?
         .sign_partial(&mut *alice.ctx.funds)?
         .sign_partial(&mut *bob.ctx.funds)?;

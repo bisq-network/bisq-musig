@@ -18,6 +18,7 @@ use secp::Scalar;
 
 use crate::bmp_wallet::BMPWalletPersister;
 use crate::chain_data_source::ChainDataSource;
+
 pub struct MockedBDKElectrum;
 
 impl ChainDataSource for MockedBDKElectrum {
@@ -76,18 +77,18 @@ pub fn verify_signature(
 
     // add tweak. this was taken from `signer::sign_psbt_schnorr`
     let keypair = keypair.tap_tweak(&secp, None).to_keypair();
-    let xonlykey = XOnlyPublicKey::from_keypair(&keypair).0; // ignoring the parity
+    let xonly_pubkey = XOnlyPublicKey::from_keypair(&keypair).0; // ignoring the parity
 
     // Must verify if we used the correct key to sign
-    let verify_res = secp.verify_schnorr(&signature, &message, &xonlykey);
+    let verify_res = secp.verify_schnorr(&signature, &message, &xonly_pubkey);
     assert!(verify_res.is_ok(), "The wrong internal key was used");
     Ok(())
 }
 
 pub fn load_imported_wallet(p: &Path, key: &Scalar) -> anyhow::Result<PersistedWallet<Connection>> {
     let pbk = key.base_point_mul();
-    let pubk = pbk.serialize_xonly().to_lower_hex_string();
-    let db_path = format!("bmp_{}.db3", pubk);
+    let pubkey = pbk.serialize_xonly().to_lower_hex_string();
+    let db_path = format!("bmp_{pubkey}.db3");
     let db_path = p.join(db_path);
 
     let mut db = Connection::open(db_path)?;
@@ -101,7 +102,7 @@ pub fn load_imported_wallet(p: &Path, key: &Scalar) -> anyhow::Result<PersistedW
 
 pub fn derive_public_key(key: &Scalar) -> XOnlyPublicKey {
     let xonly_pubkey = key.base_point_mul().serialize_xonly();
-    XOnlyPublicKey::from_slice(&xonly_pubkey).expect("Should be valid xonlypub key")
+    XOnlyPublicKey::from_slice(&xonly_pubkey).expect("Should be valid xonly pubkey")
 }
 
 pub fn foreign_utxo(value: Amount, index: u32) -> WeightedUtxo {

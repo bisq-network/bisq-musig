@@ -30,7 +30,7 @@ impl<T> Observable<T> {
 impl<T: Clone> Observable<T> {
     #[expect(impl_trait_overcaptures,
     reason = "need to append `+ use<T>` to get correct semantics with Rust 2024 (but breaks IDE)")]
-    pub fn observe(&mut self) -> impl Stream<Item=T> { // + use<T> {
+    pub fn observe(&mut self) -> impl Stream<Item = T> { // + use<T> {
         let (tx, rx) = mpsc::unbounded_channel();
         tx.send(self.value.clone()).unwrap();
         self.senders.push(tx);
@@ -80,7 +80,7 @@ impl<K, V> ObservableHashMap<K, V>
 {
     #[expect(impl_trait_overcaptures,
     reason = "need to append `+ use<K, V>` to get correct semantics with Rust 2024 (but breaks IDE)")]
-    pub fn observe(&mut self, key: K) -> impl Stream<Item=Option<V>> { // + use<K, V> {
+    pub fn observe(&mut self, key: K) -> impl Stream<Item = Option<V>> { // + use<K, V> {
         match self.map.entry(key) {
             Entry::Occupied(entry) => entry.into_mut(),
             Entry::Vacant(entry) => entry.insert(Observable::default())
@@ -121,7 +121,7 @@ impl<K, V> ObservableHashMap<K, V>
     where K: Clone + Eq + Hash,
           V: Clone + PartialEq
 {
-    pub fn sync(&mut self, entries: impl IntoIterator<Item=(K, V)>) {
+    pub fn sync(&mut self, entries: impl IntoIterator<Item = (K, V)>) {
         let mut remaining_keys: HashSet<K> = self.map.keys().cloned().collect();
         for (key, value) in entries {
             remaining_keys.remove(&key);

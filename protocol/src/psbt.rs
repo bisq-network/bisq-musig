@@ -75,7 +75,7 @@ pub trait TradeWallet: ProtocolWalletApi {
 /// `MemWallet`, a `BMPWallet<Connection>`, or any other type that implements [`TradeWallet`].
 pub type BoxedTradeWallet = Box<dyn TradeWallet + Send>;
 
-struct MockTradeWallet<Cs: Iterator<Item=TxOutput>, As: Iterator<Item=Address>> {
+struct MockTradeWallet<Cs: Iterator<Item = TxOutput>, As: Iterator<Item = Address>> {
     funding_coins: Cs,
     new_addresses: As,
     signature_map: BTreeMap<OutPoint, Signature>,
@@ -83,9 +83,7 @@ struct MockTradeWallet<Cs: Iterator<Item=TxOutput>, As: Iterator<Item=Address>> 
     script_sigs: BTreeMap<XOnlyPublicKey, Vec<Signature>>,
 }
 
-impl<Cs: Iterator<Item = TxOutput>, As: Iterator<Item = Address>> ProtocolWalletApi
-    for MockTradeWallet<Cs, As>
-{
+impl<Cs: Iterator<Item = TxOutput>, As: Iterator<Item = Address>> ProtocolWalletApi for MockTradeWallet<Cs, As> {
     fn network(&self) -> Network { Network::Regtest }
 
     fn new_address(&mut self) -> anyhow::Result<Address> {
@@ -118,12 +116,8 @@ impl<Cs: Iterator<Item = TxOutput>, As: Iterator<Item = Address>> ProtocolWallet
     ) -> anyhow::Result<()> {
         let mut script_sigs = self.script_sigs.clone();
 
-        for (
-            input,
-            TxIn {
-                previous_output, ..
-            },
-        ) in psbt.inputs.iter_mut().zip(&psbt.unsigned_tx.input)
+        for (input, TxIn { previous_output, .. })
+        in psbt.inputs.iter_mut().zip(&psbt.unsigned_tx.input)
         {
             if is_selected(previous_output) {
                 for (key, (leaf_hashes, _)) in &input.tap_key_origins {
@@ -164,9 +158,7 @@ impl<Cs: Iterator<Item = TxOutput>, As: Iterator<Item = Address>> ProtocolWallet
     }
 }
 
-impl<Cs: Iterator<Item = TxOutput>, As: Iterator<Item = Address>> TradeWallet
-    for MockTradeWallet<Cs, As>
-{
+impl<Cs: Iterator<Item = TxOutput>, As: Iterator<Item = Address>> TradeWallet for MockTradeWallet<Cs, As> {
     fn create_half_deposit_psbt(
         &mut self,
         deposit_amount: Amount,
@@ -565,7 +557,7 @@ mod tests {
         let mut rng = rand::rng();
 
         let deposit_amount = Amount::from_sat(40_000);
-        let fee_rate = FeeRate::from_sat_per_vb_unchecked(10);
+        let fee_rate = FeeRate::from_sat_per_vb_u32(10);
         let receiver_address = "bcrt1qwk6p86mzqmstcsg99qlu2mhsp3766u68jktv6k"
             .parse::<Address<_>>()?.require_network(Network::Regtest)?;
         let trade_fee_receivers = [

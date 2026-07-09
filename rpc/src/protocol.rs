@@ -417,7 +417,7 @@ impl TradeModel {
     }
 
     pub fn set_redirection_receivers<I, E>(&mut self, receivers: I) -> Result<(), E>
-        where I: IntoIterator<Item=Result<Receiver<NetworkUnchecked>, E>>,
+        where I: IntoIterator<Item = Result<Receiver<NetworkUnchecked>, E>>,
               E: From<ProtocolErrorKind>
     {
         let network = self.trade_wallet()?.network();
@@ -697,9 +697,7 @@ impl TradeModel {
     }
 
     pub fn sign_custom_payout_psbt(&mut self) -> Result<()> {
-        self.custom_payout_tx
-            .builder
-            .sign_partial(&mut *self.trade_wallet()?)?;
+        self.custom_payout_tx.builder.sign_partial(&mut *self.trade_wallet()?)?;
         Ok(())
     }
 
@@ -766,16 +764,12 @@ pub enum ProtocolErrorKind {
     MissingTradeWallet,
     #[error("missing script key")]
     MissingScriptKey,
-    #[error(
-        "insufficient redirection funds (available {available_msat:?} msat, used {used_msat:?} msat)"
-    )]
+    #[error("insufficient redirection funds (available {available_msat:?} msat, used {used_msat:?} msat)")]
     InsufficientRedirectionFunds {
         available_msat: u64,
         used_msat: u64,
     },
-    #[error(
-        "excess redirection funds (available {available_msat:?} msat, used {used_msat:?} msat)"
-    )]
+    #[error("excess redirection funds (available {available_msat:?} msat, used {used_msat:?} msat)")]
     ExcessRedirectionFunds {
         available_msat: u64,
         used_msat: u64,

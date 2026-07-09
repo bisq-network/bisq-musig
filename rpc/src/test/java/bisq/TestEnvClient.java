@@ -1,4 +1,5 @@
 package bisq;
+
 import java.io.IOException;
 import java.net.URI;
 import java.net.http.HttpClient;
@@ -14,13 +15,14 @@ import java.util.regex.Pattern;
 /**
  * Bitcoin RPC client for TestEnv integration tests
  *
- * Environment variables:
- * - TESTENV_RPC_URL
- * - TESTENV_RPC_USER
- * - TESTENV_RPC_PASS
+ * <p>Environment variables:
+ * <ul>
+ *   <li>{@code TESTENV_RPC_URL}
+ *   <li>{@code TESTENV_RPC_USER}
+ *   <li>{@code TESTENV_RPC_PASS}
+ * </ul>
  */
 public class TestEnvClient {
-
     private final HttpClient httpClient;
     private final String rpcUrl;
     private final String rpcUser;
@@ -29,7 +31,7 @@ public class TestEnvClient {
     public static TestEnvClient fromEnv() {
         // Load from properties file if available
         Properties props = loadTestEnvProperties();
-        
+
         // Try system properties first (set by Maven via systemPropertyVariables)
         // Then fall back to loaded properties, then environment variables
         String rpcUrl = System.getProperty("bitcoinRpcUrl");
@@ -69,8 +71,8 @@ public class TestEnvClient {
         }
 
         if (rpcUrl == null) {
-            throw new RuntimeException(
-                    "\n========== FAILED TO INITIALIZE RPC CLIENT ==========\n" +
+            throw new RuntimeException("\n" +
+                    "========== FAILED TO INITIALIZE RPC CLIENT ==========\n" +
                     "TESTENV_RPC_URL not found. Please provide RPC configuration via one of:\n\n" +
                     "1. Maven command-line properties:\n" +
                     "   mvn -DbitcoinRpcUrl=http://localhost:18332 " +
@@ -91,8 +93,8 @@ public class TestEnvClient {
         }
 
         if (rpcPass == null) {
-            throw new RuntimeException(
-                    "\n========== FAILED TO INITIALIZE RPC CLIENT ==========\n" +
+            throw new RuntimeException("\n" +
+                    "========== FAILED TO INITIALIZE RPC CLIENT ==========\n" +
                     "TESTENV_RPC_PASS not found. Please provide RPC password via one of:\n\n" +
                     "1. Maven command-line property:\n" +
                     "   mvn -DbitcoinRpcPass=<password> -f rpc/pom.xml clean verify\n\n" +
@@ -128,7 +130,6 @@ public class TestEnvClient {
     }
 
     public TestEnvClient(String rpcUrl, String rpcUser, String rpcPass) {
-
         this.rpcUrl = rpcUrl;
         this.rpcUser = rpcUser;
         this.rpcPass = rpcPass;
@@ -139,17 +140,15 @@ public class TestEnvClient {
      * Generic RPC call
      */
     private String rpcCall(String method, String paramsJson) {
-
         try {
-
             String body = """
-            {
-              "jsonrpc":"1.0",
-              "id":"java",
-              "method":"%s",
-              "params":%s
-            }
-            """.formatted(method, paramsJson);
+                    {
+                      "jsonrpc":"1.0",
+                      "id":"java",
+                      "method":"%s",
+                      "params":%s
+                    }
+                    """.formatted(method, paramsJson);
 
             String auth = Base64.getEncoder()
                     .encodeToString((rpcUser + ":" + rpcPass).getBytes());
@@ -161,14 +160,12 @@ public class TestEnvClient {
                     .POST(HttpRequest.BodyPublishers.ofString(body))
                     .build();
 
-            HttpResponse<String> response =
-                    httpClient.send(
-                            request,
-                            HttpResponse.BodyHandlers.ofString()
-                    );
+            HttpResponse<String> response = httpClient.send(
+                    request,
+                    HttpResponse.BodyHandlers.ofString()
+            );
 
             return response.body();
-
         } catch (IOException | InterruptedException e) {
             throw new RuntimeException("RPC call failed", e);
         }
@@ -177,28 +174,16 @@ public class TestEnvClient {
     /**
      * Mine blocks on regtest
      */
-    public int mineBlocks(int count) {
-
+    public void mineBlocks(int count) {
         String address = getNewAddress();
-
-        rpcCall(
-                "generatetoaddress",
-                "[" + count + ",\"" + address + "\"]"
-        );
-
-        return count;
+        rpcCall("generatetoaddress", "[" + count + ",\"" + address + "\"]");
     }
 
     /**
      * Fund an address
      */
     public String fundAddress(String address, double amount) {
-
-        String result = rpcCall(
-                "sendtoaddress",
-                "[\"" + address + "\"," + amount + "]"
-        );
-
+        String result = rpcCall("sendtoaddress", "[\"" + address + "\"," + amount + "]");
         return extractResult(result);
     }
 
@@ -206,12 +191,7 @@ public class TestEnvClient {
      * Get raw transaction hex
      */
     public String getRawTransaction(String txid) {
-
-        String result = rpcCall(
-                "getrawtransaction",
-                "[\"" + txid + "\"]"
-        );
-
+        String result = rpcCall("getrawtransaction", "[\"" + txid + "\"]");
         return extractResult(result);
     }
 
@@ -219,10 +199,7 @@ public class TestEnvClient {
      * Get current block height
      */
     public int getBlockCount() {
-        String result = rpcCall(
-                "getblockcount",
-                "[]"
-        );
+        String result = rpcCall("getblockcount", "[]");
         return Integer.parseInt(extractResult(result));
     }
 
@@ -230,10 +207,7 @@ public class TestEnvClient {
      * Get wallet balance
      */
     public double getBalance() {
-        String result = rpcCall(
-                "getbalance",
-                "[]"
-        );
+        String result = rpcCall("getbalance", "[]");
         return Double.parseDouble(extractResult(result));
     }
 
@@ -241,47 +215,35 @@ public class TestEnvClient {
      * Generate a new address
      */
     public String getNewAddress() {
-
-        String result = rpcCall(
-                "getnewaddress",
-                "[]"
-        );
-
-        String address = extractResult(result);
-        return address;
+        String result = rpcCall("getnewaddress", "[]");
+        return extractResult(result);
     }
 
     /**
      * Wait for transaction
      */
     public boolean waitForTransaction(String txid) {
-
         final long TIMEOUT_MS = 30_000;
         final long CHECK_INTERVAL_MS = 500;
 
         long start = System.currentTimeMillis();
-
         while (System.currentTimeMillis() - start < TIMEOUT_MS) {
-
             try {
-
                 String tx = getRawTransaction(txid);
-
                 if (tx != null && !tx.isBlank()) {
                     return true;
                 }
-
-            } catch (Exception ignored) {
+            } catch (RuntimeException ignored) {
             }
 
             try {
+                //noinspection BusyWait
                 Thread.sleep(CHECK_INTERVAL_MS);
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
                 return false;
             }
         }
-
         return false;
     }
 
@@ -289,10 +251,7 @@ public class TestEnvClient {
      * Extract "result" field from JSON
      */
     private String extractResult(String json) {
-
-        Pattern pattern =
-                Pattern.compile("\"result\"\\s*:\\s*(\"([^\"]*)\"|[0-9\\.]+)");
-
+        Pattern pattern = Pattern.compile("\"result\"\\s*:\\s*(\"([^\"]*)\"|[0-9.]+)");
         Matcher matcher = pattern.matcher(json);
 
         if (matcher.find()) {
@@ -307,10 +266,6 @@ public class TestEnvClient {
 
     @Override
     public String toString() {
-
-        return "TestEnvClient{" +
-                "rpcUrl='" + rpcUrl + '\'' +
-                ", rpcUser='" + rpcUser + '\'' +
-                '}';
+        return "TestEnvClient{rpcUrl='" + rpcUrl + "', rpcUser='" + rpcUser + "'}";
     }
 }

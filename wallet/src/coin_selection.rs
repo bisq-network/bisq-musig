@@ -32,24 +32,22 @@ impl CoinSelectionAlgorithm for AlwaysSpendImportedFirst {
             rand,
         );
 
-        match cs_result {
-            Ok(res) => Ok(res),
-            Err(_) => {
-                // Take the required and put them inside the optional and replace the required with
-                // the imported utxos This is done so that imported utxos always get
-                // spent first
-                optional_utxos.append(&mut required_utxos);
-                required_utxos.append(&mut imported_utxos);
+        if let Ok(res) = cs_result {
+            Ok(res)
+        } else {
+            // Take the required and put them inside the optional and replace the required with the
+            // imported utxos This is done so that imported utxos always get spent first
+            optional_utxos.append(&mut required_utxos);
+            required_utxos.append(&mut imported_utxos);
 
-                bnb.coin_select(
-                    required_utxos,
-                    optional_utxos,
-                    fee_rate,
-                    target_amount,
-                    drain_script,
-                    rand,
-                )
-            }
+            bnb.coin_select(
+                required_utxos,
+                optional_utxos,
+                fee_rate,
+                target_amount,
+                drain_script,
+                rand,
+            )
         }
     }
 }

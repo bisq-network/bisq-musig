@@ -117,12 +117,11 @@ impl BMPWalletPersister for Connection {
         let trx = db.transaction()?;
         {
             let mut stmt = trx.prepare(&format!(
-                "INSERT INTO {}(seed) VALUES(:seed)",
-                seeds_table_name
+                "INSERT INTO {seeds_table_name}(seed) VALUES(:seed)"
             ))?;
 
             stmt.execute(named_params! {
-                    ":seed": seed_phrase
+                ":seed": seed_phrase
             })?;
         }
 
@@ -133,7 +132,7 @@ impl BMPWalletPersister for Connection {
     fn load_imported_keys(db: &mut Self::DB, keys_table_name: &str) -> anyhow::Result<Vec<Scalar>> {
         let mut imported_keys: Vec<Scalar> = vec![];
 
-        let mut statement = db.prepare(&format!("SELECT key FROM {}", keys_table_name))?;
+        let mut statement = db.prepare(&format!("SELECT key FROM {keys_table_name}"))?;
 
         let row_iter = statement.query_map([], |row| Ok((row.get::<_, String>("key")?,)))?;
 
@@ -154,8 +153,7 @@ impl BMPWalletPersister for Connection {
         let db_trx = db.transaction()?;
         {
             let mut statement = db_trx.prepare_cached(&format!(
-                "INSERT OR IGNORE INTO {} (key) VALUES (:key)",
-                keys_table_name
+                "INSERT OR IGNORE INTO {keys_table_name} (key) VALUES (:key)"
             ))?;
 
             for key in keys {
@@ -171,7 +169,7 @@ impl BMPWalletPersister for Connection {
 
     fn get_seed_phrase(db: &Self::DB, seeds_table_name: &str) -> anyhow::Result<String> {
         let mnemonic = db.query_row(
-            &format!("SELECT seed FROM {}", seeds_table_name),
+            &format!("SELECT seed FROM {seeds_table_name}"),
             (),
             |row| row.get::<_, String>("seed"),
         )?;
@@ -182,7 +180,6 @@ impl BMPWalletPersister for Connection {
 
 const STOP_GAP: usize = 50;
 
-#[allow(unused)]
 pub struct BMPWallet<P: BMPWalletPersister> {
     wallet: PersistedWallet<P>,
     imported_keys: Vec<Scalar>,
@@ -193,11 +190,13 @@ pub struct BMPWallet<P: BMPWalletPersister> {
 }
 
 impl BMPWallet<Connection> {
-
-    pub fn list_unused_addresses_since_last_used(&self, key_chain: KeychainKind) -> impl Iterator<Item = AddressInfo> + '_  {
+    pub fn list_unused_addresses_since_last_used(
+        &self,
+        key_chain: KeychainKind,
+    ) -> impl Iterator<Item = AddressInfo> + '_ {
         let last_used = self.spk_index().last_used_index(key_chain);
         self.list_unused_addresses(key_chain)
-           .filter(move |info| last_used.is_none_or(|idx| info.index > idx))
+            .filter(move |info| last_used.is_none_or(|idx| info.index > idx))
     }
 
     pub fn next_address(&mut self, key_chain: KeychainKind) -> anyhow::Result<AddressInfo> {
@@ -208,18 +207,17 @@ impl BMPWallet<Connection> {
             let next_index = if let Some(last_addr) = &self.last_unused_address {
                 // Search for the last address in the current unused list
                 unused.iter().position(|info| info.address.to_string() == *last_addr)
-                    .map(|idx| (idx + 1) % unused.len())
-                    .unwrap_or(0)
+                    .map_or(0, |idx| (idx + 1) % unused.len())
             } else {
                 // No previous address, start with the first one
                 0
             };
 
             let selected = unused[next_index].clone();
-            
+
             // Update index to track the address just given out
             self.last_unused_address = Some(selected.address.to_string());
-            
+
             selected
         } else {
             let addr = self.reveal_next_address(key_chain);
@@ -241,11 +239,14 @@ impl BMPWallet<Connection> {
     /// Helper function to run a CBF node
     /// This will:
     /// - Create a new Light client
-    /// - spawn two threads one for trace logs and another for the server node
+    /// - spawn two tasks, one for trace logs and another for the server node
     /// - Return the requester and the subscriber from which the updates can be pulled
     ///
     /// Note: The caller is responsible for shutting down the requester at will.
-    pub async fn run_node(
+    ///
+    /// # Panics
+    /// Will panic if called outside the context of a Tokio runtime
+    pub fn run_node(
         wallet: &Wallet,
         scan_type: ScanType,
         peers: Vec<TrustedPeer>,
@@ -279,7 +280,7 @@ impl BMPWallet<Connection> {
                     .iter()
                     .map(|scalar| {
                         let pbk = scalar.base_point_mul().serialize_xonly();
-                        XOnlyPublicKey::from_slice(&pbk).expect("Should be valid xonlypub key")
+                        XOnlyPublicKey::from_slice(&pbk).expect("Should be valid xonly pubkey")
                     })
                     .find(|pubkey| {
                         let script = ScriptBuf::new_p2tr(secp, *pubkey, None);
@@ -399,7 +400,7 @@ pub trait WalletApi {
         peers: Vec<TrustedPeer>,
     ) -> impl Future<Output = anyhow::Result<()>> + Send;
 
-    fn drain_imported_balance(&mut self, feerate: FeeRate) -> anyhow::Result<Psbt>;
+    fn drain_imported_balance(&mut self, fee_rate: FeeRate) -> anyhow::Result<Psbt>;
 }
 
 impl WalletApi for BMPWallet<Connection> {
@@ -427,7 +428,7 @@ impl WalletApi for BMPWallet<Connection> {
         let mut db = Connection::new(db_path)?;
 
         // Derive encryption key
-        let salt_path = format!("{}.salt", db_path);
+        let salt_path = format!("{db_path}.salt");
         let mut salt = [0u8; 16];
         rand::rng().fill_bytes(&mut salt);
         fs::write(&salt_path, general_purpose::STANDARD.encode(salt))?;
@@ -489,7 +490,7 @@ impl WalletApi for BMPWallet<Connection> {
             for key in &self.imported_keys {
                 let xonly_pubkey = key.base_point_mul().serialize_xonly();
                 let xonly_pubkey = XOnlyPublicKey::from_slice(&xonly_pubkey)
-                    .expect("Should be valid xonlypub key");
+                    .expect("Should be valid xonly pubkey");
                 let script = ScriptBuf::new_p2tr(secp, xonly_pubkey, None);
 
                 if script == *input_script {
@@ -504,7 +505,7 @@ impl WalletApi for BMPWallet<Connection> {
 
             if let Some(signing_key) = is_mine(&txout.script_pubkey) {
                 let signer = PrivateKey::from_slice(&signing_key.serialize(), self.network())
-                    .map_err(|_e| SignerError::External("Invalid signing key".to_string()))?;
+                    .map_err(|_e| SignerError::External("Invalid signing key".to_owned()))?;
 
                 let sw = SignerWrapper::new(
                     signer,
@@ -515,7 +516,7 @@ impl WalletApi for BMPWallet<Connection> {
 
                 sw.sign_input(psbt, input_index, &sign_options, secp)?;
                 psbt.finalize_inp_mut(secp, input_index)
-                    .map_err(|_e| SignerError::External("Unable to finalized input".to_string()))?;
+                    .map_err(|_e| SignerError::External("Unable to finalized input".to_owned()))?;
             }
         }
 
@@ -524,21 +525,20 @@ impl WalletApi for BMPWallet<Connection> {
             tracing::info!("Loading the signers into the wallet");
             let recovery_phrase = self
                 .get_seed_phrase()
-                .map_err(|_| SignerError::External("Unable to load keys.".to_string()))?;
-            let mnemonic = Mnemonic::parse_normalized(&recovery_phrase).map_err(|_| {
-                SignerError::External("Unable to parse recovery phrase".to_string())
-            })?;
+                .map_err(|_| SignerError::External("Unable to load keys.".to_owned()))?;
+            let mnemonic = Mnemonic::parse_normalized(&recovery_phrase)
+                .map_err(|_| SignerError::External("Unable to parse recovery phrase".to_owned()))?;
 
             let xprv = Xpriv::new_master(self.network(), &mnemonic.to_entropy())
-                .map_err(|_| SignerError::External("Unable to load keys".to_string()))?;
+                .map_err(|_| SignerError::External("Unable to load keys".to_owned()))?;
 
             let (_, external_map, _) = Bip86(xprv, KeychainKind::External)
                 .build(self.network())
-                .map_err(|_| SignerError::External("BIP 86 derivation failed".to_string()))?;
+                .map_err(|_| SignerError::External("BIP 86 derivation failed".to_owned()))?;
 
             let (_, internal_map, _) = Bip86(xprv, KeychainKind::Internal)
                 .build(self.network())
-                .map_err(|_| SignerError::External("BIP 86 derivation failed".to_string()))?;
+                .map_err(|_| SignerError::External("BIP 86 derivation failed".to_owned()))?;
 
             self.wallet.set_keymap(KeychainKind::External, external_map);
             self.wallet.set_keymap(KeychainKind::Internal, internal_map);
@@ -558,7 +558,7 @@ impl WalletApi for BMPWallet<Connection> {
         scan_type: ScanType,
         peers: Vec<TrustedPeer>,
     ) -> anyhow::Result<()> {
-        let (requester, mut updates_sub) = Self::run_node(self, scan_type, peers).await?;
+        let (requester, mut updates_sub) = Self::run_node(self, scan_type, peers)?;
         let updates = updates_sub.update().await?;
 
         self.apply_update(updates)?;
@@ -574,6 +574,13 @@ impl WalletApi for BMPWallet<Connection> {
         scan_type: ScanType,
         peers: Vec<TrustedPeer>,
     ) -> anyhow::Result<()> {
+        struct KeyEntry {
+            db: Connection,
+            wallet: PersistedWallet<Connection>,
+            update_subscriber: UpdateSubscriber,
+            requester: Requester,
+        }
+
         let pubkeys = self
             .imported_keys
             .iter()
@@ -582,13 +589,6 @@ impl WalletApi for BMPWallet<Connection> {
 
         // Build all wallets and light clients upfront, then run all nodes concurrently
         // so their peer connections overlap (gossip addresses from one benefit the others).
-        struct KeyEntry {
-            db: Connection,
-            wallet: PersistedWallet<Connection>,
-            update_subscriber: UpdateSubscriber,
-            requester: Requester,
-        }
-
         let mut entries: Vec<KeyEntry> = Vec::with_capacity(pubkeys.len());
         for key in &pubkeys {
             let path_str = self.db.path().expect("DB path should not be empty").replace(Self::DB_NAME, "");
@@ -599,14 +599,11 @@ impl WalletApi for BMPWallet<Connection> {
                 .check_network(self.wallet.network())
                 .extract_keys()
                 .load_wallet(&mut db)?;
-            let wallet = match imported_wallet_opt {
-                Some(w) => w,
-                None => {
-                    let descriptor = format!("tr({})", key.to_lower_hex_string());
-                    Wallet::create_single(descriptor)
-                        .network(self.wallet.network())
-                        .create_wallet(&mut db)?
-                }
+            let wallet = if let Some(w) = imported_wallet_opt { w } else {
+                let descriptor = format!("tr({})", key.to_lower_hex_string());
+                Wallet::create_single(descriptor)
+                    .network(self.wallet.network())
+                    .create_wallet(&mut db)?
             };
             let LightClient {
                 requester,
@@ -650,9 +647,9 @@ impl WalletApi for BMPWallet<Connection> {
 
         for key in self.imported_keys.clone() {
             let pbk = key.base_point_mul();
-            let pubk = pbk.serialize_xonly().to_lower_hex_string();
+            let pubkey = pbk.serialize_xonly().to_lower_hex_string();
             let path_str = self.db.path().expect("DB path should not be empty").replace(Self::DB_NAME, "");
-            let db_path = Path::new(&path_str).join(format!("bmp_{}.db3", pubk));
+            let db_path = Path::new(&path_str).join(format!("bmp_{pubkey}.db3"));
 
             let mut db = Connection::open(db_path)?;
             let imported_wallet_opt = Wallet::load()
@@ -660,15 +657,12 @@ impl WalletApi for BMPWallet<Connection> {
                 .extract_keys()
                 .load_wallet(&mut db)?;
 
-            let mut imported_wallet = match imported_wallet_opt {
-                Some(wallet) => wallet,
-                None => {
-                    let descriptor = format!("tr({})", pubk);
+            let mut imported_wallet = if let Some(wallet) = imported_wallet_opt { wallet } else {
+                let descriptor = format!("tr({pubkey})");
 
-                    Wallet::create_single(descriptor)
-                        .network(self.wallet.network())
-                        .create_wallet(&mut db)?
-                }
+                Wallet::create_single(descriptor)
+                    .network(self.wallet.network())
+                    .create_wallet(&mut db)?
             };
 
             data_source.sync(&mut imported_wallet)?;
@@ -693,7 +687,7 @@ impl WalletApi for BMPWallet<Connection> {
     fn load_wallet(path: &Path, network: Network, password: &str) -> anyhow::Result<Self> {
         let (salt, mut db) = {
             let p = path.join(Self::DB_NAME);
-            println!("Path set joining .. {p:?}");
+            println!("Path set joining .. {}", p.display());
             (
                 get_salt(p.to_str().expect("Path must not be empty"))?,
                 Connection::open(p)?,
@@ -798,7 +792,7 @@ impl DerefMut for BMPWallet<Connection> {
 
 #[cfg(test)]
 mod tests {
-    use std::str::FromStr;
+    use std::str::FromStr as _;
 
     use bdk_kyoto::FeeRate;
     use bdk_wallet::bitcoin::hashes::Hash as _;
@@ -811,7 +805,7 @@ mod tests {
     use secp::Scalar;
     use tempfile::{TempDir, tempdir};
 
-    use crate::bmp_wallet::{BMPWallet, STOP_GAP, WalletApi};
+    use crate::bmp_wallet::{BMPWallet, STOP_GAP, WalletApi as _};
     use crate::test_utils::{MockedBDKElectrum, derive_public_key, load_imported_wallet};
 
     fn get_dir() -> TempDir {
@@ -1004,9 +998,9 @@ mod tests {
         let mut bmp_wallet = BMPWallet::new(dir.path(), "", Network::Regtest)?;
 
         let keys_to_import = [new_private_key(), new_private_key()];
-        keys_to_import
-            .iter()
-            .for_each(|k| bmp_wallet.import_private_key(*k));
+        for k in &keys_to_import {
+            bmp_wallet.import_private_key(*k);
+        }
 
         tracing::info!("Wallet balance before syncing {}", bmp_wallet.balance());
         assert_eq!(bmp_wallet.balance(), Amount::from_int_btc(0));
@@ -1031,7 +1025,7 @@ mod tests {
         assert_eq!(first_key_unspents.len(), 1);
         assert_eq!(second_key_unspents.len(), 1);
 
-        first_key_unspents.iter().for_each(|i| {
+        for i in &first_key_unspents {
             let psbt_input = psbt::Input {
                 witness_utxo: Some(i.txout.clone()),
                 tap_internal_key: Some(derive_public_key(&keys_to_import[0])),
@@ -1040,9 +1034,9 @@ mod tests {
             tx_builder
                 .add_foreign_utxo(i.outpoint, psbt_input, Weight::from_wu(66))
                 .unwrap();
-        });
+        }
 
-        second_key_unspents.iter().for_each(|i| {
+        for i in &second_key_unspents {
             let psbt_input = psbt::Input {
                 witness_utxo: Some(i.txout.clone()),
                 tap_internal_key: Some(derive_public_key(&keys_to_import[1])),
@@ -1051,7 +1045,7 @@ mod tests {
             tx_builder
                 .add_foreign_utxo(i.outpoint, psbt_input, Weight::from_wu(66))
                 .unwrap();
-        });
+        }
 
         let mut res_psbt = tx_builder.finish()?;
 
@@ -1227,6 +1221,7 @@ mod tests {
 
         Ok(())
     }
+
     #[test]
     fn test_list_unused_addresses_since_last_used() -> anyhow::Result<()> {
         let dir = get_dir();

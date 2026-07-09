@@ -109,16 +109,15 @@ impl ServerHandle {
         let deadline = Instant::now() + Duration::from_secs(30);
         loop {
             match self.child.try_wait() {
-                Ok(Some(_)) => break,
                 Ok(None) if Instant::now() < deadline => {
-                    std::thread::sleep(Duration::from_millis(100))
+                    std::thread::sleep(Duration::from_millis(100));
                 }
                 Ok(None) => {
                     let _ = self.child.kill();
                     let _ = self.child.wait();
                     break;
                 }
-                Err(_) => break,
+                Ok(Some(_)) | Err(_) => break,
             }
         }
     }

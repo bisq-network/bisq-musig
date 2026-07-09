@@ -1,4 +1,4 @@
-use std::io::Write;
+use std::io::Write as _;
 use std::mem;
 use std::sync::LazyLock;
 
@@ -9,12 +9,12 @@ use bdk_electrum::electrum_client::Client;
 use bdk_wallet::bitcoin::{Address, Amount, FeeRate, Network, OutPoint, Psbt, ScriptBuf};
 use bdk_wallet::coin_selection::CoinSelectionAlgorithm;
 use bdk_wallet::descriptor::{Descriptor, ExtendedDescriptor};
-use bdk_wallet::miniscript::ToPublicKey;
+use bdk_wallet::miniscript::ToPublicKey as _;
 use bdk_wallet::miniscript::descriptor::ConversionError;
 use bdk_wallet::miniscript::psbt::PsbtExt as _;
-use bdk_wallet::template::{Bip86, DescriptorTemplate};
+use bdk_wallet::template::{Bip86, DescriptorTemplate as _};
 use bdk_wallet::{AddressInfo, KeychainKind, SignOptions, TxBuilder, TxOrdering, Wallet};
-use rand::RngCore;
+use rand::RngCore as _;
 use secp::Scalar;
 use thiserror::Error;
 
@@ -55,6 +55,7 @@ pub trait ProtocolWalletApi {
     // After importing a rescan should be triggered
     fn import_private_key(&mut self, pk: Scalar);
 }
+
 pub struct MemWallet {
     wallet: Wallet,
     client: BdkElectrumClient<Client>,
@@ -268,7 +269,7 @@ impl ProtocolWalletApi for Wallet {
         }
         // TODO unify signing
         sign_selected_inputs_with(self, psbt, is_selected, |w, p, opts| {
-            Wallet::sign(w, p, opts)?;
+            Self::sign(w, p, opts)?;
             Ok(())
         })
     }

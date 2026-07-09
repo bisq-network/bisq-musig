@@ -1,5 +1,5 @@
 use bdk_wallet::PersistedWallet;
-use chain::ChainScanner;
+use chain::ChainScanner as _;
 
 use crate::bmp_wallet::BMPWalletPersister;
 
@@ -27,8 +27,7 @@ impl ChainDataSource for testenv::Testchain {
         self.populate_tx_cache(tx_nodes);
         let request = persister.start_full_scan();
 
-        let updates = self
-            .full_scan(request, Self::STOP_GAP, Self::BATCH_SIZE, false)?;
+        let updates = self.full_scan(request, Self::STOP_GAP, Self::BATCH_SIZE, false)?;
 
         persister.apply_update(updates)?;
 

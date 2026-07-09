@@ -266,7 +266,7 @@ impl musig_server::Musig for MusigImpl {
     }
 }
 
-fn mock_tx_confirmation_status_stream(trade_id: String, tx: Vec<u8>) -> impl Stream<Item=Result<TxConfirmationStatus>> {
+fn mock_tx_confirmation_status_stream(trade_id: String, tx: Vec<u8>) -> impl Stream<Item = Result<TxConfirmationStatus>> {
     let confirmation_event = TxConfirmationStatus {
         tx,
         current_block_height: 900_001,
@@ -358,7 +358,7 @@ impl<T> Stream for TracedResultStream<T> {
     }
 }
 
-pub trait TracedResultStreamExt<T: Serialize>: TryStream<Ok=T, Error=Status> + Sized + Send + 'static {
+pub trait TracedResultStreamExt<T: Serialize>: TryStream<Ok = T, Error = Status> + Sized + Send + 'static {
     fn box_traced(self) -> TracedResultStream<T> {
         TracedResultStream {
             inner: Box::pin(self.inspect_ok(move |event| {
@@ -371,7 +371,7 @@ pub trait TracedResultStreamExt<T: Serialize>: TryStream<Ok=T, Error=Status> + S
 }
 
 impl<S> TracedResultStreamExt<S::Ok> for S
-    where S: TryStream<Error=Status> + Sized + Send + 'static,
+    where S: TryStream<Error = Status> + Sized + Send + 'static,
           S::Ok: Serialize {}
 
 trait MusigRequest: Serialize {

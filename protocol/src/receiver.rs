@@ -156,7 +156,7 @@ mod tests {
     fn test_compute_receivers_from_shares_none_filtered() {
         // These are the same available msat amount, fee rate & absolute receiver amounts used in
         // the test trades of 'rpc/src/main/java/bisq/TradeProtocolClient.java'.
-        let fee_rate = FeeRate::from_sat_per_vb_unchecked(10);
+        let fee_rate = FeeRate::from_sat_per_vb_u32(10);
         let available_amount_msat = 256_115_000;
 
         // (The precise fractions chosen here sum to unity and exercise the use of `f64::round` in
@@ -213,7 +213,7 @@ mod tests {
     //noinspection SpellCheckingInspection
     #[test]
     fn test_compute_receivers_from_shares_one_filtered_by_min_output_saturation() {
-        let fee_rate = FeeRate::from_sat_per_vb_unchecked(10);
+        let fee_rate = FeeRate::from_sat_per_vb_u32(10);
         // 1999 sats for two P2TR outputs, plus 860 sats for their fee contributions:
         let available_amount_msat = 2_859_000;
 
@@ -242,7 +242,7 @@ mod tests {
     //noinspection SpellCheckingInspection
     #[test]
     fn test_compute_receivers_from_shares_all_filtered() {
-        let fee_rate = FeeRate::from_sat_per_vb_unchecked(10);
+        let fee_rate = FeeRate::from_sat_per_vb_u32(10);
         // 999 sats for one P2TR output, plus 430 sats for its fee contribution:
         let available_amount_msat = 1_429_000;
 
@@ -262,7 +262,7 @@ mod tests {
     //noinspection SpellCheckingInspection
     #[test]
     fn test_compute_receivers_from_shares_more_than_251_outputs() {
-        let fee_rate = FeeRate::from_sat_per_vb_unchecked(1);
+        let fee_rate = FeeRate::from_sat_per_vb_u32(1);
         // 10_000 sats each for 252 P2SH outputs, 8_064 = 252 * 32 sats for their fee contributions,
         // but this _doesn't_ include the extra 2 vB <-> 2 sats cost for including >251 outputs:
         let mut available_amount_msat = 2_528_064_000;

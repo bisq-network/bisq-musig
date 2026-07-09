@@ -115,12 +115,12 @@ impl WalletServiceImpl {
     }
 }
 
-fn unconfirmed_txs(wallet: &Wallet) -> impl Iterator<Item=Arc<Transaction>> + '_ {
+fn unconfirmed_txs(wallet: &Wallet) -> impl Iterator<Item = Arc<Transaction>> + '_ {
     tx_confidence_entries(wallet)
         .filter_map(|(_, conf)| (conf.num_confirmations == 0).then_some(conf.wallet_tx.tx))
 }
 
-fn tx_confidence_entries(wallet: &Wallet) -> impl Iterator<Item=(Txid, TxConfidence)> + '_ {
+fn tx_confidence_entries(wallet: &Wallet) -> impl Iterator<Item = (Txid, TxConfidence)> + '_ {
     trace!( "Syncing confirmations.");
 
     let next_height = wallet.latest_checkpoint().height() + 1;

@@ -4,13 +4,12 @@ use std::io;
 use std::path::PathBuf;
 use std::sync::{Mutex, PoisonError};
 
-pub use tracing;
-pub use tracing_subscriber;
 use tracing_subscriber::filter::EnvFilter;
 use tracing_subscriber::layer::SubscriberExt as _;
 use tracing_subscriber::registry::LookupSpan;
 use tracing_subscriber::util::SubscriberInitExt as _;
 use tracing_subscriber::{Layer, fmt};
+pub use {tracing, tracing_subscriber};
 
 #[derive(Debug, Clone)]
 #[expect(clippy::exhaustive_enums)]
