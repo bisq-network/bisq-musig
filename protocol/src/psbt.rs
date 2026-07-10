@@ -1,7 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::mem;
 
-use bdk_wallet::Wallet;
 use bdk_wallet::bitcoin::amount::CheckedSum as _;
 use bdk_wallet::bitcoin::hashes::Hash as _;
 use bdk_wallet::bitcoin::opcodes::all::{OP_PUSHBYTES_27, OP_RETURN};
@@ -9,14 +8,12 @@ use bdk_wallet::bitcoin::taproot::Signature;
 use bdk_wallet::bitcoin::transaction::Version;
 use bdk_wallet::bitcoin::{
     Address, Amount, FeeRate, Network, OutPoint, Psbt, ScriptBuf, Sequence, TapSighashType,
-    Transaction, TxIn, TxOut, Weight, Witness, XOnlyPublicKey, absolute, psbt, script,
+    Transaction, TxIn, TxOut, VarInt, Weight, Witness, XOnlyPublicKey, absolute, psbt, script,
 };
-use bdk_wallet::rusqlite::Connection;
 use musig2::secp::Scalar;
 use rand::{RngCore, SeedableRng as _};
 use rand_chacha::ChaCha20Rng;
-use wallet::bmp_wallet::BMPWallet;
-use wallet::protocol_wallet_api::{MemWallet, ProtocolWalletApi, WalletErrorKind};
+use wallet::protocol_wallet_api::{ProtocolWalletApi, WalletErrorKind};
 
 use crate::psbt::WalletErrorKind::Other;
 use crate::receiver::Receiver;
@@ -34,8 +31,7 @@ pub const MAX_ALLOWED_HALF_PSBT_OUTPUT_NUM: usize = 126;
 /// Extension trait carrying the trade-deposit-specific wallet operations on top of the
 /// generic [`ProtocolWalletApi`]. Anything that implements `ProtocolWalletApi` plugs in
 /// for free via the default `create_half_deposit_psbt`, which is built on top of
-/// [`ProtocolWalletApi::create_psbt`]. The default only needs to be overridden by mock
-/// impls that don't provide a real `create_psbt` (notably [`MockTradeWallet`]).
+/// [`ProtocolWalletApi::create_psbt`].
 pub trait TradeWallet: ProtocolWalletApi {
     fn create_half_deposit_psbt(
         &mut self,
@@ -44,15 +40,13 @@ pub trait TradeWallet: ProtocolWalletApi {
         trade_fee_receivers: &[Receiver],
         rng: &mut dyn RngCore,
     ) -> Result<Psbt> {
-        let mut recipients: Vec<(ScriptBuf, Amount)> =
-            Vec::with_capacity(1 + trade_fee_receivers.len());
+        let mut recipients = Vec::with_capacity(1 + trade_fee_receivers.len());
         recipients.push((half_deposit_placeholder_spk(rng), deposit_amount));
-        recipients.extend(
-            trade_fee_receivers
-                .iter()
-                .map(|r| (r.address.script_pubkey(), r.amount)),
-        );
-        let mut psbt = ProtocolWalletApi::create_psbt(self, recipients, fee_rate)?;
+        recipients.extend(trade_fee_receivers.iter()
+            .map(|r| (r.address.script_pubkey(), r.amount)));
+
+        let mut psbt = self.create_psbt(recipients, fee_rate)?;
+
         // Calculate tx fee overpay unconditionally, as this performs additional checks on the PSBT:
         let overpay_msat: u64 = half_psbt_fee_overpay_msat(&psbt, fee_rate)
             .ok_or(TransactionErrorKind::Overflow)?
@@ -71,6 +65,8 @@ pub trait TradeWallet: ProtocolWalletApi {
         Ok(psbt)
     }
 }
+
+impl<T: ProtocolWalletApi> TradeWallet for T {}
 
 /// Type-erased wallet handle used by the trade protocol. The concrete wallet may be a
 /// `MemWallet`, a `BMPWallet<Connection>`, or any other type that implements [`TradeWallet`].
@@ -97,13 +93,67 @@ impl<Cs: Iterator<Item = TxOutput>, As: Iterator<Item = Address>> ProtocolWallet
 
     fn create_psbt(
         &mut self,
-        _recipients: Vec<(ScriptBuf, Amount)>,
-        _fee_rate: FeeRate,
+        mut recipients: Vec<(ScriptBuf, Amount)>,
+        fee_rate: FeeRate,
     ) -> Result<Psbt, WalletErrorKind> {
-        unimplemented!(
-            "MockTradeWallet does not implement the generic create_psbt; \
-            the trade protocol uses create_half_deposit_psbt instead"
-        )
+        let fee_cost_msat = |weight: Weight|
+            fee_rate.to_sat_per_kwu().checked_mul(weight.to_wu())
+                .ok_or(Other(TransactionErrorKind::Overflow.into()));
+
+        // Provisionally add a change recipient of zero value. We should never normally use
+        // `new_address()` for change outputs, but this is just a mock.
+        recipients.push((self.new_address()?.script_pubkey(), Amount::ZERO));
+
+        let base_weight = Weight::from_wu_usize(38 + 4 * VarInt::from(recipients.len()).size());
+        let mut output = Vec::with_capacity(recipients.len());
+        let mut cost_msat = fee_cost_msat(base_weight)?;
+
+        for (script_pubkey, value) in recipients {
+            let tx_out = TxOut { value, script_pubkey };
+            cost_msat = (|| cost_msat
+                .checked_add(value.to_sat().checked_mul(1000)?)?
+                .checked_add(fee_cost_msat(tx_out.weight()).ok()?))()
+                .ok_or(Other(TransactionErrorKind::Overflow.into()))?;
+            output.push(tx_out);
+        }
+
+        let mut input = Vec::new();
+        let mut inputs = Vec::new();
+        let mut funds = Amount::ZERO;
+
+        while funds < Amount::from_sat(cost_msat.div_ceil(1000)) {
+            let new_coin = self.funding_coins.next()
+                .ok_or(Other(TransactionErrorKind::MissingTxOutput.into()))?;
+            let new_coin_weight = new_coin.estimated_input_weight()
+                .ok_or(Other(TransactionErrorKind::InvalidPsbt.into()))?;
+            funds = funds.checked_add(new_coin.prevout.value)
+                .ok_or(Other(TransactionErrorKind::Overflow.into()))?;
+            cost_msat = cost_msat.checked_add(fee_cost_msat(new_coin_weight)?)
+                .ok_or(Other(TransactionErrorKind::Overflow.into()))?;
+            input.push(TxIn {
+                previous_output: new_coin.outpoint,
+                sequence: Sequence::ENABLE_RBF_NO_LOCKTIME,
+                ..TxIn::default()
+            });
+            inputs.push(psbt::Input {
+                witness_utxo: Some(new_coin.prevout),
+                ..psbt::Input::default()
+            });
+        }
+
+        let change_output = output.last_mut().expect("tx has a provisional change output");
+        change_output.value = funds - Amount::from_sat(cost_msat.div_ceil(1000));
+        if change_output.value < change_output.script_pubkey.minimal_non_dust() {
+            output.pop();
+        }
+
+        let unsigned_tx = Transaction {
+            version: Version::TWO,
+            lock_time: absolute::LockTime::ZERO,
+            input,
+            output,
+        };
+        Ok(Psbt { inputs, ..Psbt::from_unsigned_tx(unsigned_tx).expect("tx is unsigned by construction") })
     }
 
     fn sign_selected_inputs(
@@ -152,78 +202,6 @@ impl<Cs: Iterator<Item = TxOutput>, As: Iterator<Item = Address>> ProtocolWallet
 
     fn import_private_key(&mut self, _pk: Scalar) {
         unimplemented!("MockTradeWallet does not support importing private keys")
-    }
-}
-
-impl<Cs: Iterator<Item = TxOutput>, As: Iterator<Item = Address>> TradeWallet for MockTradeWallet<Cs, As> {
-    fn create_half_deposit_psbt(
-        &mut self,
-        deposit_amount: Amount,
-        fee_rate: FeeRate,
-        trade_fee_receivers: &[Receiver],
-        rng: &mut dyn RngCore,
-    ) -> Result<Psbt> {
-        const HALF_DEPOSIT_TX_BASE_WEIGHT: Weight = Weight::from_wu(193);
-
-        let fee_cost_msat = |weight: Weight|
-            fee_rate.to_sat_per_kwu().checked_mul(weight.to_wu())
-                .ok_or(TransactionErrorKind::Overflow);
-        let deposit_amount_msat = deposit_amount.to_sat().checked_mul(1000)
-            .ok_or(TransactionErrorKind::Overflow)?;
-
-        let mut input = Vec::new();
-        let mut inputs = Vec::new();
-        let mut output = Vec::with_capacity(trade_fee_receivers.len() + 2);
-
-        output.push(TxOut {
-            value: deposit_amount,
-            script_pubkey: half_deposit_placeholder_spk(rng),
-        });
-        output.extend(trade_fee_receivers.iter().map(TxOut::from));
-        // We should never normally use `new_address()` for change outputs, but this is just a mock:
-        let mut change_output = TxOut { value: Amount::ZERO, script_pubkey: self.new_address()?.script_pubkey() };
-
-        let mut cost_msat = Receiver::total_output_cost_msat(trade_fee_receivers, fee_rate, 2)?
-            .checked_add(deposit_amount_msat)
-            .ok_or(TransactionErrorKind::Overflow)?
-            .checked_add(fee_cost_msat(HALF_DEPOSIT_TX_BASE_WEIGHT)?)
-            .ok_or(TransactionErrorKind::Overflow)?
-            .checked_add(fee_cost_msat(change_output.weight())?)
-            .ok_or(TransactionErrorKind::Overflow)?;
-
-        let mut funds = Amount::ZERO;
-        while funds < Amount::from_sat(cost_msat.div_ceil(1000)) {
-            let new_coin = self.funding_coins.next()
-                .ok_or(TransactionErrorKind::MissingTxOutput)?;
-            let new_coin_weight = new_coin.estimated_input_weight()
-                .ok_or(TransactionErrorKind::InvalidPsbt)?;
-            funds = funds.checked_add(new_coin.prevout.value)
-                .ok_or(TransactionErrorKind::Overflow)?;
-            cost_msat = cost_msat.checked_add(fee_cost_msat(new_coin_weight)?)
-                .ok_or(TransactionErrorKind::Overflow)?;
-            input.push(TxIn {
-                previous_output: new_coin.outpoint,
-                sequence: Sequence::ENABLE_RBF_NO_LOCKTIME,
-                ..TxIn::default()
-            });
-            inputs.push(psbt::Input {
-                witness_utxo: Some(new_coin.prevout),
-                ..psbt::Input::default()
-            });
-        }
-
-        change_output.value = funds - Amount::from_sat(cost_msat.div_ceil(1000));
-        if change_output.value >= change_output.script_pubkey.minimal_non_dust() {
-            output.push(change_output);
-        }
-
-        let unsigned_tx = Transaction {
-            version: Version::TWO,
-            lock_time: absolute::LockTime::ZERO,
-            input,
-            output,
-        };
-        Ok(Psbt { inputs, ..Psbt::from_unsigned_tx(unsigned_tx).expect("tx is unsigned by construction") })
     }
 }
 
@@ -301,12 +279,6 @@ fn signature_map(funding_coins: &[TxOutput], signatures: &[&'static str]) -> BTr
 fn script_sigs(iks: &[XOnlyPublicKey], signatures: &[&'static str]) -> BTreeMap<XOnlyPublicKey, Vec<Signature>> {
     iks.iter().map(|k| (*k, signature_vec(signatures))).collect()
 }
-
-impl TradeWallet for Wallet {}
-
-impl TradeWallet for BMPWallet<Connection> {}
-
-impl TradeWallet for MemWallet {}
 
 trait Redact {
     fn redact_sensitive_fields(&mut self);
