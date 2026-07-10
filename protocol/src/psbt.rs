@@ -28,49 +28,37 @@ use crate::transaction::{Result, TransactionErrorKind, TxOutput};
 pub const MAX_ALLOWED_HALF_PSBT_INPUT_NUM: usize = 126;
 pub const MAX_ALLOWED_HALF_PSBT_OUTPUT_NUM: usize = 126;
 
-/// Extension trait carrying the trade-deposit-specific wallet operations on top of the
-/// generic [`ProtocolWalletApi`]. Anything that implements `ProtocolWalletApi` plugs in
-/// for free via the default `create_half_deposit_psbt`, which is built on top of
-/// [`ProtocolWalletApi::create_psbt`].
-pub trait TradeWallet: ProtocolWalletApi {
-    fn create_half_deposit_psbt(
-        &mut self,
-        deposit_amount: Amount,
-        fee_rate: FeeRate,
-        trade_fee_receivers: &[Receiver],
-        rng: &mut dyn RngCore,
-    ) -> Result<Psbt> {
-        let mut recipients = Vec::with_capacity(1 + trade_fee_receivers.len());
-        recipients.push((half_deposit_placeholder_spk(rng), deposit_amount));
-        recipients.extend(trade_fee_receivers.iter()
-            .map(|r| (r.address.script_pubkey(), r.amount)));
+pub(crate) fn create_half_deposit_psbt(
+    wallet: &mut (impl ProtocolWalletApi + ?Sized),
+    deposit_amount: Amount,
+    fee_rate: FeeRate,
+    trade_fee_receivers: &[Receiver],
+    rng: &mut dyn RngCore,
+) -> Result<Psbt> {
+    let mut recipients = Vec::with_capacity(1 + trade_fee_receivers.len());
+    recipients.push((half_deposit_placeholder_spk(rng), deposit_amount));
+    recipients.extend(trade_fee_receivers.iter()
+        .map(|r| (r.address.script_pubkey(), r.amount)));
 
-        let mut psbt = self.create_psbt(recipients, fee_rate)?;
+    let mut psbt = wallet.create_psbt(recipients, fee_rate)?;
 
-        // Calculate tx fee overpay unconditionally, as this performs additional checks on the PSBT:
-        let overpay_msat: u64 = half_psbt_fee_overpay_msat(&psbt, fee_rate)
-            .ok_or(TransactionErrorKind::Overflow)?
-            .try_into()
-            .map_err(|_| TransactionErrorKind::InvalidPsbt)?;
-        let change_output_index = 1 + trade_fee_receivers.len();
-        if psbt.unsigned_tx.output.len() > change_output_index {
-            // Correct any tx fee overpay due to overly conservative input witness size estimation
-            // by BDK (as each witness is assumed to potentially have a non-default sighash type in
-            // the case of p2tr and not grind for low R in the case of p2wpkh), and also due to the
-            // fact that each would-be-signed half-deposit PSBT is 1 wu bigger than ideal.
-            let overpay = Amount::from_sat(overpay_msat / 1000);
-            psbt.unsigned_tx.output[change_output_index].value += overpay;
-        }
-        psbt.redact_sensitive_fields();
-        Ok(psbt)
+    // Calculate tx fee overpay unconditionally, as this performs additional checks on the PSBT:
+    let overpay_msat: u64 = half_psbt_fee_overpay_msat(&psbt, fee_rate)
+        .ok_or(TransactionErrorKind::Overflow)?
+        .try_into()
+        .map_err(|_| TransactionErrorKind::InvalidPsbt)?;
+    let change_output_index = 1 + trade_fee_receivers.len();
+    if psbt.unsigned_tx.output.len() > change_output_index {
+        // Correct any tx fee overpay due to overly conservative input witness size estimation by
+        // BDK (as each witness is assumed to potentially have a non-default sighash type in the
+        // case of P2TR and not grind for low R in the case of P2WPKH), and also due to the fact
+        // that each would-be-signed half-deposit PSBT is 1 wu bigger than ideal.
+        let overpay = Amount::from_sat(overpay_msat / 1000);
+        psbt.unsigned_tx.output[change_output_index].value += overpay;
     }
+    psbt.redact_sensitive_fields();
+    Ok(psbt)
 }
-
-impl<T: ProtocolWalletApi> TradeWallet for T {}
-
-/// Type-erased wallet handle used by the trade protocol. The concrete wallet may be a
-/// `MemWallet`, a `BMPWallet<Connection>`, or any other type that implements [`TradeWallet`].
-pub type BoxedTradeWallet = Box<dyn TradeWallet + Send>;
 
 struct MockTradeWallet<Cs: Iterator<Item = TxOutput>, As: Iterator<Item = Address>> {
     funding_coins: Cs,
@@ -206,7 +194,7 @@ impl<Cs: Iterator<Item = TxOutput>, As: Iterator<Item = Address>> ProtocolWallet
 }
 
 //noinspection SpellCheckingInspection
-pub fn mock_buyer_trade_wallet() -> impl TradeWallet {
+pub fn mock_buyer_trade_wallet() -> impl ProtocolWalletApi {
     let funding_coins = [
         "658654575bbbeb46e965bd9eb37fd3be550a7e0fa2d64bc5f218763155602300:0",
     ].map(TxOutput::mock_1_btc_coin).into_iter();
@@ -234,7 +222,7 @@ pub fn mock_buyer_trade_wallet() -> impl TradeWallet {
 }
 
 //noinspection SpellCheckingInspection
-pub fn mock_seller_trade_wallet() -> impl TradeWallet {
+pub fn mock_seller_trade_wallet() -> impl ProtocolWalletApi {
     let funding_coins = [
         "4a5ecc72ec8db78f11c6785f560a13f6f32eac66d160a8157d30956695ccf523:0",
         "373b3ca0b9135e9649672772d4659bb5597d06b4694f1fbdbece285823fde0a3:1",
@@ -535,7 +523,7 @@ mod tests {
 
         // Create a test half-deposit PSBT with one 50_000 sat input, one 40_000 sat OP_RETURN
         // output, one 5_000 sat trade fee output and one change output.
-        let mut psbt = wallet.create_half_deposit_psbt(deposit_amount, fee_rate, &trade_fee_receivers, &mut rng)?;
+        let mut psbt = create_half_deposit_psbt(&mut wallet, deposit_amount, fee_rate, &trade_fee_receivers, &mut rng)?;
         assert_eq!([40_000, 5_000, 3_202], psbt.unsigned_tx.output.first_chunk().unwrap().clone()
             .map(|o| o.value.to_sat()));
 

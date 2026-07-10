@@ -9,14 +9,14 @@ use guardian::ArcMutexGuardian;
 use musig2::secp::{MaybeScalar, Point, Scalar};
 use musig2::{PartialSignature, PubNonce};
 use protocol::multisig::{KeyCtx, KeyPair, PointExt as _, SigCtx};
-use protocol::psbt::{self, TradeWallet};
 use protocol::receiver::{Receiver, ReceiverList};
-use protocol::script_paths;
 use protocol::transaction::{
     CustomPayoutTxBuilder, DepositTxBuilder, ForwardingTxBuilder, NetworkParams as _,
     RedirectTxBuilder, TransactionExt as _, WarningTxBuilder,
 };
+use protocol::{psbt, script_paths};
 use thiserror::Error;
+use wallet::protocol_wallet_api::ProtocolWalletApi;
 
 use crate::storage::{ByRef, ByVal, Storage};
 
@@ -44,7 +44,7 @@ pub static TRADE_MODELS: LazyLock<TradeModelMemoryStore> = LazyLock::new(|| Mute
 pub struct TradeModel {
     trade_id: String,
     my_role: Role,
-    trade_wallet: Option<Arc<Mutex<dyn TradeWallet + Send + 'static>>>,
+    trade_wallet: Option<Arc<Mutex<dyn ProtocolWalletApi + Send + 'static>>>,
     keys: Keys,
     deposit_tx: DepositTx,
     swap_tx: SwapTx,
@@ -189,7 +189,7 @@ impl TradeModel {
         matches!(self.my_role, Role::BuyerAsMaker | Role::BuyerAsTaker)
     }
 
-    fn trade_wallet(&self) -> Result<ArcMutexGuardian<dyn TradeWallet + Send + 'static>> {
+    fn trade_wallet(&self) -> Result<ArcMutexGuardian<dyn ProtocolWalletApi + Send + 'static>> {
         Ok(ArcMutexGuardian::take(self.trade_wallet.clone()
             .ok_or(ProtocolErrorKind::MissingTradeWallet)?).unwrap())
     }

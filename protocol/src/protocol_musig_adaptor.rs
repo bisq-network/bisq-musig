@@ -8,14 +8,18 @@ use bdk_wallet::miniscript::{DefiniteDescriptorKey, Descriptor};
 use chain::ChainApi;
 use musig2::secp::{MaybeScalar, Point};
 use musig2::{PartialSignature, PubNonce};
+use wallet::protocol_wallet_api::ProtocolWalletApi;
 
 use crate::multisig::{KeyCtx, PointExt as _, SigCtx};
-use crate::psbt::BoxedTradeWallet;
 use crate::receiver::{Receiver, ReceiverList};
 use crate::script_paths;
 use crate::transaction::{
     DepositTxBuilder, ForwardingTxBuilder, RedirectTxBuilder, TransactionExt as _, WarningTxBuilder,
 };
+
+/// Type-erased wallet handle used by the trade protocol. The concrete wallet may be a
+/// `MemWallet`, a `BMPWallet<Connection>`, or any other type that implements [`ProtocolWalletApi`].
+pub type BoxedTradeWallet = Box<dyn ProtocolWalletApi + Send>;
 
 #[derive(PartialEq, Eq, Clone, Copy, Debug)]
 #[expect(clippy::exhaustive_enums)]
