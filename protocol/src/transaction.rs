@@ -728,7 +728,7 @@ mod tests {
     use rand_chacha::ChaCha20Rng;
 
     use super::*;
-    use crate::psbt::{mock_buyer_trade_wallet, mock_seller_trade_wallet};
+    use crate::mocks::{mock_buyer_trade_wallet, mock_seller_trade_wallet};
     use crate::receiver::Receiver;
     use crate::script_paths::deposit_payout_descriptor;
 

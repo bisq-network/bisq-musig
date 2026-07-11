@@ -1,6 +1,7 @@
+pub mod mocks;
 pub mod multisig;
 pub mod protocol_musig_adaptor;
-pub mod psbt;
+mod psbt;
 pub mod receiver;
 pub mod script_paths;
 mod swap;

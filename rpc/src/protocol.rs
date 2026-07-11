@@ -14,7 +14,7 @@ use protocol::transaction::{
     CustomPayoutTxBuilder, DepositTxBuilder, ForwardingTxBuilder, NetworkParams as _,
     RedirectTxBuilder, TransactionExt as _, WarningTxBuilder,
 };
-use protocol::{psbt, script_paths};
+use protocol::{mocks, script_paths};
 use thiserror::Error;
 use wallet::protocol_wallet_api::ProtocolWalletApi;
 
@@ -171,9 +171,9 @@ impl TradeModel {
     pub fn new(trade_id: String, my_role: Role) -> Self {
         let mut trade_model = Self { trade_id, my_role, ..Default::default() };
         let network = trade_model.trade_wallet.insert(if trade_model.am_buyer() {
-            Arc::new(Mutex::new(psbt::mock_buyer_trade_wallet()))
+            Arc::new(Mutex::new(mocks::mock_buyer_trade_wallet()))
         } else {
-            Arc::new(Mutex::new(psbt::mock_seller_trade_wallet()))
+            Arc::new(Mutex::new(mocks::mock_seller_trade_wallet()))
         }).lock().unwrap().network();
         for txs in [&mut trade_model.buyer_txs, &mut trade_model.seller_txs] {
             txs.warning.builder.set_lock_time(network.warning_lock_time());
