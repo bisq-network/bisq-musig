@@ -38,9 +38,7 @@ pub fn create_half_deposit_psbt(
     let mut psbt = wallet.create_psbt(recipients, fee_rate)?;
 
     // Calculate tx fee overpay unconditionally, as this performs additional checks on the PSBT:
-    let overpay_msat: u64 = half_psbt_fee_overpay_msat(&psbt, fee_rate)
-        .ok_or(TransactionErrorKind::Overflow)?
-        .try_into()
+    let overpay_msat = u64::try_from(half_psbt_fee_overpay_msat(&psbt, fee_rate)?)
         .map_err(|_| TransactionErrorKind::InvalidPsbt)?;
     let change_output_index = 1 + trade_fee_receivers.len();
     if psbt.unsigned_tx.output.len() > change_output_index {
@@ -129,18 +127,19 @@ pub fn check_receiver_outputs(psbt: &Psbt, trade_fee_receivers: &[Receiver]) -> 
     Ok(())
 }
 
-fn input_coin(psbt: &Psbt, index: usize) -> Option<TxOutput> {
+fn input_coin(psbt: &Psbt, index: usize) -> Result<TxOutput> {
     if psbt.unsigned_tx.input[index].sequence != Sequence::ENABLE_RBF_NO_LOCKTIME {
         // Enforce that all deposit PSBT inputs have a sequence number of 0xFFFFFFFD.
-        return None;
+        return Err(TransactionErrorKind::InvalidPsbt);
     }
-    Some(TxOutput {
+    Ok(TxOutput {
         outpoint: psbt.unsigned_tx.input[index].previous_output,
-        prevout: psbt.inputs[index].witness_utxo.clone()?,
+        prevout: psbt.inputs[index].witness_utxo.clone()
+            .ok_or(TransactionErrorKind::InvalidPsbt)?,
     })
 }
 
-fn half_psbt_fee_overpay_msat(psbt: &Psbt, target_fee_rate: FeeRate) -> Option<i64> {
+fn half_psbt_fee_overpay_msat(psbt: &Psbt, target_fee_rate: FeeRate) -> Result<i64> {
     const INPUT_NON_WITNESS_WEIGHT: Weight = Weight::from_wu(164);
 
     // This is the extra weight of witness vs non-witness consensus-serialization (2 wu) minus 1 wu
@@ -150,25 +149,26 @@ fn half_psbt_fee_overpay_msat(psbt: &Psbt, target_fee_rate: FeeRate) -> Option<i
 
     if psbt.inputs.len() > MAX_ALLOWED_HALF_PSBT_INPUT_NUM ||
         psbt.outputs.len() > MAX_ALLOWED_HALF_PSBT_OUTPUT_NUM {
-        return None;
+        return Err(TransactionErrorKind::InvalidPsbt);
     }
     let mut signed_tx_weight = psbt.unsigned_tx.weight() + EXTRA_WEIGHT
         - INPUT_NON_WITNESS_WEIGHT * psbt.inputs.len() as u64;
     let mut input_amount = Amount::ZERO;
 
     for i in 0..psbt.inputs.len() {
-        // FIXME: This will lead to an overflow error if a corrupted or disallowed input coin is
-        //  encountered, instead of an invalid PSBT error as it should:
         let coin = input_coin(psbt, i)?;
-        signed_tx_weight += coin.estimated_input_weight()?;
-        input_amount = input_amount.checked_add(coin.prevout.value)?;
+        signed_tx_weight += coin.estimated_input_weight()
+            .ok_or(TransactionErrorKind::InvalidPsbt)?;
+        input_amount = input_amount.checked_add(coin.prevout.value)
+            .ok_or(TransactionErrorKind::Overflow)?;
     }
-    let output_amount = psbt.unsigned_tx.output.iter().map(|o| o.value).checked_sum()?;
+    (|| {
+        let output_amount = psbt.unsigned_tx.output.iter().map(|o| o.value).checked_sum()?;
+        let actual_fee_msat = input_amount.checked_sub(output_amount)?.to_sat().checked_mul(1000)?;
+        let target_fee_msat = target_fee_rate.to_sat_per_kwu().checked_mul(signed_tx_weight.to_wu())?;
 
-    let actual_fee_msat = input_amount.checked_sub(output_amount)?.to_sat().checked_mul(1000)?;
-    let target_fee_msat = target_fee_rate.to_sat_per_kwu().checked_mul(signed_tx_weight.to_wu())?;
-
-    Some(i64::try_from(actual_fee_msat).ok()? - i64::try_from(target_fee_msat).ok()?)
+        Some(i64::try_from(actual_fee_msat).ok()? - i64::try_from(target_fee_msat).ok()?)
+    })().ok_or(TransactionErrorKind::Overflow)
 }
 
 fn is_well_formed(psbt: &Psbt) -> bool {
@@ -195,10 +195,8 @@ pub fn merge_psbt_halves(
         return Err(TransactionErrorKind::InvalidPsbt);
     }
 
-    let buyer_overpay_msat = half_psbt_fee_overpay_msat(buyer_psbt, target_fee_rate)
-        .ok_or(TransactionErrorKind::Overflow)?;
-    let seller_overpay_msat = half_psbt_fee_overpay_msat(seller_psbt, target_fee_rate)
-        .ok_or(TransactionErrorKind::Overflow)?;
+    let buyer_overpay_msat = half_psbt_fee_overpay_msat(buyer_psbt, target_fee_rate)?;
+    let seller_overpay_msat = half_psbt_fee_overpay_msat(seller_psbt, target_fee_rate)?;
     if buyer_overpay_msat.is_negative() || seller_overpay_msat.is_negative() {
         return Err(TransactionErrorKind::InvalidPsbt);
     }
@@ -315,7 +313,7 @@ mod tests {
         assert_eq!([40_000, 5_000, 3_202], psbt.unsigned_tx.output.first_chunk().unwrap().clone()
             .map(|o| o.value.to_sat()));
 
-        let overpay_msat = half_psbt_fee_overpay_msat(&psbt, fee_rate).unwrap();
+        let overpay_msat = half_psbt_fee_overpay_msat(&psbt, fee_rate)?;
         assert!((0..1000).contains(&overpay_msat));
 
         // (The PSBT halves would not ever be signed in production, only the merged and shuffled
