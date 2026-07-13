@@ -682,19 +682,11 @@ impl ChainApi for Testchain {
         broadcast_via(&self.client, tx)
     }
 
-    fn send_to_address(
-        &self,
-        _address: &bdk_wallet::bitcoin::Address,
-        _amount: bdk_wallet::bitcoin::Amount,
-    ) -> anyhow::Result<()> {
+    fn send_to_address(&self, _address: &Address, _amount: Amount) -> Result<()> {
         anyhow::bail!("send_to_address is not implemented for Testchain")
     }
 
-    fn generate_to_address(
-        &self,
-        _blocks: u32,
-        _address: &bdk_wallet::bitcoin::Address,
-    ) -> anyhow::Result<()> {
+    fn generate_to_address(&self, _blocks: u32, _address: &Address) -> Result<()> {
         anyhow::bail!("generate_to_address is not implemented for Testchain")
     }
 }
@@ -730,7 +722,7 @@ impl ChainDataSource for Testchain {
     async fn sync(
         &self,
         persister: Vec<&mut PersistedWallet<impl BMPWalletPersister>>,
-    ) -> anyhow::Result<()> {
+    ) -> Result<()> {
         for wallet in persister {
             let tx_nodes = wallet.tx_graph().full_txs().map(|tx_node| tx_node.tx);
             self.populate_tx_cache(tx_nodes);

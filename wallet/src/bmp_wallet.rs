@@ -364,12 +364,12 @@ pub trait WalletApi {
     fn drain_imported_balance(&mut self, fee_rate: FeeRate) -> anyhow::Result<Psbt>;
 }
 
-fn get_imported_wallets(
+pub fn get_imported_wallets(
     imported_keys: &Vec<Scalar>,
     db: &Connection,
     network: Network,
     db_name: &str,
-) -> anyhow::Result<Vec<PersistedWallet<Connection>>> {
+) -> anyhow::Result<Vec<(PersistedWallet<Connection>, Connection)>> {
     let mut res = vec![];
     for key in imported_keys {
         let pbk = key.base_point_mul();
@@ -378,7 +378,7 @@ fn get_imported_wallets(
             .path()
             .expect("DB path should not be empty")
             .replace(db_name, "");
-        let db_path = Path::new(&path_str).join(format!("bmp_{}.db3", pubk));
+        let db_path = Path::new(&path_str).join(format!("bmp_{pubk}.db3"));
 
         let mut db = Connection::open(db_path)?;
         let imported_wallet_opt = Wallet::load()
@@ -396,7 +396,7 @@ fn get_imported_wallets(
                     .create_wallet(&mut db)?
             }
         };
-        res.push(imported_wallet)
+        res.push((imported_wallet, db))
     }
     Ok(res)
 }
@@ -414,8 +414,34 @@ impl WalletApi for BMPWallet<Connection> {
         let mut vec = vec![&mut self.wallet];
         let mut imported =
             get_imported_wallets(&self.imported_keys, &self.db, network, Self::DB_NAME)?;
-        vec.extend(imported.iter_mut());
-        s.sync(vec).await
+
+        vec.extend(
+            imported
+                .iter_mut()
+                .map(|persister_wallet| &mut persister_wallet.0),
+        );
+
+        s.sync(vec).await?;
+
+        let mut final_imported_balance = Balance::default();
+
+        // For having accurate Wallet::calculate_fee and Wallet::calculate_fee_rate
+        for (w, _) in &imported {
+            for utxo in w.list_unspent() {
+                self.insert_txout(utxo.outpoint, utxo.txout);
+            }
+            final_imported_balance = final_imported_balance + w.balance();
+        }
+
+        self.imported_balance = final_imported_balance;
+
+        // Persist changes from imported keys
+        for (w, db) in imported.iter_mut() {
+            w.persist(db)?;
+        }
+
+        let _ = self.persist();
+        Ok(())
     }
 
     fn new(path: &Path, password: &str, network: Network) -> anyhow::Result<Self>
