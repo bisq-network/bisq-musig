@@ -233,10 +233,10 @@ async fn test_cbf_main_wallet() -> anyhow::Result<()> {
     env.mine_blocks(4)?;
 
     let _scan_type = bdk_kyoto::ScanType::Sync;
-    let _peers = [TrustedPeer::from_socket_addr(
+    let peers = [TrustedPeer::from_socket_addr(
         env.p2p_socket_addr().unwrap(),
     )];
-    wallet.sync_all(&CBFScanner).await?;
+    wallet.sync_all(&CBFScanner::new(peers.to_vec())).await?;
     assert_eq!(wallet.balance(), Amount::from_sat(100_000));
     Ok(())
 }
@@ -261,11 +261,11 @@ async fn test_cbf_imported() -> anyhow::Result<()> {
     env.mine_blocks(4)?;
 
     let _ = bdk_kyoto::ScanType::Sync;
-    let _ = vec![TrustedPeer::from_socket_addr(
+    let peers = vec![TrustedPeer::from_socket_addr(
         env.p2p_socket_addr().unwrap(),
     )];
 
-    wallet.sync_all(&CBFScanner).await?;
+    wallet.sync_all(&CBFScanner::new(peers)).await?;
     assert_eq!(wallet.balance(), Amount::from_sat(30_000));
     Ok(())
 }
@@ -293,11 +293,11 @@ async fn test_cbf_imported_and_main() -> anyhow::Result<()> {
     env.mine_blocks(4)?;
 
     let _ = bdk_kyoto::ScanType::Sync;
-    let _ = vec![TrustedPeer::from_socket_addr(
+    let peers = vec![TrustedPeer::from_socket_addr(
         env.p2p_socket_addr().unwrap(),
     )];
 
-    wallet.sync_all(&CBFScanner).await?;
+    wallet.sync_all(&CBFScanner::new(peers)).await?;
 
     assert_eq!(wallet.balance(), Amount::from_sat(130_000));
 
@@ -317,12 +317,12 @@ async fn test_cbf_persistence() -> anyhow::Result<()> {
     env.fund_address(&addr, Amount::from_sat(230_000))?;
 
     let _scan_type = bdk_kyoto::ScanType::Sync;
-    let _peers = [TrustedPeer::from_socket_addr(
+    let peers = [TrustedPeer::from_socket_addr(
         env.p2p_socket_addr().unwrap(),
     )];
     env.mine_block()?;
 
-    let cbf = CBFScanner;
+    let cbf = CBFScanner::new(peers.to_vec());
     wallet.sync_all(&cbf).await?;
     assert_eq!(wallet.balance(), Amount::from_sat(230_000));
 

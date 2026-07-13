@@ -1,7 +1,6 @@
 use std::collections::BTreeMap;
 
 use bdk_kyoto::ScanType;
-use bdk_kyoto::bip157::Network;
 use bdk_wallet::chain::DescriptorExt;
 use bdk_wallet::{KeychainKind, PersistedWallet};
 use chain::CBFScanner;
@@ -29,7 +28,7 @@ impl ChainDataSource for CBFScanner {
         &self,
         mut wallets: Vec<&mut PersistedWallet<impl BMPWalletPersister>>,
     ) -> anyhow::Result<()> {
-        let network = Network::Bitcoin;
+        let network = wallets[0].network();
         let wallet_iter = wallets
             .iter()
             .map(|w| {
@@ -47,7 +46,9 @@ impl ChainDataSource for CBFScanner {
             })
             .collect::<BTreeMap<_, _>>();
 
-        let updates = self.sync_cbf(network, wallet_iter).await?;
+        let updates = self
+            .sync_cbf(network, self.peers.clone(), wallet_iter)
+            .await?;
 
         for (descriptor, update) in updates {
             let idx = *descriptors_map.get(&descriptor).unwrap();
