@@ -9,7 +9,6 @@ use bdk_wallet::Wallet;
 use bdk_wallet::bitcoin::{Address, Amount, Transaction, Txid};
 use bdk_wallet::chain::DescriptorId;
 use bdk_wallet::chain::spk_client::{FullScanRequest, FullScanResponse};
-use bmp_tracing::tracing;
 use tokio::select;
 
 /// Abstraction over blockchain interaction for broadcasting transactions.
@@ -112,10 +111,10 @@ impl ChainScanner for CBFScanner {
         _batch_size: usize,
         _fetch_prev_txouts: bool,
     ) -> anyhow::Result<FullScanResponse<K>> {
-        todo!("Not implemented");
+        unimplemented!("Not implemented");
     }
 
     fn populate_tx_cache(&self, _txs: impl IntoIterator<Item = impl Into<Arc<Transaction>>>) {
-        todo!("Not implemented");
+        unimplemented!("Not implemented");
     }
 }

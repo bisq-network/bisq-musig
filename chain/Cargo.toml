@@ -7,7 +7,7 @@ edition = "2024"
 anyhow = { workspace = true }
 bdk_wallet = { workspace = true }
 tokio = { workspace = true }
-bmp_tracing = { workspace = true }
+tracing = { workspace = true }
 bdk_kyoto = { workspace = true }
 
 

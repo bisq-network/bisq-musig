@@ -655,8 +655,8 @@ dependencies = [
  "anyhow",
  "bdk_kyoto",
  "bdk_wallet",
- "bmp_tracing",
  "tokio",
+ "tracing",
 ]
 
 [[package]]

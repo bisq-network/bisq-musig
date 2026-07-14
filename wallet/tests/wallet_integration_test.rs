@@ -61,7 +61,6 @@ async fn test_sync_with_imported_keys() -> anyhow::Result<()> {
 }
 
 #[tokio::test]
-
 async fn test_broadcast_transaction() -> anyhow::Result<()> {
     // This test broadcast a transaction created from main wallet balance only
     let mut env = TestEnv::new()?;
@@ -232,7 +231,6 @@ async fn test_cbf_main_wallet() -> anyhow::Result<()> {
 
     env.mine_blocks(4)?;
 
-    let _scan_type = bdk_kyoto::ScanType::Sync;
     let peers = [TrustedPeer::from_socket_addr(
         env.p2p_socket_addr().unwrap(),
     )];
@@ -259,8 +257,6 @@ async fn test_cbf_imported() -> anyhow::Result<()> {
     assert_eq!(wallet.balance(), Amount::from_sat(0));
 
     env.mine_blocks(4)?;
-
-    let _ = bdk_kyoto::ScanType::Sync;
     let peers = vec![TrustedPeer::from_socket_addr(
         env.p2p_socket_addr().unwrap(),
     )];
@@ -291,8 +287,6 @@ async fn test_cbf_imported_and_main() -> anyhow::Result<()> {
     assert_eq!(wallet.balance(), Amount::from_sat(0));
 
     env.mine_blocks(4)?;
-
-    let _ = bdk_kyoto::ScanType::Sync;
     let peers = vec![TrustedPeer::from_socket_addr(
         env.p2p_socket_addr().unwrap(),
     )];
@@ -316,7 +310,6 @@ async fn test_cbf_persistence() -> anyhow::Result<()> {
     let addr = wallet.next_unused_address(KeychainKind::External);
     env.fund_address(&addr, Amount::from_sat(230_000))?;
 
-    let _scan_type = bdk_kyoto::ScanType::Sync;
     let peers = [TrustedPeer::from_socket_addr(
         env.p2p_socket_addr().unwrap(),
     )];

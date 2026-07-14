@@ -356,10 +356,7 @@ pub trait WalletApi {
         sign_options: SignOptions,
     ) -> anyhow::Result<(), SignerError>;
 
-    async fn sync_all(
-        &mut self,
-        s: &(impl ChainDataSource + std::marker::Sync),
-    ) -> anyhow::Result<()>;
+    async fn sync_all(&mut self, s: &(impl ChainDataSource + Sync)) -> anyhow::Result<()>;
 
     fn drain_imported_balance(&mut self, fee_rate: FeeRate) -> anyhow::Result<Psbt>;
 }
@@ -372,8 +369,8 @@ pub fn get_imported_wallets(
 ) -> anyhow::Result<Vec<(PersistedWallet<Connection>, Connection)>> {
     let mut res = vec![];
     for key in imported_keys {
-        let pbk = key.base_point_mul();
-        let pubk = pbk.serialize_xonly().to_lower_hex_string();
+        let pubk = key.base_point_mul();
+        let pubk = pubk.serialize_xonly().to_lower_hex_string();
         let path_str = db
             .path()
             .expect("DB path should not be empty")
@@ -386,17 +383,14 @@ pub fn get_imported_wallets(
             .extract_keys()
             .load_wallet(&mut db)?;
 
-        let imported_wallet = match imported_wallet_opt {
-            Some(wallet) => wallet,
-            None => {
-                let descriptor = format!("tr({})", pubk);
+        let imported_wallet = if let Some(wallet) = imported_wallet_opt { wallet } else {
+            let descriptor = format!("tr({pubk})");
 
-                Wallet::create_single(descriptor)
-                    .network(network)
-                    .create_wallet(&mut db)?
-            }
+            Wallet::create_single(descriptor)
+                .network(network)
+                .create_wallet(&mut db)?
         };
-        res.push((imported_wallet, db))
+        res.push((imported_wallet, db));
     }
     Ok(res)
 }
@@ -406,10 +400,7 @@ impl WalletApi for BMPWallet<Connection> {
     const IMPORTED_KEYS_TABLE_NAME: &'static str = "bmp_imported_keys";
     const DB_NAME: &str = "bmp_bdk_wallet.db3";
 
-    async fn sync_all(
-        &mut self,
-        s: &(impl ChainDataSource + std::marker::Sync),
-    ) -> Result<(), anyhow::Error> {
+    async fn sync_all(&mut self, s: &(impl ChainDataSource + Sync)) -> Result<(), anyhow::Error> {
         let network = self.network();
         let mut vec = vec![&mut self.wallet];
         let mut imported =
@@ -436,7 +427,7 @@ impl WalletApi for BMPWallet<Connection> {
         self.imported_balance = final_imported_balance;
 
         // Persist changes from imported keys
-        for (w, db) in imported.iter_mut() {
+        for (w, db) in &mut imported {
             w.persist(db)?;
         }
 

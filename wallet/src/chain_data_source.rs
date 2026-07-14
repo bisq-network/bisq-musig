@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 
 use bdk_kyoto::ScanType;
-use bdk_wallet::chain::DescriptorExt;
+use bdk_wallet::chain::DescriptorExt as _;
 use bdk_wallet::{KeychainKind, PersistedWallet};
 use chain::CBFScanner;
 
@@ -52,7 +52,7 @@ impl ChainDataSource for CBFScanner {
 
         for (descriptor, update) in updates {
             let idx = *descriptors_map.get(&descriptor).unwrap();
-            let w = &mut *wallets.get_mut(idx).unwrap();
+            let w = &mut **wallets.get_mut(idx).unwrap();
             w.apply_update(update)?;
         }
         Ok(())

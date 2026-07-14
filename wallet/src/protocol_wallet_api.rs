@@ -5,11 +5,11 @@ use std::time::Duration;
 
 use bdk_electrum::BdkElectrumClient;
 use bdk_electrum::bdk_core::bitcoin::bip32::Xpriv;
-use bdk_electrum::bdk_core::bitcoin::{
-    Address, Amount, FeeRate, Network, OutPoint, Psbt, ScriptBuf, XOnlyPublicKey,
-};
 use bdk_electrum::electrum_client::Client;
-use bdk_wallet::bitcoin::{absolute, secp256k1};
+use bdk_wallet::bitcoin::{
+    Address, Amount, FeeRate, Network, OutPoint, Psbt, ScriptBuf, XOnlyPublicKey, absolute,
+    secp256k1,
+};
 use bdk_wallet::coin_selection::CoinSelectionAlgorithm;
 use bdk_wallet::descriptor::{Descriptor, ExtendedDescriptor};
 use bdk_wallet::miniscript::ToPublicKey as _;
