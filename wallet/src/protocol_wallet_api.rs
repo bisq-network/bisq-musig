@@ -183,7 +183,6 @@ impl WalletExt for MemWallet {
     }
 }
 
-// Delegates to the `ProtocolWalletAPI` impl of the internal wallet.
 impl ProtocolWalletApi for MemWallet {
     fn network(&self) -> Network {
         self.wallet.network()
@@ -213,8 +212,10 @@ impl ProtocolWalletApi for MemWallet {
         self.wallet.sign_selected_inputs(psbt, is_selected)
     }
 
-    fn import_private_key(&mut self, pk: Scalar) {
-        self.wallet.import_private_key(pk);
+    fn import_private_key(&mut self, _pk: Scalar) {
+        // `MemWallet` is an in-memory wallet that doesn't currently support imported keys.
+        // If/when this is needed, mirror the `BMPWallet` implementation.
+        todo!("MemWallet does not yet support importing private keys")
     }
 }
 
