@@ -148,7 +148,7 @@ impl MemWallet {
         client: BdkElectrumClient<Client>,
     ) -> anyhow::Result<Self>
     where
-        R: chain::ChainApi,
+        R: chain::ChainFunding,
     {
         const MAX_RETRIES: u32 = 20;
         const RETRY_DELAY_MS: u64 = 500;

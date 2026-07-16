@@ -10,11 +10,12 @@ use bdk_wallet::bitcoin::{Address, Amount, Transaction, Txid};
 use bdk_wallet::chain::DescriptorId;
 use bdk_wallet::chain::spk_client::{FullScanRequest, FullScanResponse};
 use tokio::select;
-
-/// Abstraction over blockchain interaction for broadcasting transactions.
-/// to be extended
+/// Minimal abstraction over blockchain interaction for broadcasting transactions.
 pub trait ChainApi: Send + Sync {
     fn transaction_broadcast(&self, tx: &Transaction) -> anyhow::Result<Txid>;
+}
+/// Optional funding helpers used by the wallet test bootstrap path.
+pub trait ChainFunding: Send + Sync {
     fn send_to_address(&self, address: &Address, amount: Amount) -> anyhow::Result<()>;
     fn generate_to_address(&self, blocks: u32, address: &Address) -> anyhow::Result<()>;
 }
@@ -64,11 +65,15 @@ impl CBFScanner {
                             },
                             _ => (),
                         }
+                    } else {
+                        break;
                     }
                 }
                 warn = warning_subscriber.recv() => {
                     if let Some(warn) = warn {
                         tracing::warn!("{warn}");
+                    } else {
+                        break;
                     }
                 }
             }
@@ -100,21 +105,5 @@ impl CBFScanner {
 
         requester.shutdown()?;
         Ok(updates)
-    }
-}
-
-impl ChainScanner for CBFScanner {
-    fn full_scan<K: Ord + Clone>(
-        &self,
-        _request: impl Into<FullScanRequest<K>>,
-        _stop_gap: usize,
-        _batch_size: usize,
-        _fetch_prev_txouts: bool,
-    ) -> anyhow::Result<FullScanResponse<K>> {
-        unimplemented!("Not implemented");
-    }
-
-    fn populate_tx_cache(&self, _txs: impl IntoIterator<Item = impl Into<Arc<Transaction>>>) {
-        unimplemented!("Not implemented");
     }
 }

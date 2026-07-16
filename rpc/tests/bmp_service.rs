@@ -19,8 +19,8 @@ use std::sync::{Arc, Mutex};
 use bdk_bitcoind_rpc::bitcoincore_rpc::{Auth, Client as BitcoinCoreClient};
 use bdk_electrum::BdkElectrumClient;
 use bdk_electrum::electrum_client::Client as ElectrumClient;
-use bdk_wallet::bitcoin::{Address, Amount, Transaction, Txid};
-use chain::ChainApi;
+use bdk_wallet::bitcoin::{Address, Amount};
+use chain::ChainFunding;
 use protocol::protocol_musig_adaptor::{BMPContext, BMPProtocol, ProtocolRole, Round1Parameter};
 use rpc::bmp_wallet_service::BmpWalletServiceImpl;
 use rpc::pb::bmp_protocol::bmp_protocol_service_server::{
@@ -43,11 +43,7 @@ struct BitcoinCoreChainApi {
     client: Arc<BitcoinCoreClient>,
 }
 
-impl ChainApi for BitcoinCoreChainApi {
-    fn transaction_broadcast(&self, _tx: &Transaction) -> anyhow::Result<Txid> {
-        anyhow::bail!("transaction broadcast is not used in this test helper")
-    }
-
+impl ChainFunding for BitcoinCoreChainApi {
     fn send_to_address(&self, address: &Address, amount: Amount) -> anyhow::Result<()> {
         bdk_bitcoind_rpc::bitcoincore_rpc::RpcApi::send_to_address(
             self.client.as_ref(),

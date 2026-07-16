@@ -431,7 +431,7 @@ impl WalletApi for BMPWallet<Connection> {
             w.persist(db)?;
         }
 
-        let _ = self.persist();
+        self.persist()?;
         Ok(())
     }
 

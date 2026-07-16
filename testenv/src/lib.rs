@@ -11,15 +11,14 @@ use bdk_bitcoind_rpc::bitcoincore_rpc::{Auth, RpcApi as _};
 use bdk_electrum::BdkElectrumClient;
 use bdk_electrum::bdk_core::bitcoin::{KnownHrp, XOnlyPublicKey};
 use bdk_electrum::electrum_client::Error;
-use bdk_wallet::PersistedWallet;
 use bdk_wallet::bitcoin::address::NetworkChecked;
 use bdk_wallet::bitcoin::key::Secp256k1;
 use bdk_wallet::bitcoin::secp256k1::All;
 use bdk_wallet::bitcoin::{Address, Amount, BlockHash, Network, Transaction, Txid};
 use bdk_wallet::chain::spk_client::{FullScanRequest, FullScanResponse};
-use bdk_wallet::serde_json;
+use bdk_wallet::{PersistedWallet, serde_json};
 use bmp_tracing::tracing;
-use chain::{ChainApi, ChainScanner};
+use chain::{ChainApi, ChainFunding, ChainScanner};
 use electrsd::corepc_node::Node;
 use electrsd::electrum_client::{Client, ElectrumApi};
 use electrsd::{ElectrsD, corepc_node};
@@ -681,7 +680,9 @@ impl ChainApi for Testchain {
     fn transaction_broadcast(&self, tx: &Transaction) -> Result<Txid> {
         broadcast_via(&self.client, tx)
     }
+}
 
+impl ChainFunding for Testchain {
     fn send_to_address(&self, _address: &Address, _amount: Amount) -> Result<()> {
         anyhow::bail!("send_to_address is not implemented for Testchain")
     }

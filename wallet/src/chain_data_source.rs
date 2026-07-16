@@ -51,9 +51,15 @@ impl ChainDataSource for CBFScanner {
             .await?;
 
         for (descriptor, update) in updates {
-            let idx = *descriptors_map.get(&descriptor).unwrap();
-            let w = &mut **wallets.get_mut(idx).unwrap();
-            w.apply_update(update)?;
+            let idx = descriptors_map
+                .get(&descriptor)
+                .copied()
+                .ok_or_else(|| anyhow::anyhow!("unknown descriptor in update: {descriptor:?}"))?;
+            let wallet_to_update = wallets
+                .get_mut(idx)
+                .ok_or_else(|| anyhow::anyhow!("missing wallet for descriptor index {idx}"))?;
+            let wallet_to_update = &mut **wallet_to_update;
+            wallet_to_update.apply_update(update)?;
         }
         Ok(())
     }
