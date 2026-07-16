@@ -28,7 +28,7 @@ use secp::Scalar;
 use crate::chain_data_source::ChainDataSource;
 use crate::coin_selection::{AlwaysSpendImportedFirst, SpendImportedOnly};
 use crate::protocol_wallet_api::{
-    ProtocolWalletApi, WalletExt, finish_standard_psbt, internal_key_at_index,
+    ProtocolWalletApi, WalletErrorKind, WalletExt, finish_standard_psbt, internal_key_at_index,
     sign_selected_inputs_with,
 };
 use crate::utils::{derive_key_from_password, get_salt, trace_logs};
@@ -321,22 +321,22 @@ impl ProtocolWalletApi for BMPWallet<Connection> {
         self.wallet.network()
     }
 
-    fn new_address(&mut self) -> anyhow::Result<Address> {
+    fn new_address(&mut self) -> Result<Address, WalletErrorKind> {
         Ok(self.next_address(KeychainKind::External)?.address)
     }
 
-    fn new_internal_key(&mut self) -> anyhow::Result<XOnlyPublicKey> {
+    fn new_internal_key(&mut self) -> Result<XOnlyPublicKey, WalletErrorKind> {
         // Use `next_address` (gap-filling) rather than `reveal_next_address` directly so
         // that the internal key's index stays in step with what `new_address` would yield.
         let index = self.next_address(KeychainKind::External)?.index;
-        Ok(internal_key_at_index(self, index)?)
+        internal_key_at_index(self, index)
     }
 
     fn create_psbt(
         &mut self,
         recipients: Vec<(ScriptBuf, Amount)>,
         fee_rate: FeeRate,
-    ) -> anyhow::Result<Psbt> {
+    ) -> Result<Psbt, WalletErrorKind> {
         finish_standard_psbt(self.build_tx(), recipients, fee_rate)
     }
 
@@ -344,7 +344,7 @@ impl ProtocolWalletApi for BMPWallet<Connection> {
         &mut self,
         psbt: &mut Psbt,
         is_selected: &dyn Fn(&OutPoint) -> bool,
-    ) -> anyhow::Result<()> {
+    ) -> Result<(), WalletErrorKind> {
         // TODO unify signing
         sign_selected_inputs_with(self, psbt, is_selected, |w, p, opts| {
             <Self as WalletApi>::sign(w, p, opts).map_err(Into::into)

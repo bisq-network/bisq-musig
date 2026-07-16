@@ -6,8 +6,7 @@ use bitcoin::{Amount, FeeRate, Network, TapSighashType};
 use bmp_tracing::tracing;
 use musig2::KeyAggContext;
 use musig2::secp::Point;
-use protocol::protocol_musig_adaptor::{BMPContext, BMPProtocol, ProtocolRole};
-use protocol::psbt::BoxedTradeWallet;
+use protocol::protocol_musig_adaptor::{BMPContext, BMPProtocol, BoxedTradeWallet, ProtocolRole};
 use protocol::transaction::{CustomPayoutTxBuilder, TransactionExt as _};
 use testenv::TestEnv;
 use wallet::bmp_wallet::{BMPWallet, WalletApi as _};
@@ -24,7 +23,8 @@ fn test_initial_tx_creation() -> anyhow::Result<()> {
 /// Single entry point used by every test below to obtain a funded trade wallet. The concrete
 /// backend (`MemWallet` vs `BMPWallet<Connection>`) is selected by the `WALLET_BACKEND`
 /// environment variable (`mem` or `bmp`); it defaults to `bmp` when unset. Both implement
-/// [`TradeWallet`] and are interchangeable from the protocol's point of view.
+/// [`wallet::protocol_wallet_api::ProtocolWalletApi`] and are interchangeable from the protocol's
+/// point of view.
 pub fn funded_wallet(env: &mut TestEnv) -> BoxedTradeWallet {
     // TODO need to abstract sync(), so we can simplify this.
     match std::env::var("WALLET_BACKEND")

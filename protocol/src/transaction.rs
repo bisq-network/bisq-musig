@@ -16,11 +16,9 @@ use paste::paste;
 use rand::RngCore;
 use relative::LockTime;
 use thiserror::Error;
+use wallet::protocol_wallet_api::ProtocolWalletApi;
 
-use crate::psbt::{
-    TradeWallet, check_placeholder_output, check_receiver_outputs, extract_signed_tx,
-    merge_psbt_halves, prevout_set, set_payouts_and_shuffle,
-};
+use crate::psbt;
 use crate::receiver::ReceiverList;
 
 pub const REGTEST_WARNING_LOCK_TIME: LockTime = LockTime::from_height(5);
@@ -263,38 +261,38 @@ impl DepositTxBuilder {
 
     pub fn init_buyers_half_psbt(
         &mut self,
-        trade_wallet: &mut (impl TradeWallet + ?Sized),
+        wallet: &mut (impl ProtocolWalletApi + ?Sized),
         rng: &mut dyn RngCore,
     ) -> Result<&mut Self> {
         let deposit_amount = *self.buyers_security_deposit()?;
         let fee_rate = *self.fee_rate()?;
         Ok(self.set_buyers_half_psbt(
-            trade_wallet.create_half_deposit_psbt(deposit_amount, fee_rate, &[], rng)?))
+            psbt::create_half_deposit_psbt(wallet, deposit_amount, fee_rate, &[], rng)?))
     }
 
     pub fn init_sellers_half_psbt(
         &mut self,
-        trade_wallet: &mut (impl TradeWallet + ?Sized),
+        wallet: &mut (impl ProtocolWalletApi + ?Sized),
         rng: &mut dyn RngCore,
     ) -> Result<&mut Self> {
         let deposit_amount = self.sellers_trade_deposit()?;
         let fee_rate = *self.fee_rate()?;
         let trade_fee_receivers = self.trade_fee_receivers()?;
         Ok(self.set_sellers_half_psbt(
-            trade_wallet.create_half_deposit_psbt(deposit_amount, fee_rate, trade_fee_receivers, rng)?))
+            psbt::create_half_deposit_psbt(wallet, deposit_amount, fee_rate, trade_fee_receivers, rng)?))
     }
 
     pub fn compute_unsigned_tx(&mut self) -> Result<&mut Self> {
         // Check that the placeholder output & receiver outputs of each PSBT half are correct.
         let [buyer_psbt, seller_psbt] = [self.buyers_half_psbt()?, self.sellers_half_psbt()?];
-        check_placeholder_output(buyer_psbt, *self.buyers_security_deposit()?)?;
-        check_placeholder_output(seller_psbt, self.sellers_trade_deposit()?)?;
-        check_receiver_outputs(seller_psbt, self.trade_fee_receivers()?)?;
+        psbt::check_placeholder_output(buyer_psbt, *self.buyers_security_deposit()?)?;
+        psbt::check_placeholder_output(seller_psbt, self.sellers_trade_deposit()?)?;
+        psbt::check_receiver_outputs(seller_psbt, self.trade_fee_receivers()?)?;
 
         // Compute a raw merged PSBT.
         let target_fee_rate = *self.fee_rate()?;
         let num_receivers = self.trade_fee_receivers()?.len();
-        let mut psbt = merge_psbt_halves(buyer_psbt, seller_psbt, target_fee_rate, num_receivers)?;
+        let mut psbt = psbt::merge_psbt_halves(buyer_psbt, seller_psbt, target_fee_rate, num_receivers)?;
 
         // Set the payout outputs of the PSBT and shuffle all its inputs and outputs.
         let mut buyer_payout = TxOutput::new(OutPoint::null(), TxOut {
@@ -306,7 +304,7 @@ impl DepositTxBuilder {
             value: *self.sellers_security_deposit()?,
             script_pubkey: self.seller_payout_address()?.script_pubkey(),
         });
-        set_payouts_and_shuffle(&mut psbt, &mut buyer_payout, &mut seller_payout);
+        psbt::set_payouts_and_shuffle(&mut psbt, &mut buyer_payout, &mut seller_payout);
         psbt.unsigned_tx.check_no_dust_outputs()?;
 
         // Initialize the computed fields.
@@ -320,25 +318,25 @@ impl DepositTxBuilder {
 
     pub fn sign_buyer_inputs(
         &mut self,
-        trade_wallet: &mut (impl TradeWallet + ?Sized),
+        wallet: &mut (impl ProtocolWalletApi + ?Sized),
     ) -> Result<&mut Self> {
-        self.sign_matching_inputs(trade_wallet, &prevout_set(self.buyers_half_psbt()?))
+        self.sign_matching_inputs(wallet, &psbt::prevout_set(self.buyers_half_psbt()?))
     }
 
     pub fn sign_seller_inputs(
         &mut self,
-        trade_wallet: &mut (impl TradeWallet + ?Sized),
+        wallet: &mut (impl ProtocolWalletApi + ?Sized),
     ) -> Result<&mut Self> {
-        self.sign_matching_inputs(trade_wallet, &prevout_set(self.sellers_half_psbt()?))
+        self.sign_matching_inputs(wallet, &psbt::prevout_set(self.sellers_half_psbt()?))
     }
 
     fn sign_matching_inputs(
         &mut self,
-        trade_wallet: &mut (impl TradeWallet + ?Sized),
+        wallet: &mut (impl ProtocolWalletApi + ?Sized),
         prevouts: &BTreeSet<OutPoint>,
     ) -> Result<&mut Self> {
         let psbt = self.psbt.as_mut().ok_or(TransactionErrorKind::MissingTransaction)?;
-        trade_wallet.sign_selected_inputs(psbt, &|o| prevouts.contains(o))?;
+        wallet.sign_selected_inputs(psbt, &|o| prevouts.contains(o))?;
         Ok(self)
     }
 
@@ -347,7 +345,7 @@ impl DepositTxBuilder {
         Ok(self)
     }
 
-    pub fn signed_tx(&self) -> Result<Transaction> { extract_signed_tx(self.psbt()?) }
+    pub fn signed_tx(&self) -> Result<Transaction> { psbt::extract_signed_tx(self.psbt()?) }
 }
 
 #[derive(Default)]
@@ -649,10 +647,10 @@ impl CustomPayoutTxBuilder {
 
     pub fn sign_partial(
         &mut self,
-        trade_wallet: &mut (impl TradeWallet + ?Sized),
+        wallet: &mut (impl ProtocolWalletApi + ?Sized),
     ) -> Result<&mut Self> {
         let psbt = self.psbt.as_mut().ok_or(TransactionErrorKind::MissingTransaction)?;
-        trade_wallet.sign_selected_inputs(psbt, &|_| true)?;
+        wallet.sign_selected_inputs(psbt, &|_| true)?;
         Ok(self)
     }
 
@@ -661,14 +659,14 @@ impl CustomPayoutTxBuilder {
         Ok(self)
     }
 
-    pub fn signed_tx(&self) -> Result<Transaction> { extract_signed_tx(self.psbt()?) }
+    pub fn signed_tx(&self) -> Result<Transaction> { psbt::extract_signed_tx(self.psbt()?) }
 }
 
 impl WithFixedInputs<2> for CustomPayoutTxBuilder {
     fn inputs(&self) -> Result<[&TxOutput; 2]> { Ok([self.buyer_input()?, self.seller_input()?]) }
 }
 
-pub type Result<T, E = TransactionErrorKind> = std::result::Result<T, E>;
+pub(crate) type Result<T, E = TransactionErrorKind> = std::result::Result<T, E>;
 
 #[derive(Error, Debug)]
 #[error(transparent)]
@@ -710,12 +708,9 @@ pub enum TransactionErrorKind {
     SigFromSlice(#[from] bdk_wallet::bitcoin::taproot::SigFromSliceError),
     Psbt(#[from] bdk_wallet::bitcoin::psbt::Error),
     ExtractTx(#[from] Box<ExtractTxError>),
-    CreateTx(#[from] bdk_wallet::error::CreateTxError),
-    Signer(#[from] bdk_wallet::signer::SignerError),
     Miniscript(#[from] bdk_wallet::miniscript::Error),
     Conversion(#[from] bdk_wallet::miniscript::descriptor::ConversionError),
     Wallet(#[from] wallet::protocol_wallet_api::WalletErrorKind),
-    Anyhow(#[from] anyhow::Error),
 }
 
 impl From<ExtractTxError> for TransactionErrorKind {
@@ -733,7 +728,7 @@ mod tests {
     use rand_chacha::ChaCha20Rng;
 
     use super::*;
-    use crate::psbt::{mock_buyer_trade_wallet, mock_seller_trade_wallet};
+    use crate::mocks::{mock_buyer_trade_wallet, mock_seller_trade_wallet};
     use crate::receiver::Receiver;
     use crate::script_paths::deposit_payout_descriptor;
 

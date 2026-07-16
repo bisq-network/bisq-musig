@@ -9,14 +9,14 @@ use guardian::ArcMutexGuardian;
 use musig2::secp::{MaybeScalar, Point, Scalar};
 use musig2::{PartialSignature, PubNonce};
 use protocol::multisig::{KeyCtx, KeyPair, PointExt as _, SigCtx};
-use protocol::psbt::{self, TradeWallet};
 use protocol::receiver::{Receiver, ReceiverList};
-use protocol::script_paths;
 use protocol::transaction::{
     CustomPayoutTxBuilder, DepositTxBuilder, ForwardingTxBuilder, NetworkParams as _,
     RedirectTxBuilder, TransactionExt as _, WarningTxBuilder,
 };
+use protocol::{mocks, script_paths};
 use thiserror::Error;
+use wallet::protocol_wallet_api::ProtocolWalletApi;
 
 use crate::storage::{ByRef, ByVal, Storage};
 
@@ -44,7 +44,7 @@ pub static TRADE_MODELS: LazyLock<TradeModelMemoryStore> = LazyLock::new(|| Mute
 pub struct TradeModel {
     trade_id: String,
     my_role: Role,
-    trade_wallet: Option<Arc<Mutex<dyn TradeWallet + Send + 'static>>>,
+    trade_wallet: Option<Arc<Mutex<dyn ProtocolWalletApi + Send + 'static>>>,
     keys: Keys,
     deposit_tx: DepositTx,
     swap_tx: SwapTx,
@@ -171,9 +171,9 @@ impl TradeModel {
     pub fn new(trade_id: String, my_role: Role) -> Self {
         let mut trade_model = Self { trade_id, my_role, ..Default::default() };
         let network = trade_model.trade_wallet.insert(if trade_model.am_buyer() {
-            Arc::new(Mutex::new(psbt::mock_buyer_trade_wallet()))
+            Arc::new(Mutex::new(mocks::mock_buyer_trade_wallet()))
         } else {
-            Arc::new(Mutex::new(psbt::mock_seller_trade_wallet()))
+            Arc::new(Mutex::new(mocks::mock_seller_trade_wallet()))
         }).lock().unwrap().network();
         for txs in [&mut trade_model.buyer_txs, &mut trade_model.seller_txs] {
             txs.warning.builder.set_lock_time(network.warning_lock_time());
@@ -189,7 +189,7 @@ impl TradeModel {
         matches!(self.my_role, Role::BuyerAsMaker | Role::BuyerAsTaker)
     }
 
-    fn trade_wallet(&self) -> Result<ArcMutexGuardian<dyn TradeWallet + Send + 'static>> {
+    fn trade_wallet(&self) -> Result<ArcMutexGuardian<dyn ProtocolWalletApi + Send + 'static>> {
         Ok(ArcMutexGuardian::take(self.trade_wallet.clone()
             .ok_or(ProtocolErrorKind::MissingTradeWallet)?).unwrap())
     }
@@ -777,5 +777,5 @@ pub enum ProtocolErrorKind {
     AddressParse(#[from] bdk_wallet::bitcoin::address::ParseError),
     Transaction(#[from] protocol::transaction::TransactionErrorKind),
     Multisig(#[from] protocol::multisig::MultisigErrorKind),
-    Anyhow(#[from] anyhow::Error),
+    Wallet(#[from] wallet::protocol_wallet_api::WalletErrorKind),
 }
