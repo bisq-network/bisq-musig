@@ -26,31 +26,34 @@ impl ChainDataSource for MockedBDKElectrum {
     const BATCH_SIZE: usize = 10;
     const STOP_GAP: usize = 10;
 
-    fn sync(&self, persister: &mut PersistedWallet<impl BMPWalletPersister>) -> anyhow::Result<()> {
-        insert_checkpoint(
-            persister,
-            BlockId {
-                height: 42,
-                hash: BlockHash::all_zeros(),
-            },
-        );
-        insert_checkpoint(
-            persister,
-            BlockId {
-                height: 1_000,
-                hash: BlockHash::all_zeros(),
-            },
-        );
-        insert_checkpoint(
-            persister,
-            BlockId {
-                height: 2_000,
-                hash: BlockHash::all_zeros(),
-            },
-        );
-
-        receive_output_in_latest_block(persister, Amount::ONE_BTC);
-
+    async fn sync(
+        &self,
+        persister: Vec<&mut PersistedWallet<impl BMPWalletPersister>>,
+    ) -> anyhow::Result<()> {
+        for w in persister {
+            insert_checkpoint(
+                w,
+                BlockId {
+                    height: 42,
+                    hash: BlockHash::all_zeros(),
+                },
+            );
+            insert_checkpoint(
+                w,
+                BlockId {
+                    height: 1_000,
+                    hash: BlockHash::all_zeros(),
+                },
+            );
+            insert_checkpoint(
+                w,
+                BlockId {
+                    height: 2_000,
+                    hash: BlockHash::all_zeros(),
+                },
+            );
+            receive_output_in_latest_block(w, Amount::ONE_BTC);
+        }
         Ok(())
     }
 }

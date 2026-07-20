@@ -5,8 +5,6 @@ use std::{fs, vec};
 use base64::Engine as _;
 use base64::engine::general_purpose;
 use bdk_electrum::bdk_core::bitcoin::{Address, FeeRate, OutPoint};
-use bdk_kyoto::bip157::{Builder, tokio};
-use bdk_kyoto::{BuilderExt as _, LightClient, Requester, ScanType, TrustedPeer, UpdateSubscriber};
 use bdk_wallet::bitcoin::bip32::Xpriv;
 use bdk_wallet::bitcoin::hex::DisplayHex as _;
 use bdk_wallet::bitcoin::{
@@ -31,7 +29,7 @@ use crate::protocol_wallet_api::{
     ProtocolWalletApi, WalletErrorKind, WalletExt, finish_standard_psbt, internal_key_at_index,
     sign_selected_inputs_with,
 };
-use crate::utils::{derive_key_from_password, get_salt, trace_logs};
+use crate::utils::{derive_key_from_password, get_salt};
 
 pub trait BMPWalletPersister: WalletPersister {
     type DB;
@@ -236,37 +234,6 @@ impl BMPWallet<Connection> {
         self.imported_keys.push(pk);
     }
 
-    /// Helper function to run a CBF node
-    /// This will:
-    /// - Create a new Light client
-    /// - spawn two tasks, one for trace logs and another for the server node
-    /// - Return the requester and the subscriber from which the updates can be pulled
-    ///
-    /// Note: The caller is responsible for shutting down the requester at will.
-    ///
-    /// # Panics
-    /// Will panic if called outside the context of a Tokio runtime
-    pub fn run_node(
-        wallet: &Wallet,
-        scan_type: ScanType,
-        peers: Vec<TrustedPeer>,
-    ) -> anyhow::Result<(Requester, UpdateSubscriber)> {
-        let LightClient {
-            requester,
-            info_subscriber,
-            warning_subscriber,
-            update_subscriber,
-            node,
-        } = Builder::new(wallet.network())
-            .add_peers(peers)
-            .build_with_wallet(wallet, scan_type)?;
-
-        tokio::task::spawn(async move { node.run().await });
-        // Trace the logs with a custom function.
-        tokio::task::spawn(async move { trace_logs(info_subscriber, warning_subscriber).await });
-        Ok((requester, update_subscriber))
-    }
-
     fn imported_utxos(&self) -> Vec<WeightedUtxo> {
         let secp: &bdk_wallet::bitcoin::key::Secp256k1<bdk_wallet::bitcoin::secp256k1::All> =
             self.secp_ctx();
@@ -358,6 +325,7 @@ impl ProtocolWalletApi for BMPWallet<Connection> {
     }
 }
 
+#[trait_variant::make(Send)]
 pub trait WalletApi {
     const DB_NAME: &str;
     const SEEDS_TABLE_NAME: &'static str;
@@ -388,25 +356,84 @@ pub trait WalletApi {
         sign_options: SignOptions,
     ) -> anyhow::Result<(), SignerError>;
 
-    fn sync_all(&mut self, data_source: &impl ChainDataSource) -> anyhow::Result<bool>;
-    fn sync_cbf(
-        &mut self,
-        scan_type: ScanType,
-        peers: Vec<TrustedPeer>,
-    ) -> impl Future<Output = anyhow::Result<()>> + Send;
-    fn sync_cbf_imported(
-        &mut self,
-        scan_type: ScanType,
-        peers: Vec<TrustedPeer>,
-    ) -> impl Future<Output = anyhow::Result<()>> + Send;
+    async fn sync_all(&mut self, s: &(impl ChainDataSource + Sync)) -> anyhow::Result<()>;
 
     fn drain_imported_balance(&mut self, fee_rate: FeeRate) -> anyhow::Result<Psbt>;
+}
+
+pub fn get_imported_wallets(
+    imported_keys: &Vec<Scalar>,
+    db: &Connection,
+    network: Network,
+    db_name: &str,
+) -> anyhow::Result<Vec<(PersistedWallet<Connection>, Connection)>> {
+    let mut res = vec![];
+    for key in imported_keys {
+        let pubk = key.base_point_mul();
+        let pubk = pubk.serialize_xonly().to_lower_hex_string();
+        let path_str = db
+            .path()
+            .expect("DB path should not be empty")
+            .replace(db_name, "");
+        let db_path = Path::new(&path_str).join(format!("bmp_{pubk}.db3"));
+
+        let mut db = Connection::open(db_path)?;
+        let imported_wallet_opt = Wallet::load()
+            .check_network(network)
+            .extract_keys()
+            .load_wallet(&mut db)?;
+
+        let imported_wallet = if let Some(wallet) = imported_wallet_opt { wallet } else {
+            let descriptor = format!("tr({pubk})");
+
+            Wallet::create_single(descriptor)
+                .network(network)
+                .create_wallet(&mut db)?
+        };
+        res.push((imported_wallet, db));
+    }
+    Ok(res)
 }
 
 impl WalletApi for BMPWallet<Connection> {
     const SEEDS_TABLE_NAME: &'static str = "bmp_seeds";
     const IMPORTED_KEYS_TABLE_NAME: &'static str = "bmp_imported_keys";
     const DB_NAME: &str = "bmp_bdk_wallet.db3";
+
+    async fn sync_all(&mut self, s: &(impl ChainDataSource + Sync)) -> Result<(), anyhow::Error> {
+        let network = self.network();
+        let mut vec = vec![&mut self.wallet];
+        let mut imported =
+            get_imported_wallets(&self.imported_keys, &self.db, network, Self::DB_NAME)?;
+
+        vec.extend(
+            imported
+                .iter_mut()
+                .map(|persister_wallet| &mut persister_wallet.0),
+        );
+
+        s.sync(vec).await?;
+
+        let mut final_imported_balance = Balance::default();
+
+        // For having accurate Wallet::calculate_fee and Wallet::calculate_fee_rate
+        for (w, _) in &imported {
+            for utxo in w.list_unspent() {
+                self.insert_txout(utxo.outpoint, utxo.txout);
+            }
+            final_imported_balance = final_imported_balance + w.balance();
+        }
+
+        self.imported_balance = final_imported_balance;
+
+        // Persist changes from imported keys
+        for (w, db) in &mut imported {
+            w.persist(db)?;
+        }
+
+        self.persist()?;
+        Ok(())
+    }
 
     fn new(path: &Path, password: &str, network: Network) -> anyhow::Result<Self>
     where
@@ -418,9 +445,10 @@ impl WalletApi for BMPWallet<Connection> {
 
         let xprv = Xpriv::new_master(network, &seed)?;
 
-        let (descriptor, external_map, _) = Bip86(xprv, KeychainKind::External).build(network)?;
+        let (descriptor, external_map, _) =
+            Bip86(xprv, KeychainKind::External).build(network.into())?;
         let (change_descriptor, internal_map, _) =
-            Bip86(xprv, KeychainKind::Internal).build(network)?;
+            Bip86(xprv, KeychainKind::Internal).build(network.into())?;
 
         let db_path = path.join(Self::DB_NAME);
         let db_path = db_path.to_str().expect("Should get path value");
@@ -533,11 +561,11 @@ impl WalletApi for BMPWallet<Connection> {
                 .map_err(|_| SignerError::External("Unable to load keys".to_owned()))?;
 
             let (_, external_map, _) = Bip86(xprv, KeychainKind::External)
-                .build(self.network())
+                .build(self.network().into())
                 .map_err(|_| SignerError::External("BIP 86 derivation failed".to_owned()))?;
 
             let (_, internal_map, _) = Bip86(xprv, KeychainKind::Internal)
-                .build(self.network())
+                .build(self.network().into())
                 .map_err(|_| SignerError::External("BIP 86 derivation failed".to_owned()))?;
 
             self.wallet.set_keymap(KeychainKind::External, external_map);
@@ -551,135 +579,6 @@ impl WalletApi for BMPWallet<Connection> {
         let _finalized = self.wallet.sign(psbt, sign_options)?;
 
         Ok(())
-    }
-
-    async fn sync_cbf(
-        &mut self,
-        scan_type: ScanType,
-        peers: Vec<TrustedPeer>,
-    ) -> anyhow::Result<()> {
-        let (requester, mut updates_sub) = Self::run_node(self, scan_type, peers)?;
-        let updates = updates_sub.update().await?;
-
-        self.apply_update(updates)?;
-        self.persist()?;
-
-        requester.shutdown()?;
-        Ok(())
-    }
-
-    /// Sync the imported keys from protocol using CBF
-    async fn sync_cbf_imported(
-        &mut self,
-        scan_type: ScanType,
-        peers: Vec<TrustedPeer>,
-    ) -> anyhow::Result<()> {
-        struct KeyEntry {
-            db: Connection,
-            wallet: PersistedWallet<Connection>,
-            update_subscriber: UpdateSubscriber,
-            requester: Requester,
-        }
-
-        let pubkeys = self
-            .imported_keys
-            .iter()
-            .map(|s| s.base_point_mul().serialize_xonly())
-            .collect::<Vec<_>>();
-
-        // Build all wallets and light clients upfront, then run all nodes concurrently
-        // so their peer connections overlap (gossip addresses from one benefit the others).
-        let mut entries: Vec<KeyEntry> = Vec::with_capacity(pubkeys.len());
-        for key in &pubkeys {
-            let path_str = self.db.path().expect("DB path should not be empty").replace(Self::DB_NAME, "");
-            let db_path = Path::new(&path_str).join(format!("bmp_{}.db3", key.to_lower_hex_string()));
-
-            let mut db = Connection::open(db_path)?;
-            let imported_wallet_opt = Wallet::load()
-                .check_network(self.wallet.network())
-                .extract_keys()
-                .load_wallet(&mut db)?;
-            let wallet = if let Some(w) = imported_wallet_opt { w } else {
-                let descriptor = format!("tr({})", key.to_lower_hex_string());
-                Wallet::create_single(descriptor)
-                    .network(self.wallet.network())
-                    .create_wallet(&mut db)?
-            };
-            let LightClient {
-                requester,
-                info_subscriber: _,
-                warning_subscriber: _,
-                update_subscriber,
-                node,
-            } = Builder::new(self.network())
-                .add_peers(peers.clone())
-                .build_with_wallet(&wallet, scan_type)?;
-            tokio::task::spawn(async move { node.run().await });
-            entries.push(KeyEntry { db, wallet, update_subscriber, requester });
-        }
-
-        // Collect updates from all nodes while they are all running, then shut down together.
-        let mut final_imported_balance = Balance::default();
-        for entry in &mut entries {
-            let updates = entry.update_subscriber.update().await?;
-            entry.wallet.apply_update(updates)?;
-            entry.wallet.persist(&mut entry.db)?;
-            final_imported_balance = final_imported_balance + entry.wallet.balance();
-        }
-
-        for entry in entries {
-            let _ = entry.requester.shutdown();
-        }
-
-        self.imported_balance = final_imported_balance;
-
-        Ok(())
-    }
-
-    fn sync_all(&mut self, data_source: &impl ChainDataSource) -> anyhow::Result<bool> {
-        // 1. Sync the main wallet
-        data_source.sync(&mut self.wallet)?;
-
-        let mut final_imported_balance = Balance::default();
-
-        // 2. Sync the imported keys
-        // @TODO: we can spawn threads later on to speed up the process
-
-        for key in self.imported_keys.clone() {
-            let pbk = key.base_point_mul();
-            let pubkey = pbk.serialize_xonly().to_lower_hex_string();
-            let path_str = self.db.path().expect("DB path should not be empty").replace(Self::DB_NAME, "");
-            let db_path = Path::new(&path_str).join(format!("bmp_{pubkey}.db3"));
-
-            let mut db = Connection::open(db_path)?;
-            let imported_wallet_opt = Wallet::load()
-                .check_network(self.wallet.network())
-                .extract_keys()
-                .load_wallet(&mut db)?;
-
-            let mut imported_wallet = if let Some(wallet) = imported_wallet_opt { wallet } else {
-                let descriptor = format!("tr({pubkey})");
-
-                Wallet::create_single(descriptor)
-                    .network(self.wallet.network())
-                    .create_wallet(&mut db)?
-            };
-
-            data_source.sync(&mut imported_wallet)?;
-
-            final_imported_balance = final_imported_balance + imported_wallet.balance();
-
-            // For having accurate Wallet::calculate_fee and Wallet::calculate_fee_rate
-            for utxo in imported_wallet.list_unspent() {
-                self.insert_txout(utxo.outpoint, utxo.txout);
-            }
-
-            imported_wallet.persist(&mut db)?;
-        }
-
-        self.imported_balance = final_imported_balance;
-
-        self.persist()
     }
 
     // For already created wallets this will load stored data
@@ -795,6 +694,7 @@ mod tests {
     use std::str::FromStr as _;
 
     use bdk_kyoto::FeeRate;
+    use bdk_kyoto::bip157::tokio;
     use bdk_wallet::bitcoin::hashes::Hash as _;
     use bdk_wallet::bitcoin::{Address, AddressType, Amount, BlockHash, Network, Weight, psbt};
     use bdk_wallet::chain::{self, BlockId};
@@ -913,8 +813,8 @@ mod tests {
         Ok(())
     }
 
-    #[test]
-    fn test_sync() -> anyhow::Result<()> {
+    #[tokio::test]
+    async fn test_sync() -> anyhow::Result<()> {
         let dir = get_dir();
         let mut bmp_wallet = BMPWallet::new(dir.path(), "", Network::Regtest)?;
         let client = MockedBDKElectrum {};
@@ -922,7 +822,7 @@ mod tests {
         tracing::info!("Wallet balance before syncing {}", bmp_wallet.balance());
         assert_eq!(bmp_wallet.balance(), Amount::from_int_btc(0));
 
-        let _ = bmp_wallet.sync_all(&client);
+        bmp_wallet.sync_all(&client).await?;
 
         assert_eq!(bmp_wallet.balance(), Amount::from_int_btc(1));
 
@@ -932,8 +832,8 @@ mod tests {
         Ok(())
     }
 
-    #[test]
-    fn test_sync_with_imported_keys() -> anyhow::Result<()> {
+    #[tokio::test]
+    async fn test_sync_with_imported_keys() -> anyhow::Result<()> {
         let pk1 = new_private_key();
         let pk2 = new_private_key();
         let dir = get_dir();
@@ -949,7 +849,7 @@ mod tests {
         tracing::info!("Wallet balance before syncing {}", bmp_wallet.balance());
         assert_eq!(bmp_wallet.balance(), Amount::from_int_btc(0));
 
-        let _ = bmp_wallet.sync_all(&client);
+        bmp_wallet.sync_all(&client).await?;
 
         assert_eq!(bmp_wallet.balance(), Amount::from_int_btc(3));
 
@@ -957,8 +857,8 @@ mod tests {
         Ok(())
     }
 
-    #[test]
-    fn sign_inputs_main_wallet_only() -> anyhow::Result<()> {
+    #[tokio::test]
+    async fn sign_inputs_main_wallet_only() -> anyhow::Result<()> {
         let client = MockedBDKElectrum {};
         let dir = get_dir();
         let mut bmp_wallet = BMPWallet::new(dir.path(), "", Network::Regtest)?;
@@ -966,7 +866,7 @@ mod tests {
         tracing::info!("Wallet balance before syncing {}", bmp_wallet.balance());
         assert_eq!(bmp_wallet.balance(), Amount::from_int_btc(0));
 
-        let _ = bmp_wallet.sync_all(&client);
+        bmp_wallet.sync_all(&client).await?;
 
         assert_eq!(bmp_wallet.balance(), Amount::from_int_btc(1));
 
@@ -991,8 +891,8 @@ mod tests {
         Ok(())
     }
 
-    #[test]
-    fn sign_inputs_main_and_imported_keys() -> anyhow::Result<()> {
+    #[tokio::test]
+    async fn sign_inputs_main_and_imported_keys() -> anyhow::Result<()> {
         let client = MockedBDKElectrum {};
         let dir = get_dir();
         let mut bmp_wallet = BMPWallet::new(dir.path(), "", Network::Regtest)?;
@@ -1005,7 +905,7 @@ mod tests {
         tracing::info!("Wallet balance before syncing {}", bmp_wallet.balance());
         assert_eq!(bmp_wallet.balance(), Amount::from_int_btc(0));
 
-        let _ = bmp_wallet.sync_all(&client);
+        bmp_wallet.sync_all(&client).await?;
 
         assert_eq!(bmp_wallet.balance(), Amount::from_int_btc(3));
 
@@ -1061,8 +961,8 @@ mod tests {
         Ok(())
     }
 
-    #[test]
-    fn test_selection_with_main_and_imported() -> anyhow::Result<()> {
+    #[tokio::test]
+    async fn test_selection_with_main_and_imported() -> anyhow::Result<()> {
         let client = MockedBDKElectrum {};
         let dir = get_dir();
         let mut bmp_wallet = BMPWallet::new(dir.path(), "", Network::Regtest)?;
@@ -1080,7 +980,7 @@ mod tests {
         bmp_wallet.import_private_key(Scalar::from_slice(&pk1).unwrap());
         bmp_wallet.import_private_key(Scalar::from_slice(&pk2).unwrap());
 
-        bmp_wallet.sync_all(&client)?;
+        bmp_wallet.sync_all(&client).await?;
 
         let to_address = "tb1pyfv094rr0vk28lf8v9yx3veaacdzg26ztqk4ga84zucqqhafnn5q9my9rz";
         let to_address = to_address.parse::<Address<_>>()?.assume_checked();
@@ -1140,8 +1040,8 @@ mod tests {
         Ok(())
     }
 
-    #[test]
-    fn drain_wallet() -> anyhow::Result<()> {
+    #[tokio::test]
+    async fn drain_wallet() -> anyhow::Result<()> {
         let pk1 = new_private_key();
         let pk2 = new_private_key();
         let dir = get_dir();
@@ -1157,7 +1057,7 @@ mod tests {
         tracing::info!("Wallet balance before syncing {}", bmp_wallet.balance());
         assert_eq!(bmp_wallet.balance(), Amount::from_int_btc(0));
 
-        let _ = bmp_wallet.sync_all(&client);
+        bmp_wallet.sync_all(&client).await?;
 
         assert_eq!(bmp_wallet.balance(), Amount::from_int_btc(3));
         assert_eq!(
@@ -1175,8 +1075,8 @@ mod tests {
         Ok(())
     }
 
-    #[test]
-    fn test_wallet_with_path_creation() -> anyhow::Result<()> {
+    #[tokio::test]
+    async fn test_wallet_with_path_creation() -> anyhow::Result<()> {
         let dir_one = get_dir();
         let dir_two = get_dir();
 
@@ -1190,7 +1090,7 @@ mod tests {
 
         tracing::debug!("Wallet one balance before syncing {}", w1.balance());
         assert_eq!(w1.balance(), Amount::from_int_btc(0));
-        let _ = w1.sync_all(&client);
+        w1.sync_all(&client).await?;
 
         assert_eq!(w1.balance(), Amount::from_int_btc(1));
         assert_eq!(w2.balance(), Amount::ZERO);

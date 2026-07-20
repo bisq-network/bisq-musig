@@ -16,10 +16,11 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
-use bdk_bitcoind_rpc::bitcoincore_rpc::{Auth, Client as BitcoinCoreClient, RpcApi as _};
+use bdk_bitcoind_rpc::bitcoincore_rpc::{Auth, Client as BitcoinCoreClient};
 use bdk_electrum::BdkElectrumClient;
 use bdk_electrum::electrum_client::Client as ElectrumClient;
-use bdk_wallet::bitcoin::Amount;
+use bdk_wallet::bitcoin::{Address, Amount};
+use chain::ChainFunding;
 use protocol::protocol_musig_adaptor::{BMPContext, BMPProtocol, ProtocolRole, Round1Parameter};
 use rpc::bmp_wallet_service::BmpWalletServiceImpl;
 use rpc::pb::bmp_protocol::bmp_protocol_service_server::{
@@ -38,53 +39,43 @@ use tonic::{Request, Response, Result, Status, transport};
 use tracing::info;
 use wallet::protocol_wallet_api::MemWallet;
 
+struct BitcoinCoreChainApi {
+    client: Arc<BitcoinCoreClient>,
+}
+
+impl ChainFunding for BitcoinCoreChainApi {
+    fn send_to_address(&self, address: &Address, amount: Amount) -> anyhow::Result<()> {
+        bdk_bitcoind_rpc::bitcoincore_rpc::RpcApi::send_to_address(
+            self.client.as_ref(),
+            address,
+            amount,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .map(|_| ())
+        .map_err(Into::into)
+    }
+
+    fn generate_to_address(&self, blocks: u32, address: &Address) -> anyhow::Result<()> {
+        bdk_bitcoind_rpc::bitcoincore_rpc::RpcApi::generate_to_address(
+            self.client.as_ref(),
+            blocks.into(),
+            address,
+        )
+        .map(|_| ())
+        .map_err(Into::into)
+    }
+}
+
 pub struct BmpServiceImpl {
     // Each trade protocol is stored against a unique ID.
     active_protocols: Mutex<HashMap<String, BMPProtocol>>,
     bitcoin_rpc_client: Arc<BitcoinCoreClient>,
     electrum_url: String,
-}
-
-fn funded_wallet_from_rpc(
-    rpc: &BitcoinCoreClient,
-    client: BdkElectrumClient<ElectrumClient>,
-) -> anyhow::Result<MemWallet> {
-    const MAX_RETRIES: u32 = 20;
-    const RETRY_DELAY_MS: u64 = 500;
-
-    let mut wallet = MemWallet::new(client)?;
-    let address = wallet.reveal_next_address();
-    rpc.send_to_address(
-        &address,
-        Amount::from_btc(10f64).unwrap(),
-        None,
-        None,
-        None,
-        None,
-        None,
-        None,
-    )?;
-    rpc.generate_to_address(1, &address)?;
-
-    for attempt in 0..MAX_RETRIES {
-        wallet.sync()?;
-        if wallet.balance() > Amount::from_sat(0) {
-            info!("Wallet funded after {} retries", attempt);
-            return Ok(wallet);
-        }
-        if attempt < MAX_RETRIES - 1 {
-            info!(
-                "Wallet still unfunded, attempt {}/{}, retrying...",
-                attempt + 1,
-                MAX_RETRIES
-            );
-            std::thread::sleep(std::time::Duration::from_millis(RETRY_DELAY_MS));
-        }
-    }
-
-    Err(anyhow::anyhow!(
-        "Wallet failed to sync funded balance after {MAX_RETRIES} attempts"
-    ))
 }
 
 impl BmpServiceImpl {
@@ -109,7 +100,10 @@ impl BmpProtocolService for BmpServiceImpl {
         let client = BdkElectrumClient::new(ElectrumClient::new(&self.electrum_url).unwrap());
         let client2 = BdkElectrumClient::new(ElectrumClient::new(&self.electrum_url).unwrap());
 
-        let mock_wallet = funded_wallet_from_rpc(self.bitcoin_rpc_client.as_ref(), client)
+        let chain_api = BitcoinCoreChainApi {
+            client: self.bitcoin_rpc_client.clone(),
+        };
+        let mock_wallet = MemWallet::funded_wallet_from_rpc(&chain_api, client)
             .map_err(|e: anyhow::Error| Status::internal(e.to_string()))?;
 
         info!(

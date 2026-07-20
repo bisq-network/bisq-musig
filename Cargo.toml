@@ -8,8 +8,8 @@ argon2 = { version = "0.5.3", default-features = false }
 base64 = "0.22.1"
 bdk_bitcoind_rpc = "0.22.0"
 bdk_electrum = { version = "0.23.2", default-features = false, features = ["use-rustls-ring"] }
-bdk_kyoto = "0.15.4"
-bdk_wallet = { version = "2.4.0", features = ["rusqlite", "keys-bip39"] }
+bdk_kyoto = "0.17"
+bdk_wallet = { version = "3", features = ["rusqlite", "keys-bip39"] }
 bmp_tracing = { path = "bmp_tracing" }
 chain = { path = "chain" }
 clap = { version = "4.6.1", features = ["derive"] }
@@ -31,6 +31,7 @@ tracing-core = { version = "0.1.36", default-features = false }
 tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
 wallet = { path = "wallet" }
 zeroize = "1.9.0"
+trait-variant = "0.1.2"
 
 [workspace.lints.rust]
 rust-2024-compatibility = "warn"

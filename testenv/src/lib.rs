@@ -16,9 +16,9 @@ use bdk_wallet::bitcoin::key::Secp256k1;
 use bdk_wallet::bitcoin::secp256k1::All;
 use bdk_wallet::bitcoin::{Address, Amount, BlockHash, Network, Transaction, Txid};
 use bdk_wallet::chain::spk_client::{FullScanRequest, FullScanResponse};
-use bdk_wallet::serde_json;
+use bdk_wallet::{PersistedWallet, serde_json};
 use bmp_tracing::tracing;
-use chain::{ChainApi, ChainScanner};
+use chain::{ChainApi, ChainFunding, ChainScanner};
 use electrsd::corepc_node::Node;
 use electrsd::electrum_client::{Client, ElectrumApi};
 use electrsd::{ElectrsD, corepc_node};
@@ -29,6 +29,8 @@ use sha2::Sha256;
 use tempfile::TempDir;
 use tokio::net::TcpListener;
 use typed_arena::Arena;
+use wallet::bmp_wallet::BMPWalletPersister;
+use wallet::chain_data_source::ChainDataSource;
 
 /// Bitcoin regtest environment manager
 pub struct TestEnv {
@@ -680,6 +682,16 @@ impl ChainApi for Testchain {
     }
 }
 
+impl ChainFunding for Testchain {
+    fn send_to_address(&self, _address: &Address, _amount: Amount) -> Result<()> {
+        anyhow::bail!("send_to_address is not implemented for Testchain")
+    }
+
+    fn generate_to_address(&self, _blocks: u32, _address: &Address) -> Result<()> {
+        anyhow::bail!("generate_to_address is not implemented for Testchain")
+    }
+}
+
 impl ChainScanner for Testchain {
     fn populate_tx_cache(&self, txs: impl IntoIterator<Item = impl Into<Arc<Transaction>>>) {
         self.client.populate_tx_cache(txs);
@@ -695,6 +707,33 @@ impl ChainScanner for Testchain {
         self.client
             .full_scan(request, stop_gap, batch_size, fetch_prev_txouts)
             .map_err(Into::into)
+    }
+}
+
+/// `ChainDataSource` implementation for the Electrum-backed [`testenv::Testchain`] handle.
+///
+/// `Testchain` lives in the `testenv` crate alongside `TestEnv`; this impl ties it into the
+/// wallet's sync routine. It mirrors the values previously used by the live Electrum-backed
+/// implementation.
+impl ChainDataSource for Testchain {
+    const RECOVERY_HEIGHT: usize = 190_000;
+    const BATCH_SIZE: usize = 16;
+    const STOP_GAP: usize = 10;
+
+    async fn sync(
+        &self,
+        persister: Vec<&mut PersistedWallet<impl BMPWalletPersister>>,
+    ) -> Result<()> {
+        for wallet in persister {
+            let tx_nodes = wallet.tx_graph().full_txs().map(|tx_node| tx_node.tx);
+            self.populate_tx_cache(tx_nodes);
+            let request = wallet.start_full_scan();
+
+            let updates = self.full_scan(request, Self::STOP_GAP, Self::BATCH_SIZE, false)?;
+
+            wallet.apply_update(updates)?;
+        }
+        Ok(())
     }
 }
 

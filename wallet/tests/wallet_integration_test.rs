@@ -5,6 +5,7 @@ use bdk_kyoto::{FeeRate, TrustedPeer};
 use bdk_wallet::bitcoin::{Address, Amount, Network};
 use bdk_wallet::psbt::PsbtUtils as _;
 use bdk_wallet::{KeychainKind, SignOptions};
+use chain::CBFScanner;
 use rand::RngCore as _;
 use secp::Scalar;
 use testenv::TestEnv;
@@ -16,8 +17,8 @@ fn new_private_key() -> Scalar {
     Scalar::from_slice(&seed).unwrap()
 }
 
-#[test]
-fn init_test() -> anyhow::Result<()> {
+#[tokio::test]
+async fn init_test() -> anyhow::Result<()> {
     let mut env = TestEnv::new()?;
     let chain = env.new_testchain()?;
 
@@ -29,14 +30,14 @@ fn init_test() -> anyhow::Result<()> {
     env.fund_address(&receiving_addr, receive_amount)?;
     env.mine_block()?;
 
-    wallet.sync_all(&chain)?;
+    wallet.sync_all(&chain).await?;
 
     assert_eq!(wallet.balance(), receive_amount);
     Ok(())
 }
 
-#[test]
-fn test_sync_with_imported_keys() -> anyhow::Result<()> {
+#[tokio::test]
+async fn test_sync_with_imported_keys() -> anyhow::Result<()> {
     let mut env = TestEnv::new()?;
     let chain = env.new_testchain()?;
 
@@ -53,15 +54,14 @@ fn test_sync_with_imported_keys() -> anyhow::Result<()> {
     env.fund_from_prv_key(&prv_key, receive_amount)?;
     env.mine_block()?;
 
-    wallet.sync_all(&chain)?;
+    wallet.sync_all(&chain).await?;
     assert_eq!(wallet.balance(), receive_amount + receive_amount);
 
     Ok(())
 }
 
-#[test]
-
-fn test_broadcast_transaction() -> anyhow::Result<()> {
+#[tokio::test]
+async fn test_broadcast_transaction() -> anyhow::Result<()> {
     // This test broadcast a transaction created from main wallet balance only
     let mut env = TestEnv::new()?;
     let chain = env.new_testchain()?;
@@ -85,7 +85,7 @@ fn test_broadcast_transaction() -> anyhow::Result<()> {
     env.fund_address(&receiving_addr, receive_amount)?;
     env.mine_block()?;
 
-    wallet.sync_all(&chain)?;
+    wallet.sync_all(&chain).await?;
 
     let mut tx_builder = wallet.build_tx();
     let send_amount = Amount::from_sat(1_000);
@@ -101,7 +101,7 @@ fn test_broadcast_transaction() -> anyhow::Result<()> {
     env.mine_block()?;
 
     // Rescan the wallet to apply balance changes
-    wallet.sync_all(&chain)?;
+    wallet.sync_all(&chain).await?;
 
     let new_balance = receive_amount - send_amount - fee;
     assert_eq!(wallet.balance(), new_balance);
@@ -113,8 +113,8 @@ fn test_broadcast_transaction() -> anyhow::Result<()> {
     Ok(())
 }
 
-#[test]
-fn test_broadcast_transaction_two() -> anyhow::Result<()> {
+#[tokio::test]
+async fn test_broadcast_transaction_two() -> anyhow::Result<()> {
     // This test broadcast a transaction created from imported wallets only
     let mut env = TestEnv::new()?;
     let chain = env.new_testchain()?;
@@ -133,7 +133,7 @@ fn test_broadcast_transaction_two() -> anyhow::Result<()> {
     env.fund_from_prv_key(&prv_key, receive_amount)?;
     env.mine_block()?;
 
-    wallet.sync_all(&chain)?;
+    wallet.sync_all(&chain).await?;
 
     let mut tx_builder = wallet.build_tx();
     let send_amount = Amount::from_sat(1_000);
@@ -149,7 +149,7 @@ fn test_broadcast_transaction_two() -> anyhow::Result<()> {
     env.mine_block()?;
 
     // Rescan the wallet to apply balance changes
-    wallet.sync_all(&chain)?;
+    wallet.sync_all(&chain).await?;
 
     let new_balance = receive_amount - send_amount - fee;
     assert_eq!(wallet.balance(), new_balance);
@@ -161,8 +161,8 @@ fn test_broadcast_transaction_two() -> anyhow::Result<()> {
     Ok(())
 }
 
-#[test]
-fn test_broadcast_transaction_three() -> anyhow::Result<()> {
+#[tokio::test]
+async fn test_broadcast_transaction_three() -> anyhow::Result<()> {
     // This test will attempt send a transaction created from both main wallet and imported keys
     // balance
     let mut env = TestEnv::new()?;
@@ -186,7 +186,7 @@ fn test_broadcast_transaction_three() -> anyhow::Result<()> {
 
     env.mine_block()?;
 
-    wallet.sync_all(&chain)?;
+    wallet.sync_all(&chain).await?;
 
     let mut tx_builder = wallet.build_tx();
     let send_amount = Amount::from_sat(100_000);
@@ -203,7 +203,7 @@ fn test_broadcast_transaction_three() -> anyhow::Result<()> {
     env.mine_block()?;
 
     // Rescan the wallet to apply balance changes
-    wallet.sync_all(&chain)?;
+    wallet.sync_all(&chain).await?;
 
     let new_balance = (receive_amount + receive_amount) - send_amount - fee;
     assert_eq!(wallet.balance(), new_balance);
@@ -213,7 +213,7 @@ fn test_broadcast_transaction_three() -> anyhow::Result<()> {
 
     env.fund_address(&main_wallet_addr, Amount::from_sat(10_000))?;
     env.mine_block()?;
-    enc_wallet.sync_all(&chain)?;
+    enc_wallet.sync_all(&chain).await?;
     assert_eq!(enc_wallet.balance(), new_balance + Amount::from_sat(10_000));
 
     Ok(())
@@ -231,11 +231,10 @@ async fn test_cbf_main_wallet() -> anyhow::Result<()> {
 
     env.mine_blocks(4)?;
 
-    let scan_type = bdk_kyoto::ScanType::Sync;
-    let peers = vec![TrustedPeer::from_socket_addr(
+    let peers = [TrustedPeer::from_socket_addr(
         env.p2p_socket_addr().unwrap(),
     )];
-    wallet.sync_cbf(scan_type, peers).await?;
+    wallet.sync_all(&CBFScanner::new(peers.to_vec())).await?;
     assert_eq!(wallet.balance(), Amount::from_sat(100_000));
     Ok(())
 }
@@ -258,12 +257,11 @@ async fn test_cbf_imported() -> anyhow::Result<()> {
     assert_eq!(wallet.balance(), Amount::from_sat(0));
 
     env.mine_blocks(4)?;
-
-    let scan_type = bdk_kyoto::ScanType::Sync;
     let peers = vec![TrustedPeer::from_socket_addr(
         env.p2p_socket_addr().unwrap(),
     )];
-    wallet.sync_cbf_imported(scan_type, peers).await?;
+
+    wallet.sync_all(&CBFScanner::new(peers)).await?;
     assert_eq!(wallet.balance(), Amount::from_sat(30_000));
     Ok(())
 }
@@ -289,14 +287,11 @@ async fn test_cbf_imported_and_main() -> anyhow::Result<()> {
     assert_eq!(wallet.balance(), Amount::from_sat(0));
 
     env.mine_blocks(4)?;
-
-    let scan_type = bdk_kyoto::ScanType::Sync;
     let peers = vec![TrustedPeer::from_socket_addr(
         env.p2p_socket_addr().unwrap(),
     )];
 
-    wallet.sync_cbf_imported(scan_type, peers.clone()).await?;
-    wallet.sync_cbf(scan_type, peers).await?;
+    wallet.sync_all(&CBFScanner::new(peers)).await?;
 
     assert_eq!(wallet.balance(), Amount::from_sat(130_000));
 
@@ -315,12 +310,13 @@ async fn test_cbf_persistence() -> anyhow::Result<()> {
     let addr = wallet.next_unused_address(KeychainKind::External);
     env.fund_address(&addr, Amount::from_sat(230_000))?;
 
-    let scan_type = bdk_kyoto::ScanType::Sync;
-    let peers = vec![TrustedPeer::from_socket_addr(
+    let peers = [TrustedPeer::from_socket_addr(
         env.p2p_socket_addr().unwrap(),
     )];
     env.mine_block()?;
-    wallet.sync_cbf(scan_type, peers.clone()).await?;
+
+    let cbf = CBFScanner::new(peers.to_vec());
+    wallet.sync_all(&cbf).await?;
     assert_eq!(wallet.balance(), Amount::from_sat(230_000));
 
     // Reload the wallet from persisted state
@@ -329,7 +325,7 @@ async fn test_cbf_persistence() -> anyhow::Result<()> {
 
     env.fund_address(&addr, Amount::from_sat(70_000))?;
     env.mine_block()?;
-    loaded_wallet.sync_cbf(scan_type, peers.clone()).await?;
+    loaded_wallet.sync_all(&cbf).await?;
     assert_eq!(loaded_wallet.balance(), Amount::from_sat(300_000));
 
     // Create a transaction and broadcast it to the connected peer
@@ -347,7 +343,7 @@ async fn test_cbf_persistence() -> anyhow::Result<()> {
     env.broadcast(&psbt.extract_tx()?)?;
     env.mine_block()?;
 
-    loaded_wallet.sync_cbf(scan_type, peers).await?;
+    loaded_wallet.sync_all(&cbf).await?;
     assert_eq!(loaded_wallet.balance(), Amount::from_sat(230_000) - fee);
 
     Ok(())
@@ -378,7 +374,7 @@ async fn test_drain_wallet_with_main_balance() -> anyhow::Result<()> {
     }
 
     env.mine_block()?;
-    wallet.sync_all(&chain)?;
+    wallet.sync_all(&chain).await?;
 
     // Doing *2 because we have two imported keys with the same amount received 10_000
     let current_balance = amount_to_send_main_wallet + amount_to_send_imported * 2;
@@ -395,7 +391,7 @@ async fn test_drain_wallet_with_main_balance() -> anyhow::Result<()> {
     env.broadcast(&tx)?;
     env.mine_block()?;
 
-    wallet.sync_all(&chain)?;
+    wallet.sync_all(&chain).await?;
 
     let main_wallet_balance = drained_amount + amount_to_send_main_wallet;
 
