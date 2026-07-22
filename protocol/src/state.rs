@@ -1,4 +1,5 @@
 use std::cmp::Ordering;
+use std::fmt::{Display, Formatter};
 
 #[expect(clippy::exhaustive_enums)]
 #[derive(Copy, Clone, Eq, PartialEq, Default, Debug)]
@@ -133,6 +134,15 @@ impl PartialOrd for TradeState {
     }
 }
 
+// We shouldn't really define a `Display` impl via the derived `Debug` impl, since the latter makes
+// no stability promise. However, it is extremely unlikely to change in this simple case (and any
+// such change would break the unit tests below).
+impl Display for TradeState {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{self:?}")
+    }
+}
+
 #[cfg(test)]
 const TRADE_STATE_TRANSITION_GRAPH: &str = r#"digraph transitions {
     "Init" -> "Deposit"
@@ -196,7 +206,7 @@ mod tests {
         for s in TradeState::VALUES {
             for t in TradeState::VALUES {
                 if s < t && TradeState::VALUES.into_iter().all(|u| !(s < u && u < t)) {
-                    writeln!(&mut dag, r#"    "{s:?}" -> "{t:?}""#).unwrap();
+                    writeln!(&mut dag, r#"    "{s}" -> "{t}""#).unwrap();
                 }
             }
         }
@@ -210,7 +220,7 @@ mod tests {
         for s in TradeState::VALUES {
             for t in TradeState::VALUES {
                 if s.precedes(t) {
-                    writeln!(&mut dag, r#"    "{s:?}" -> "{t:?}""#).unwrap();
+                    writeln!(&mut dag, r#"    "{s}" -> "{t}""#).unwrap();
                 }
             }
         }
