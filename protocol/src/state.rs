@@ -21,7 +21,7 @@ pub enum TradeState {
     SellerReadyToRelease,
     /// We have signed a Custom Payout PSBT and are ready to share it. The peer may or may not
     /// already have our signatures on it. The fully signed Custom Payout Tx has not yet been seen
-    /// on the network.
+    /// on the network. Meanwhile, we will not attempt to close the trade normally.
     CustomPayoutSigned,
     /// - (If buyer) we have persisted our decision not to close the trade normally and broadcast
     ///   our Warning Tx instead. It may or may not have successfully broadcast or confirmed yet.
@@ -99,22 +99,22 @@ impl TradeState {
 
     const fn bits(self) -> u16 {
         match self {
-            Self::Init /*                                      -*/ => 0x000, // . .... ....
-            Self::Deposit /*                                   -*/ => 0x001, // . .... ...1
-            Self::BuyerReadyToRelease /*                       -*/ => 0x003, // . .... ..11
-            Self::SellerReadyToRelease /*                      -*/ => 0x007, // . .... .111
-            Self::CustomPayoutSigned /*                        -*/ => 0x013, // . ...1 ..11
-            Self::BuyersWarning /*                             -*/ => 0x033, // . ..11 ..11
-            Self::SellersWarning /*                            -*/ => 0x053, // . .1.1 ..11
-            Self::TradeClosed(ClosureType::Cooperative) /*     -*/ => 0x00f, // . .... 1111
-            Self::TradeClosed(ClosureType::Forced) /*          -*/ => 0x067, // . .11. .111
-            Self::TradeClosed(ClosureType::Custom) /*          -*/ => 0x093, // . 1..1 ..11
-            Self::TradeClosed(ClosureType::BuyersRedirect) /*  -*/ => 0x153, // 1 .1.1 ..11
-            Self::TradeClosed(ClosureType::SellersRedirect) /* -*/ => 0x133, // 1 ..11 ..11
-            Self::TradeClosed(ClosureType::BuyersClaim) /*     -*/ => 0x03f, // . ..11 1111
-            Self::TradeClosed(ClosureType::SellersClaim) /*    -*/ => 0x05f, // . .1.1 1111
-            Self::TradeClosed(ClosureType::BuyersPenaltyTx) /* -*/ => 0x08f, // . 1... 1111
-            Self::TradeClosed(ClosureType::SellersPenaltyTx) /*-*/ => 0x10f, // 1 .... 1111
+            Self::Init /*                                      -*/ => 0x000, // .. .... ....
+            Self::Deposit /*                                   -*/ => 0x001, // .. .... ...1
+            Self::BuyerReadyToRelease /*                       -*/ => 0x003, // .. .... ..11
+            Self::SellerReadyToRelease /*                      -*/ => 0x007, // .. .... .111
+            Self::CustomPayoutSigned /*                        -*/ => 0x013, // .. ...1 ..11
+            Self::BuyersWarning /*                             -*/ => 0x033, // .. ..11 ..11
+            Self::SellersWarning /*                            -*/ => 0x053, // .. .1.1 ..11
+            Self::TradeClosed(ClosureType::Cooperative) /*     -*/ => 0x00f, // .. .... 1111
+            Self::TradeClosed(ClosureType::Forced) /*          -*/ => 0x117, // .1 ...1 .111
+            Self::TradeClosed(ClosureType::Custom) /*          -*/ => 0x093, // .. 1..1 ..11
+            Self::TradeClosed(ClosureType::BuyersRedirect) /*  -*/ => 0x253, // 1. .1.1 ..11
+            Self::TradeClosed(ClosureType::SellersRedirect) /* -*/ => 0x233, // 1. ..11 ..11
+            Self::TradeClosed(ClosureType::BuyersClaim) /*     -*/ => 0x03f, // .. ..11 1111
+            Self::TradeClosed(ClosureType::SellersClaim) /*    -*/ => 0x05f, // .. .1.1 1111
+            Self::TradeClosed(ClosureType::BuyersPenaltyTx) /* -*/ => 0x08f, // .. 1... 1111
+            Self::TradeClosed(ClosureType::SellersPenaltyTx) /*-*/ => 0x10f, // .1 .... 1111
         }
     }
 }
@@ -160,6 +160,7 @@ const TRADE_STATE_TRANSITION_GRAPH: &str = r#"digraph transitions {
     "SellerReadyToRelease" -> "TradeClosed\n(Forced)"
     "CustomPayoutSigned" -> "BuyersWarning"
     "CustomPayoutSigned" -> "SellersWarning"
+    "CustomPayoutSigned" -> "TradeClosed\n(Forced)"
     "CustomPayoutSigned" -> "TradeClosed\n(Custom)"
     "BuyersWarning" -> "TradeClosed\n(SellersRedirect)"
     "BuyersWarning" -> "TradeClosed\n(BuyersClaim)"
