@@ -8,6 +8,7 @@ use bdk_wallet::bitcoin::{Amount, FeeRate, consensus};
 use bdk_wallet::serde_json;
 use drop_stream::DropStreamExt as _;
 use futures_util::stream::{self, BoxStream, Stream, StreamExt as _, TryStream, TryStreamExt as _};
+use protocol::state::ClosureType;
 use serde::Serialize;
 use tokio::time::{self, Duration};
 use tonic::{Request, Response, Result, Status};
@@ -99,26 +100,23 @@ impl musig_server::Musig for MusigImpl {
     #[instrument(skip_all)]
     async fn get_partial_signatures(&self, request: Request<PartialSignaturesRequest>) -> Result<Response<PartialSignaturesMessage>> {
         handle_musig_request(request, move |request, trade_model| {
-            if let Some(my_partial_signatures) = trade_model
-                .get_my_partial_signatures_on_peer_txs(request.buyer_ready_to_release) {
-                // Ignore receiver list and peer's nonce shares, as they have already been set
-                // (otherwise we wouldn't already have the partial signatures on the peer's txs).
-                return Ok(my_partial_signatures.into());
+            if request.buyer_ready_to_release {
+                trade_model.set_buyer_ready_to_release()?;
+            } else {
+                let peer_nonce_shares = request.peers_nonce_shares
+                    .ok_or_else(|| Status::not_found("missing request.peers_nonce_shares"))?;
+                trade_model.set_peer_half_deposit_psbt((&peer_nonce_shares.half_deposit_psbt[..]).try_proto_into()?);
+                trade_model.compute_unsigned_deposit_tx()?;
+                trade_model.set_redirection_receivers(request.redirection_receivers.into_iter().map(TryProtoInto::try_proto_into))?;
+                trade_model.check_redirect_tx_params()?;
+                let (addresses, nonce_shares) = peer_nonce_shares.try_proto_into()?;
+                trade_model.set_peer_addresses(addresses)?;
+                trade_model.compute_unsigned_prepared_txs()?;
+                trade_model.set_peer_nonce_shares(nonce_shares);
+                trade_model.aggregate_nonce_shares()?;
+                trade_model.sign_partial()?;
             }
-            let peer_nonce_shares = request.peers_nonce_shares
-                .ok_or_else(|| Status::not_found("missing request.peers_nonce_shares"))?;
-            trade_model.set_peer_half_deposit_psbt((&peer_nonce_shares.half_deposit_psbt[..]).try_proto_into()?);
-            trade_model.compute_unsigned_deposit_tx()?;
-            trade_model.set_redirection_receivers(request.redirection_receivers.into_iter().map(TryProtoInto::try_proto_into))?;
-            trade_model.check_redirect_tx_params()?;
-            let (addresses, nonce_shares) = peer_nonce_shares.try_proto_into()?;
-            trade_model.set_peer_addresses(addresses)?;
-            trade_model.compute_unsigned_prepared_txs()?;
-            trade_model.set_peer_nonce_shares(nonce_shares);
-            trade_model.aggregate_nonce_shares()?;
-            trade_model.sign_partial()?;
-            let my_partial_signatures = trade_model
-                .get_my_partial_signatures_on_peer_txs(request.buyer_ready_to_release)
+            let my_partial_signatures = trade_model.get_my_partial_signatures_on_peer_txs()
                 .ok_or_else(|| Status::internal("missing partial signatures"))?;
 
             Ok(my_partial_signatures.into())
@@ -181,24 +179,26 @@ impl musig_server::Musig for MusigImpl {
             if trade_model.am_buyer() {
                 return Err(Status::failed_precondition("operation only available for seller"));
             }
-            let swap_tx = if let Some(swap_tx) = trade_model.get_signed_swap_tx() { swap_tx } else {
+            if request.seller_ready_to_release {
+                trade_model.set_seller_ready_to_release()?;
+                let swap_tx = trade_model.get_signed_swap_tx()
+                    .ok_or_else(|| Status::internal("missing signed swap tx"))?;
+                let prv_key_share = trade_model.get_my_private_key_share_for_peer_output()
+                    .ok_or_else(|| Status::internal("missing private key share"))?;
+
+                Ok(SwapTxSignatureResponse {
+                    swap_tx: consensus::serialize(swap_tx),
+                    peer_output_prv_key_share: prv_key_share.serialize().into(),
+                })
+            } else {
                 trade_model.set_swap_tx_input_peers_partial_signature(
                     request.swap_tx_input_peers_partial_signature.try_proto_into()?);
                 trade_model.aggregate_swap_tx_partial_signatures()?;
+                trade_model.set_buyer_ready_to_release()?;
                 trade_model.compute_signed_swap_tx()?;
-                trade_model.get_signed_swap_tx()
-                    .ok_or_else(|| Status::internal("missing signed swap tx"))?
-            };
-            let prv_key_share = trade_model.get_my_private_key_share_for_peer_output()
-                .ok_or_else(|| Status::internal("missing private key share"))?;
 
-            if !request.seller_ready_to_release {
-                return Ok(SwapTxSignatureResponse::default());
+                Ok(SwapTxSignatureResponse::default())
             }
-            Ok(SwapTxSignatureResponse {
-                swap_tx: consensus::serialize(swap_tx),
-                peer_output_prv_key_share: prv_key_share.serialize().into(),
-            })
         })
     }
 
@@ -209,13 +209,16 @@ impl musig_server::Musig for MusigImpl {
                 // Trader receives the private key share from a cooperative peer, closing our trade.
                 trade_model.set_peer_private_key_share_for_my_output(peer_prv_key_share)?;
                 trade_model.aggregate_private_keys_for_my_output()?;
+                trade_model.close_trade(ClosureType::Cooperative)?;
             } else if let Some(swap_tx) = request.swap_tx.try_proto_into()? {
                 // Buyer supplies a signed swap tx to the Rust server, to close our trade. (Mainly for
                 // testing -- normally the tx would be picked up from the bitcoin network by the server.)
                 trade_model.recover_seller_private_key_share_for_buyer_output(&swap_tx)?;
                 trade_model.aggregate_private_keys_for_my_output()?;
+                trade_model.close_trade(ClosureType::Forced)?;
             } else {
                 // Peer unresponsive -- force-close our trade by publishing the swap tx. For seller only.
+                trade_model.close_trade(ClosureType::Forced)?;
                 trade_model.get_signed_swap_tx()
                     .ok_or_else(|| Status::internal("missing signed swap tx"))?;
 
@@ -256,6 +259,7 @@ impl musig_server::Musig for MusigImpl {
             trade_model.combine_custom_payout_psbts(peers_psbt)?;
             // Sign custom payout PSBT again to finalize it:
             trade_model.sign_custom_payout_psbt()?;
+            trade_model.close_trade(ClosureType::Custom)?;
             let custom_payout_tx = trade_model.get_signed_custom_payout_tx()
                 .ok_or_else(|| Status::internal("missing signed custom payout tx"))?;
 
