@@ -70,6 +70,30 @@ impl TradeState {
         Self::TradeClosed(ClosureType::SellersPenaltyTx),
     ];
 
+    pub fn precedes_for_buyer(self, new_state: Self) -> bool {
+        use ClosureType::{BuyersClaim, Cooperative, SellersPenaltyTx};
+        use TradeState::{SellerReadyToRelease, TradeClosed};
+
+        match (self, new_state) {
+            (_, SellerReadyToRelease)
+            | (SellerReadyToRelease, _)
+            | (TradeClosed(Cooperative), TradeClosed(BuyersClaim | SellersPenaltyTx)) => false,
+            _ => self.precedes(new_state),
+        }
+    }
+
+    pub fn precedes_for_seller(self, new_state: Self) -> bool {
+        use ClosureType::{BuyersPenaltyTx, Cooperative, Forced, SellersClaim};
+        use TradeState::{BuyerReadyToRelease, CustomPayoutSigned, TradeClosed};
+
+        match (self, new_state) {
+            (BuyerReadyToRelease, TradeClosed(_))
+            | (CustomPayoutSigned, TradeClosed(Forced))
+            | (TradeClosed(Cooperative), TradeClosed(SellersClaim | BuyersPenaltyTx)) => false,
+            _ => self.precedes(new_state),
+        }
+    }
+
     pub fn precedes(self, new_state: Self) -> bool {
         self < new_state && new_state.minimal_predecessors().iter().any(|s| *s <= self)
     }
@@ -143,6 +167,15 @@ impl Display for TradeState {
     }
 }
 
+// Valid embedded DOT file for the full state transition DAG, which can be rendered by Graphviz.
+//
+// - Red arrows are state transitions valid only for the seller.
+// - Green arrows are state transitions valid only for the buyer.
+// - The remaining (black) arrows are state transitions valid for either trader.
+// - The arrows are dashed when the path between states is non-unique for a trader of fixed role.
+//   (This is not quite the same thing as transitivity/non-uniqueness for the DAG overall, as seen
+//   in the case of the `BuyerReadyToRelease -> TradeClosed(Cooperative)` transition, which has a
+//   unique path for the buyer, but there is a different path between those states for the seller.)
 #[cfg(test)]
 const TRADE_STATE_TRANSITION_GRAPH: &str = r#"digraph transitions {
     "Init" -> "Deposit"
@@ -150,26 +183,26 @@ const TRADE_STATE_TRANSITION_GRAPH: &str = r#"digraph transitions {
     "Deposit" -> "CustomPayoutSigned" [style=dashed]
     "Deposit" -> "BuyersWarning" [style=dashed]
     "Deposit" -> "SellersWarning" [style=dashed]
-    "BuyerReadyToRelease" -> "SellerReadyToRelease"
+    "BuyerReadyToRelease" -> "SellerReadyToRelease" [color=red]
     "BuyerReadyToRelease" -> "CustomPayoutSigned"
     "BuyerReadyToRelease" -> "BuyersWarning" [style=dashed]
     "BuyerReadyToRelease" -> "SellersWarning" [style=dashed]
-    "BuyerReadyToRelease" -> "TradeClosed\n(Cooperative)" [style=dashed]
-    "BuyerReadyToRelease" -> "TradeClosed\n(Forced)" [style=dashed]
-    "SellerReadyToRelease" -> "TradeClosed\n(Cooperative)"
-    "SellerReadyToRelease" -> "TradeClosed\n(Forced)"
+    "BuyerReadyToRelease" -> "TradeClosed\n(Cooperative)" [color=green3]
+    "BuyerReadyToRelease" -> "TradeClosed\n(Forced)" [style=dashed,color=green3]
+    "SellerReadyToRelease" -> "TradeClosed\n(Cooperative)" [color=red]
+    "SellerReadyToRelease" -> "TradeClosed\n(Forced)" [color=red]
     "CustomPayoutSigned" -> "BuyersWarning"
     "CustomPayoutSigned" -> "SellersWarning"
-    "CustomPayoutSigned" -> "TradeClosed\n(Forced)"
+    "CustomPayoutSigned" -> "TradeClosed\n(Forced)" [color=green3]
     "CustomPayoutSigned" -> "TradeClosed\n(Custom)"
     "BuyersWarning" -> "TradeClosed\n(SellersRedirect)"
     "BuyersWarning" -> "TradeClosed\n(BuyersClaim)"
     "SellersWarning" -> "TradeClosed\n(BuyersRedirect)"
     "SellersWarning" -> "TradeClosed\n(SellersClaim)"
-    "TradeClosed\n(Cooperative)" -> "TradeClosed\n(BuyersClaim)"
-    "TradeClosed\n(Cooperative)" -> "TradeClosed\n(SellersClaim)"
-    "TradeClosed\n(Cooperative)" -> "TradeClosed\n(BuyersPenaltyTx)"
-    "TradeClosed\n(Cooperative)" -> "TradeClosed\n(SellersPenaltyTx)"
+    "TradeClosed\n(Cooperative)" -> "TradeClosed\n(BuyersClaim)" [color=red]
+    "TradeClosed\n(Cooperative)" -> "TradeClosed\n(SellersClaim)" [color=green3]
+    "TradeClosed\n(Cooperative)" -> "TradeClosed\n(BuyersPenaltyTx)" [color=green3]
+    "TradeClosed\n(Cooperative)" -> "TradeClosed\n(SellersPenaltyTx)" [color=red]
 }
 "#;
 
@@ -181,9 +214,10 @@ mod tests {
 
     use super::*;
 
-    const EXPECTED_MINIMAL_DAG: &str = str_replace!(
+    const RELABELED_DAG: &str = str_replace!(TRADE_STATE_TRANSITION_GRAPH, "\\n", "");
+    const COLORED_MINIMAL_DAG: &str = str_replace!(
         str_replace!(
-            str_replace!(TRADE_STATE_TRANSITION_GRAPH, "\\n", ""),
+            RELABELED_DAG,
             "    \"Deposit\" -> \"CustomPayoutSigned\" [style=dashed]\n    \
                  \"Deposit\" -> \"BuyersWarning\" [style=dashed]\n    \
                  \"Deposit\" -> \"SellersWarning\" [style=dashed]\n",
@@ -191,41 +225,52 @@ mod tests {
         ),
         "    \"BuyerReadyToRelease\" -> \"BuyersWarning\" [style=dashed]\n    \
              \"BuyerReadyToRelease\" -> \"SellersWarning\" [style=dashed]\n    \
-             \"BuyerReadyToRelease\" -> \"TradeClosed(Cooperative)\" [style=dashed]\n    \
-             \"BuyerReadyToRelease\" -> \"TradeClosed(Forced)\" [style=dashed]\n",
+             \"BuyerReadyToRelease\" -> \"TradeClosed(Cooperative)\" [color=green3]\n    \
+             \"BuyerReadyToRelease\" -> \"TradeClosed(Forced)\" [style=dashed,color=green3]\n",
+        ""
+    );
+
+    const EXPECTED_MINIMAL_DAG: &str = str_replace!(
+        str_replace!(COLORED_MINIMAL_DAG, " [color=red]", ""),
+        " [color=green3]",
         ""
     );
     const EXPECTED_FULL_DAG: &str = str_replace!(
-        str_replace!(TRADE_STATE_TRANSITION_GRAPH, "\\n", ""),
-        " [style=dashed]",
+        str_replace!(RELABELED_DAG, " [style=dashed]", ""),
+        "style=dashed,",
         ""
     );
 
     #[test]
-    fn trade_state_partial_order_has_expected_minimal_dag() {
+    fn trade_state_partial_order_has_expected_minimal_dag() -> std::fmt::Result {
         let mut dag = "digraph transitions {\n".to_owned();
         for s in TradeState::VALUES {
             for t in TradeState::VALUES {
                 if s < t && TradeState::VALUES.into_iter().all(|u| !(s < u && u < t)) {
-                    writeln!(&mut dag, r#"    "{s}" -> "{t}""#).unwrap();
+                    writeln!(&mut dag, r#"    "{s}" -> "{t}""#)?;
                 }
             }
         }
-        writeln!(&mut dag, "}}").unwrap();
+        writeln!(&mut dag, "}}")?;
         assert_eq!(dag, EXPECTED_MINIMAL_DAG);
+        Ok(())
     }
 
     #[test]
-    fn trade_state_has_expected_full_dag() {
+    fn trade_state_has_expected_full_dag() -> std::fmt::Result {
         let mut dag = "digraph transitions {\n".to_owned();
         for s in TradeState::VALUES {
             for t in TradeState::VALUES {
-                if s.precedes(t) {
-                    writeln!(&mut dag, r#"    "{s}" -> "{t}""#).unwrap();
+                match (s.precedes_for_buyer(t), s.precedes_for_seller(t)) {
+                    (false, true) => writeln!(&mut dag, r#"    "{s}" -> "{t}" [color=red]"#)?,
+                    (true, false) => writeln!(&mut dag, r#"    "{s}" -> "{t}" [color=green3]"#)?,
+                    (true, true) => writeln!(&mut dag, r#"    "{s}" -> "{t}""#)?,
+                    _ => assert!(!s.precedes(t)),
                 }
             }
         }
-        writeln!(&mut dag, "}}").unwrap();
+        writeln!(&mut dag, "}}")?;
         assert_eq!(dag, EXPECTED_FULL_DAG);
+        Ok(())
     }
 }

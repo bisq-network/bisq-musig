@@ -56,7 +56,7 @@ pub struct TradeModel {
     seller_txs: ArbitrationTxs,
 }
 
-#[derive(Default, Eq, PartialEq)]
+#[derive(Copy, Clone, Eq, PartialEq, Default, Debug)]
 pub enum Role {
     #[default] SellerAsMaker,
     SellerAsTaker,
@@ -202,12 +202,14 @@ impl TradeModel {
         if self.state >= new_state {
             return Ok(false);
         }
-        if !self.state.precedes(new_state) {
-            return Err(ProtocolErrorKind::IllegalStateTransition { current: self.state, new_state });
+        let (role, old_state) = (self.my_role, self.state);
+        if self.am_buyer() && !self.state.precedes_for_buyer(new_state) ||
+            !self.am_buyer() && !self.state.precedes_for_seller(new_state) {
+            return Err(ProtocolErrorKind::IllegalStateTransition { role, old_state, new_state });
         }
         // FIXME: Persist the trade model together with its updated state. Assuming asynchronous
         //  persistence, we must ensure that the old state continues to be observed meanwhile.
-        info!(trade_id = self.trade_id, old_state = %self.state, %new_state, "Updating trade state.");
+        info!(trade_id = self.trade_id, %old_state, %new_state, "Updating trade state.");
         self.state = new_state;
         Ok(true)
     }
@@ -825,11 +827,11 @@ pub enum ProtocolErrorKind {
     MissingTradeWallet,
     #[error("missing script key")]
     MissingScriptKey,
-    #[error("illegal state transition: {current:?} -> {new_state:?}")]
-    IllegalStateTransition { current: TradeState, new_state: TradeState },
-    #[error("insufficient redirection funds (available {available_msat:?} msat, used {used_msat:?} msat)")]
+    #[error("illegal state transition for {role:?}: {old_state} -> {new_state}")]
+    IllegalStateTransition { role: Role, old_state: TradeState, new_state: TradeState },
+    #[error("insufficient redirection funds (available {available_msat} msat, used {used_msat} msat)")]
     InsufficientRedirectionFunds { available_msat: u64, used_msat: u64 },
-    #[error("excess redirection funds (available {available_msat:?} msat, used {used_msat:?} msat)")]
+    #[error("excess redirection funds (available {available_msat} msat, used {used_msat} msat)")]
     ExcessRedirectionFunds { available_msat: u64, used_msat: u64 },
     AddressParse(#[from] bdk_wallet::bitcoin::address::ParseError),
     Transaction(#[from] protocol::transaction::TransactionErrorKind),
