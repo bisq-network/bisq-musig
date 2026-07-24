@@ -22,12 +22,10 @@ use bdk_electrum::BdkElectrumClient;
 use bdk_electrum::electrum_client::Client as ElectrumClient;
 use bdk_wallet::bitcoin::Amount;
 use protocol::protocol_musig_adaptor::{BMPContext, BMPProtocol, ProtocolRole, Round1Parameter};
-use rpc::bmp_wallet_service::BmpWalletServiceImpl;
 use rpc::pb::bmp_protocol::bmp_protocol_service_server::{
     BmpProtocolService, BmpProtocolServiceServer,
 };
 use rpc::pb::bmp_protocol::{self, InitializeRequest, InitializeResponse, Role};
-use rpc::pb::bmp_wallet::wallet_server::WalletServer as BmpWalletServer;
 use rpc::pb::convert::TryProtoInto as _;
 use rpc::server::{MusigImpl, MusigServer, WalletImpl, WalletServer};
 use rpc::wallet::WalletServiceImpl;
@@ -278,7 +276,6 @@ fn spawn_musigd(
         .spawn_connection(client.clone());
 
     let bmp_protocol_impl = BmpServiceImpl::new(client, electrum_url);
-    let bmp_wallet_service = BmpWalletServiceImpl::default();
 
     let incoming = TcpIncoming::from(listener);
     let handle = task::spawn(async move {
@@ -286,7 +283,6 @@ fn spawn_musigd(
             .add_service(MusigServer::new(musig))
             .add_service(WalletServer::new(wallet))
             .add_service(BmpProtocolServiceServer::new(bmp_protocol_impl))
-            .add_service(BmpWalletServer::new(bmp_wallet_service))
             .serve_with_incoming(incoming)
             .await
     });
