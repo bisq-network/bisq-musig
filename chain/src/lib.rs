@@ -40,7 +40,12 @@ pub struct CBFScanner {
 }
 
 impl CBFScanner {
-    pub const fn new(peers: Vec<TrustedPeer>) -> Self {
+    #[expect(
+        clippy::missing_const_for_fn,
+        reason = "a const CBFScanner isn't useful, as a \
+        non-empty peer list can't be built at compile time; keeps the body free to grow"
+    )]
+    pub fn new(peers: Vec<TrustedPeer>) -> Self {
         Self { peers }
     }
 
@@ -79,11 +84,10 @@ impl CBFScanner {
     pub async fn sync_cbf(
         &self,
         network: Network,
-        peers: Vec<TrustedPeer>,
         wallets: Vec<(&Wallet, ScanType)>,
     ) -> anyhow::Result<BTreeMap<DescriptorId, Update>> {
         let client = Builder::new(network)
-            .add_peers(peers)
+            .add_peers(self.peers.iter().cloned())
             .build_with_wallets(wallets)?;
 
         let (client, logging, mut update_subscriber) = client.subscribe();
