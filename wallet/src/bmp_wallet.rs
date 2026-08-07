@@ -1,5 +1,5 @@
 use std::ops::{Deref, DerefMut};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::{fs, vec};
 
 use base64::Engine as _;
@@ -8,10 +8,10 @@ use bdk_electrum::bdk_core::bitcoin::{Address, FeeRate, OutPoint};
 use bdk_wallet::bitcoin::bip32::Xpriv;
 use bdk_wallet::bitcoin::hex::DisplayHex as _;
 use bdk_wallet::bitcoin::{
-    Amount, Network, PrivateKey, Psbt, ScriptBuf, Sequence, TapNodeHash, Weight, XOnlyPublicKey,
-    psbt,
+    Amount, Network, PrivateKey, Psbt, ScriptBuf, Sequence, TapNodeHash, Transaction, Weight,
+    XOnlyPublicKey, consensus, psbt,
 };
-use bdk_wallet::chain::Merge as _;
+use bdk_wallet::chain::{ChainPosition, Merge as _};
 use bdk_wallet::keys::bip39::Mnemonic;
 use bdk_wallet::miniscript::descriptor::{TapTree, Tr};
 use bdk_wallet::miniscript::psbt::PsbtExt as _;
@@ -32,6 +32,7 @@ use crate::protocol_wallet_api::{
     sign_selected_inputs_with,
 };
 use crate::utils::{derive_key_from_password, get_salt};
+use crate::wallet_info::{TxInfo, TxInputInfo, TxOutputInfo, UtxoInfo};
 
 /// An external (non-HD) private key imported into the wallet, together with the Taproot output
 /// template it controls: `tr(P, tap_tree)` where `P` is the (untweaked) internal key derived from
@@ -262,6 +263,17 @@ pub struct BMPWallet<P: BMPWalletPersister> {
     signers_loaded: bool,
     db: P,
     last_unused_address: Option<String>,
+    /// Path of the `SQLCipher` database file, kept so that the encryption key can be rotated
+    /// in place (see [`BMPWallet::encrypt_wallet`]) without re-deriving it from `db`.
+    db_path: PathBuf,
+    /// Argon2 salt backing `enc_key`, mirrored on disk as `<db_path>.salt`.
+    salt: Vec<u8>,
+    /// Hex-encoded `SQLCipher` key currently in force. Retained so a caller-supplied password can
+    /// be *verified* (re-derive and compare) without keeping the plaintext password in memory.
+    enc_key: String,
+    /// Whether the user actually set a password. The database is always encrypted — an empty
+    /// password still yields a valid Argon2 key — so this records intent, not mechanism.
+    encrypted: bool,
 }
 
 impl BMPWallet<Connection> {
@@ -359,6 +371,220 @@ impl BMPWallet<Connection> {
         let imported_weighted_utxos = self.imported_utxos();
         let coin_selection = AlwaysSpendImportedFirst(imported_weighted_utxos);
         self.wallet.build_tx().coin_selection(coin_selection)
+    }
+
+    /// The full balance breakdown, combining the HD wallet with any imported keys.
+    ///
+    /// [`WalletApi::balance`] flattens this to a single spendable [`Amount`]; callers that need
+    /// to distinguish confirmed from pending funds should use this instead.
+    pub fn full_balance(&self) -> Balance {
+        self.imported_balance.clone() + self.wallet.balance()
+    }
+
+    /// Every address revealed so far on either keychain, external first.
+    pub fn list_wallet_addresses(&self) -> Vec<String> {
+        [KeychainKind::External, KeychainKind::Internal]
+            .into_iter()
+            .flat_map(|kind| {
+                // `derivation_index` is `None` until the keychain has revealed anything, in
+                // which case the inner range is skipped entirely.
+                self.wallet
+                    .derivation_index(kind)
+                    .into_iter()
+                    .flat_map(move |last_revealed| {
+                        (0..=last_revealed).map(move |index| {
+                            self.wallet.peek_address(kind, index).address.to_string()
+                        })
+                    })
+            })
+            .collect()
+    }
+
+    /// The imported key controlling `script_pubkey`, if any.
+    fn imported_key_for_script(&self, script_pubkey: &ScriptBuf) -> Option<&ImportedKey> {
+        self.imported_keys
+            .iter()
+            .find(|key| key.script_pubkey() == *script_pubkey)
+    }
+
+    /// Renders `script_pubkey` as an address, or `None` if it isn't a standard one.
+    fn address_for_script(&self, script_pubkey: &ScriptBuf) -> Option<String> {
+        Address::from_script(script_pubkey, self.wallet.network())
+            .ok()
+            .map(|address| address.to_string())
+    }
+
+    /// Confirmation count for a chain position: `0` while unconfirmed.
+    fn num_confirmations(&self, block_height: Option<u32>) -> u32 {
+        let next_height = self.wallet.latest_checkpoint().height() + 1;
+        block_height.map_or(0, |height| next_height.saturating_sub(height))
+    }
+
+    /// All unspent outputs, both the HD wallet's own and those held by imported keys.
+    ///
+    /// Imported outputs live in the tx graph as *floating* txouts (inserted by
+    /// [`WalletApi::sync_all`] so that fee calculation works), which carry no chain position —
+    /// they are therefore always reported with `num_confirmations == 0`. Ones the graph already
+    /// knows to be spent are dropped, so this stays consistent with [`Self::full_balance`].
+    pub fn list_utxos(&self) -> Vec<UtxoInfo> {
+        let own = self.wallet.list_unspent().map(|utxo| {
+            let block_height = match utxo.chain_position {
+                ChainPosition::Confirmed { anchor, .. } => Some(anchor.block_id.height),
+                ChainPosition::Unconfirmed { .. } => None,
+            };
+            UtxoInfo {
+                tx_id: utxo.outpoint.txid,
+                vout: utxo.outpoint.vout,
+                amount: utxo.txout.value,
+                address: self.address_for_script(&utxo.txout.script_pubkey),
+                num_confirmations: self.num_confirmations(block_height),
+                imported: false,
+            }
+        });
+
+        let imported = self
+            .tx_graph()
+            .floating_txouts()
+            .filter(|(outpoint, _)| self.tx_graph().outspends(*outpoint).is_empty())
+            .filter(|(_, txout)| self.imported_key_for_script(&txout.script_pubkey).is_some())
+            .map(|(outpoint, txout)| UtxoInfo {
+                tx_id: outpoint.txid,
+                vout: outpoint.vout,
+                amount: txout.value,
+                address: self.address_for_script(&txout.script_pubkey),
+                num_confirmations: 0,
+                imported: true,
+            });
+
+        own.chain(imported).collect()
+    }
+
+    /// Every wallet-relevant transaction, flattened for display.
+    pub fn list_transactions(&self) -> Vec<TxInfo> {
+        self.wallet
+            .transactions()
+            .map(|wallet_tx| {
+                let tx = wallet_tx.tx_node.tx.as_ref();
+                let (sent, received) = self.wallet.sent_and_received(tx);
+                // `sent` counts every input we own and `received` every output we own (change
+                // included), so the difference is the true net effect on the wallet.
+                let incoming = received >= sent;
+                let amount = if incoming {
+                    received - sent
+                } else {
+                    sent - received
+                };
+
+                let (block_height, timestamp) = match &wallet_tx.chain_position {
+                    ChainPosition::Confirmed { anchor, .. } => {
+                        (Some(anchor.block_id.height), Some(anchor.confirmation_time))
+                    }
+                    ChainPosition::Unconfirmed { .. } => (None, None),
+                };
+
+                TxInfo {
+                    tx_id: wallet_tx.tx_node.txid,
+                    inputs: tx
+                        .input
+                        .iter()
+                        .map(|txin| TxInputInfo {
+                            prev_out_tx_id: txin.previous_output.txid,
+                            prev_out_index: txin.previous_output.vout,
+                            sequence: txin.sequence.to_consensus_u32(),
+                            script_sig: txin.script_sig.clone(),
+                            witness: consensus::serialize(&txin.witness).to_lower_hex_string(),
+                        })
+                        .collect(),
+                    outputs: tx
+                        .output
+                        .iter()
+                        .map(|txout| TxOutputInfo {
+                            value: txout.value,
+                            address: self.address_for_script(&txout.script_pubkey),
+                            script_pubkey: txout.script_pubkey.clone(),
+                        })
+                        .collect(),
+                    lock_time: tx.lock_time.to_consensus_u32(),
+                    block_height,
+                    timestamp,
+                    num_confirmations: self.num_confirmations(block_height),
+                    amount,
+                    incoming,
+                }
+            })
+            .collect()
+    }
+
+    /// Whether the user has set a wallet password.
+    ///
+    /// Note the database is *always* SQLCipher-encrypted — an empty password still derives a
+    /// valid Argon2 key — so this reports whether a password was chosen, not whether the file
+    /// on disk is ciphertext.
+    pub const fn is_encrypted(&self) -> bool {
+        self.encrypted
+    }
+
+    /// Checks `password` against the key currently protecting the database, without needing the
+    /// plaintext password to have been retained.
+    pub fn check_password(&self, password: &str) -> anyhow::Result<bool> {
+        Ok(derive_key_from_password(password, &self.salt)? == self.enc_key)
+    }
+
+    /// Re-keys the database to `password`, rotating the Argon2 salt at the same time.
+    ///
+    /// Passing an empty password leaves the file encrypted with a well-known key, which is how
+    /// [`Self::decrypt_wallet`] removes protection.
+    pub fn encrypt_wallet(&mut self, password: &str) -> anyhow::Result<()> {
+        let mut salt = [0u8; 16];
+        rand::rng().fill_bytes(&mut salt);
+        let new_key = derive_key_from_password(password, &salt)?;
+
+        self.db.pragma_update(None, "rekey", &new_key)?;
+
+        // The salt must survive alongside the DB or the new key can never be re-derived, so if
+        // we fail to persist it we must undo the re-key rather than leave an unopenable wallet.
+        let salt_path = format!(
+            "{}.salt",
+            self.db_path.to_str().expect("Path must not be empty")
+        );
+        if let Err(e) = fs::write(&salt_path, general_purpose::STANDARD.encode(salt)) {
+            self.db.pragma_update(None, "rekey", &self.enc_key)?;
+            return Err(e.into());
+        }
+
+        self.salt = salt.to_vec();
+        self.enc_key = new_key;
+        self.encrypted = !password.is_empty();
+        Ok(())
+    }
+
+    /// Removes password protection, after verifying `password` is the one currently in force.
+    pub fn decrypt_wallet(&mut self, password: &str) -> anyhow::Result<()> {
+        if !self.check_password(password)? {
+            anyhow::bail!("invalid wallet password");
+        }
+        self.encrypt_wallet("")
+    }
+
+    /// Builds, signs and persists a payment to `address`. The caller is responsible for
+    /// broadcasting the returned transaction.
+    pub fn send_to_address(
+        &mut self,
+        address: &Address,
+        amount: Amount,
+        fee_rate: FeeRate,
+    ) -> anyhow::Result<Transaction> {
+        let mut builder = self.build_tx();
+        builder
+            .fee_rate(fee_rate)
+            .add_recipient(address.script_pubkey(), amount);
+        let mut psbt = builder.finish()?;
+
+        <Self as WalletApi>::sign(self, &mut psbt, SignOptions::default())?;
+        let tx = psbt.extract_tx()?;
+        <Self as WalletApi>::persist(self)?;
+
+        Ok(tx)
     }
 }
 
@@ -547,17 +773,17 @@ impl WalletApi for BMPWallet<Connection> {
             Bip86(xprv, KeychainKind::Internal).build(network.into())?;
 
         let db_path = path.join(Self::DB_NAME);
-        let db_path = db_path.to_str().expect("Should get path value");
+        let db_path_str = db_path.to_str().expect("Should get path value");
 
-        let mut db = Connection::new(db_path)?;
+        let mut db = Connection::new(db_path_str)?;
 
         // Derive encryption key
-        let salt_path = format!("{db_path}.salt");
+        let salt_path = format!("{db_path_str}.salt");
         let mut salt = [0u8; 16];
         rand::rng().fill_bytes(&mut salt);
         fs::write(&salt_path, general_purpose::STANDARD.encode(salt))?;
         let enc_key = derive_key_from_password(password, &salt)?;
-        db.pragma_update(None, "key", enc_key)?;
+        db.pragma_update(None, "key", &enc_key)?;
 
         let wallet = Wallet::create(descriptor, change_descriptor)
             .network(network)
@@ -582,6 +808,10 @@ impl WalletApi for BMPWallet<Connection> {
             signers_loaded: true,
             db,
             last_unused_address: None,
+            db_path,
+            salt: salt.to_vec(),
+            enc_key,
+            encrypted: !password.is_empty(),
         })
     }
 
@@ -673,16 +903,17 @@ impl WalletApi for BMPWallet<Connection> {
     // For already created wallets this will load stored data
     // This will also load the imported keys
     fn load_wallet(path: &Path, network: Network, password: &str) -> anyhow::Result<Self> {
+        let db_path = path.join(Self::DB_NAME);
         let (salt, mut db) = {
-            let p = path.join(Self::DB_NAME);
+            tracing::debug!(path = %db_path.display(), "Loading wallet database.");
             (
-                get_salt(p.to_str().expect("Path must not be empty"))?,
-                Connection::open(p)?,
+                get_salt(db_path.to_str().expect("Path must not be empty"))?,
+                Connection::open(&db_path)?,
             )
         };
 
         let decrypt_key = derive_key_from_password(password, &salt)?;
-        db.pragma_update(None, "key", decrypt_key)?;
+        db.pragma_update(None, "key", &decrypt_key)?;
 
         let wallet_opt = Wallet::load().check_network(network).load_wallet(&mut db)?;
 
@@ -697,6 +928,10 @@ impl WalletApi for BMPWallet<Connection> {
                 signers_loaded: false,
                 db,
                 last_unused_address: None,
+                db_path,
+                salt,
+                enc_key: decrypt_key,
+                encrypted: !password.is_empty(),
             });
         }
 
@@ -1449,6 +1684,339 @@ mod tests {
             .map(|a| a.index)
             .collect();
         assert!(internal_since_last.contains(&internal_addr.index));
+
+        Ok(())
+    }
+
+    // --- the GUI-facing query/mutation surface ---------------------------------------------
+
+    #[tokio::test]
+    async fn list_transactions_describes_an_incoming_payment() -> anyhow::Result<()> {
+        let dir = get_dir();
+        let mut wallet = BMPWallet::new(dir.path(), "", Network::Regtest)?;
+        assert!(
+            wallet.list_transactions().is_empty(),
+            "nothing before syncing"
+        );
+
+        // MockedBDKElectrum confirms 1 BTC to the wallet in the latest block.
+        wallet.sync_all(&MockedBDKElectrum {}).await?;
+
+        let txs = wallet.list_transactions();
+        assert_eq!(txs.len(), 1);
+        let tx = &txs[0];
+
+        assert!(tx.incoming, "a received payment must be flagged incoming");
+        assert_eq!(
+            tx.amount,
+            Amount::ONE_BTC,
+            "amount is the net effect on the wallet"
+        );
+        assert_eq!(tx.outputs.len(), 1);
+        assert_eq!(tx.outputs[0].value, Amount::ONE_BTC);
+        assert!(
+            tx.outputs[0].address.is_some(),
+            "a P2TR output must decode to an address"
+        );
+        assert_eq!(tx.lock_time, 0);
+
+        // Confirmed in the tip block, so exactly one confirmation, with a real timestamp.
+        assert!(
+            tx.block_height.is_some(),
+            "expected a confirmed tx, got {:?}",
+            tx.block_height
+        );
+        assert_eq!(tx.num_confirmations, 1);
+        assert!(tx.timestamp.is_some());
+        // bisq2 decodes this with Instant.ofEpochSecond; a millisecond value would be absurd.
+        assert!(
+            tx.timestamp.unwrap() < 4_000_000_000,
+            "timestamp must be in seconds"
+        );
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn list_transactions_reports_an_outgoing_payment() -> anyhow::Result<()> {
+        let dir = get_dir();
+        let mut wallet = BMPWallet::new(dir.path(), "", Network::Regtest)?;
+        wallet.sync_all(&MockedBDKElectrum {}).await?;
+
+        let to_address = "tb1pyfv094rr0vk28lf8v9yx3veaacdzg26ztqk4ga84zucqqhafnn5q9my9rz"
+            .parse::<Address<_>>()?
+            .assume_checked();
+        let tx = wallet.send_to_address(
+            &to_address,
+            Amount::from_sat(100_000),
+            FeeRate::from_sat_per_kwu(250),
+        )?;
+        // The wallet only learns about its own spend once the tx is in its graph.
+        bdk_wallet::test_utils::insert_tx(&mut wallet.wallet, tx.clone());
+
+        let spend = wallet
+            .list_transactions()
+            .into_iter()
+            .find(|info| info.tx_id == tx.compute_txid())
+            .expect("the spend must show up in the transaction list");
+
+        assert!(!spend.incoming, "a spend must not be flagged incoming");
+        // Net effect = payment + fee, i.e. everything that left the wallet after change.
+        assert!(
+            spend.amount >= Amount::from_sat(100_000),
+            "outgoing amount {} must cover the payment",
+            spend.amount
+        );
+        assert!(
+            spend.amount < Amount::ONE_BTC,
+            "change must not be counted as spent"
+        );
+        assert_eq!(
+            spend.num_confirmations, 0,
+            "a freshly built tx is unconfirmed"
+        );
+        assert_eq!(spend.block_height, None);
+        assert_eq!(spend.timestamp, None);
+        assert!(!spend.inputs.is_empty(), "a spend must have inputs");
+        assert!(
+            spend.inputs.iter().all(|input| !input.witness.is_empty()),
+            "signed inputs must carry a witness"
+        );
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn list_utxos_covers_own_and_imported_outputs() -> anyhow::Result<()> {
+        let dir = get_dir();
+        let mut wallet = BMPWallet::new(dir.path(), "", Network::Regtest)?;
+        assert!(wallet.list_utxos().is_empty(), "nothing before syncing");
+
+        wallet.import_private_key(new_private_key(), None)?;
+        wallet.import_private_key(new_private_key(), None)?;
+        wallet.sync_all(&MockedBDKElectrum {}).await?;
+
+        let utxos = wallet.list_utxos();
+        assert_eq!(utxos.len(), 3, "1 own + 2 imported: {utxos:#?}");
+
+        let own: Vec<_> = utxos.iter().filter(|u| !u.imported).collect();
+        let imported: Vec<_> = utxos.iter().filter(|u| u.imported).collect();
+        assert_eq!(own.len(), 1);
+        assert_eq!(imported.len(), 2);
+
+        assert_eq!(own[0].amount, Amount::ONE_BTC);
+        assert_eq!(own[0].num_confirmations, 1);
+        assert!(own[0].address.is_some());
+
+        for utxo in imported {
+            assert_eq!(utxo.amount, Amount::ONE_BTC);
+            assert!(
+                utxo.address.is_some(),
+                "imported P2TR outputs must decode to an address"
+            );
+        }
+
+        // The total must agree with what the balance reports, or the GUI contradicts itself.
+        let utxo_total: Amount = utxos.iter().map(|u| u.amount).sum();
+        assert_eq!(utxo_total, wallet.full_balance().trusted_spendable());
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn list_utxos_drops_spent_imported_outputs() -> anyhow::Result<()> {
+        let dir = get_dir();
+        let mut wallet = BMPWallet::new(dir.path(), "", Network::Regtest)?;
+        wallet.import_private_key(new_private_key(), None)?;
+        wallet.sync_all(&MockedBDKElectrum {}).await?;
+
+        let imported = |w: &BMPWallet<_>| w.list_utxos().iter().filter(|u| u.imported).count();
+        assert_eq!(imported(&wallet), 1, "the imported coin starts out unspent");
+
+        // Sweep the imported coin, then let the wallet see the spending transaction. Imported
+        // outputs are floating txouts with no chain position, so the only way to know they are
+        // gone is that something in the graph spends them.
+        let psbt = wallet.drain_imported_balance(FeeRate::from_sat_per_kwu(25_000))?;
+        let spend = psbt.extract_tx()?;
+        bdk_wallet::test_utils::insert_tx(&mut wallet.wallet, spend);
+
+        assert_eq!(
+            imported(&wallet),
+            0,
+            "a spent imported output must not still be listed as unspent"
+        );
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn full_balance_includes_imported_keys() -> anyhow::Result<()> {
+        let dir = get_dir();
+        let mut wallet = BMPWallet::new(dir.path(), "", Network::Regtest)?;
+        assert_eq!(wallet.full_balance().total(), Amount::ZERO);
+
+        wallet.import_private_key(new_private_key(), None)?;
+        wallet.sync_all(&MockedBDKElectrum {}).await?;
+
+        let balance = wallet.full_balance();
+        assert_eq!(
+            balance.total(),
+            Amount::from_int_btc(2),
+            "1 own + 1 imported"
+        );
+        assert_eq!(balance.confirmed, Amount::from_int_btc(2));
+        assert_eq!(balance.untrusted_pending, Amount::ZERO);
+        // The flattened `WalletApi::balance` must stay consistent with the breakdown.
+        assert_eq!(wallet.balance(), balance.trusted_spendable());
+
+        Ok(())
+    }
+
+    #[test]
+    fn list_wallet_addresses_covers_both_keychains() -> anyhow::Result<()> {
+        let dir = get_dir();
+        let mut wallet = BMPWallet::new(dir.path(), "", Network::Regtest)?;
+        assert!(
+            wallet.list_wallet_addresses().is_empty(),
+            "nothing revealed yet"
+        );
+
+        let external = wallet.get_new_address()?;
+        let internal = wallet.get_change_address()?;
+
+        let addresses = wallet.list_wallet_addresses();
+        assert!(
+            addresses.contains(&external.address.to_string()),
+            "missing external address"
+        );
+        assert!(
+            addresses.contains(&internal.address.to_string()),
+            "missing change address"
+        );
+        assert_eq!(addresses.len(), 2, "one per keychain so far: {addresses:?}");
+
+        // Revealing more must extend the list rather than replace it.
+        let another = wallet.get_new_address()?;
+        let addresses = wallet.list_wallet_addresses();
+        assert_eq!(addresses.len(), 3);
+        assert!(addresses.contains(&another.address.to_string()));
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn send_to_address_builds_a_fully_signed_tx() -> anyhow::Result<()> {
+        let dir = get_dir();
+        let mut wallet = BMPWallet::new(dir.path(), "", Network::Regtest)?;
+        wallet.sync_all(&MockedBDKElectrum {}).await?;
+
+        let to_address = "tb1pyfv094rr0vk28lf8v9yx3veaacdzg26ztqk4ga84zucqqhafnn5q9my9rz"
+            .parse::<Address<_>>()?
+            .assume_checked();
+        let to_spend = Amount::from_sat(100_000);
+
+        let tx = wallet.send_to_address(&to_address, to_spend, FeeRate::from_sat_per_kwu(250))?;
+
+        assert!(
+            tx.input.iter().all(|input| !input.witness.is_empty()),
+            "extract_tx must only succeed on a fully signed tx"
+        );
+        assert!(
+            tx.output
+                .iter()
+                .any(|output| output.script_pubkey == to_address.script_pubkey()
+                    && output.value == to_spend),
+            "the payment output must be present with the requested amount"
+        );
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn send_to_address_rejects_an_unaffordable_payment() -> anyhow::Result<()> {
+        let dir = get_dir();
+        let mut wallet = BMPWallet::new(dir.path(), "", Network::Regtest)?;
+
+        let to_address = "tb1pyfv094rr0vk28lf8v9yx3veaacdzg26ztqk4ga84zucqqhafnn5q9my9rz"
+            .parse::<Address<_>>()?
+            .assume_checked();
+        // Nothing synced, so there is nothing to spend.
+        let result = wallet.send_to_address(
+            &to_address,
+            Amount::from_sat(100_000),
+            FeeRate::from_sat_per_kwu(250),
+        );
+        assert!(result.is_err(), "spending from an empty wallet must fail");
+
+        Ok(())
+    }
+
+    #[test]
+    fn encrypt_wallet_rotates_the_key_and_survives_a_reload() -> anyhow::Result<()> {
+        let dir = get_dir();
+        let seed = {
+            let mut wallet = BMPWallet::new(dir.path(), "", Network::Regtest)?;
+            assert!(!wallet.is_encrypted(), "created without a password");
+            assert!(
+                wallet.check_password("")?,
+                "empty password is the current one"
+            );
+
+            let seed = wallet.get_seed_phrase()?;
+            wallet.encrypt_wallet("s3cret")?;
+
+            assert!(wallet.is_encrypted());
+            assert!(wallet.check_password("s3cret")?, "new password must verify");
+            assert!(
+                !wallet.check_password("")?,
+                "old password must stop verifying"
+            );
+            assert_eq!(
+                wallet.get_seed_phrase()?,
+                seed,
+                "seed must survive the re-key"
+            );
+            seed
+        };
+
+        // The rotated salt and key must both have reached disk.
+        let reloaded = BMPWallet::load_wallet(dir.path(), Network::Regtest, "s3cret")?;
+        assert_eq!(reloaded.get_seed_phrase()?, seed);
+        assert!(reloaded.is_encrypted());
+        drop(reloaded);
+
+        let stale = BMPWallet::load_wallet(dir.path(), Network::Regtest, "");
+        assert!(
+            stale.is_err() || stale.unwrap().get_seed_phrase().is_err(),
+            "the pre-encryption password must no longer open the wallet"
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn decrypt_wallet_requires_the_current_password() -> anyhow::Result<()> {
+        let dir = get_dir();
+        let mut wallet = BMPWallet::new(dir.path(), "orig", Network::Regtest)?;
+        let seed = wallet.get_seed_phrase()?;
+        assert!(wallet.is_encrypted());
+
+        assert!(
+            wallet.decrypt_wallet("wrong").is_err(),
+            "wrong password must be rejected"
+        );
+        assert!(
+            wallet.is_encrypted(),
+            "a rejected decrypt must not clear the flag"
+        );
+        assert!(wallet.check_password("orig")?, "...nor rotate the key");
+
+        wallet.decrypt_wallet("orig")?;
+        assert!(!wallet.is_encrypted());
+        drop(wallet);
+
+        let reloaded = BMPWallet::load_wallet(dir.path(), Network::Regtest, "")?;
+        assert_eq!(reloaded.get_seed_phrase()?, seed);
 
         Ok(())
     }

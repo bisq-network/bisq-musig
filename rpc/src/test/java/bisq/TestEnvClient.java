@@ -111,6 +111,25 @@ public class TestEnvClient {
     }
 
     /**
+     * bitcoind's P2P address ({@code host:port}), for clients that sync over compact block
+     * filters rather than RPC. Printed by {@code testenv-server} as {@code TESTENV_P2P_ADDR}.
+     *
+     * @return the address, or {@code null} if it wasn't supplied
+     */
+    public static String p2pAddrFromEnv() {
+        Properties props = loadTestEnvProperties();
+
+        String addr = System.getProperty("bitcoinP2pAddr");
+        if (addr == null && props != null) {
+            addr = props.getProperty("bitcoinP2pAddr");
+        }
+        if (addr == null) {
+            addr = System.getenv("TESTENV_P2P_ADDR");
+        }
+        return addr == null || addr.isBlank() ? null : addr;
+    }
+
+    /**
      * Load TestEnv configuration from testenv.properties file if it exists
      */
     private static Properties loadTestEnvProperties() {
@@ -134,6 +153,18 @@ public class TestEnvClient {
         this.rpcUser = rpcUser;
         this.rpcPass = rpcPass;
         this.httpClient = HttpClient.newHttpClient();
+    }
+
+    public String getRpcUrl() {
+        return rpcUrl;
+    }
+
+    public String getRpcUser() {
+        return rpcUser;
+    }
+
+    public String getRpcPass() {
+        return rpcPass;
     }
 
     /**

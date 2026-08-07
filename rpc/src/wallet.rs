@@ -1,4 +1,7 @@
-#![cfg_attr(feature = "unimock", expect(clippy::ignored_unit_patterns, reason = "macro-generated code"))]
+#![cfg_attr(
+    feature = "unimock",
+    expect(clippy::ignored_unit_patterns, reason = "macro-generated code")
+)]
 
 use std::sync::{Arc, Mutex, RwLock};
 
@@ -120,7 +123,9 @@ fn unconfirmed_txs(wallet: &Wallet) -> impl Iterator<Item = Arc<Transaction>> + 
         .filter_map(|(_, conf)| (conf.num_confirmations == 0).then_some(conf.wallet_tx.tx))
 }
 
-fn tx_confidence_entries(wallet: &Wallet) -> impl Iterator<Item = (Txid, TxConfidence)> + '_ {
+pub(crate) fn tx_confidence_entries(
+    wallet: &Wallet,
+) -> impl Iterator<Item = (Txid, TxConfidence)> + '_ {
     trace!( "Syncing confirmations.");
 
     let next_height = wallet.latest_checkpoint().height() + 1;
@@ -206,4 +211,7 @@ pub type Result<T, E = WalletErrorKind> = std::result::Result<T, E>;
 pub enum WalletErrorKind {
     BitcoindRpc(#[from] bdk_bitcoind_rpc::bitcoincore_rpc::Error),
     ApplyHeader(#[from] bdk_wallet::chain::local_chain::ApplyHeaderError),
+    /// Raised by wallet impls that sync through a `ChainDataSource` rather than a bitcoind
+    /// emitter, where the underlying failure is not usefully typed.
+    ChainSync(#[from] anyhow::Error),
 }

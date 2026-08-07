@@ -1,4 +1,5 @@
 use std::collections::BTreeMap;
+use std::net::SocketAddr;
 use std::sync::Arc;
 
 use bdk_kyoto::bip157::{Builder, Network};
@@ -47,6 +48,17 @@ impl CBFScanner {
     )]
     pub fn new(peers: Vec<TrustedPeer>) -> Self {
         Self { peers }
+    }
+
+    /// Builds a scanner from plain `host:port` peer addresses, so callers don't need to depend
+    /// on `bdk_kyoto` just to name a peer.
+    pub fn from_socket_addrs(addrs: impl IntoIterator<Item = SocketAddr>) -> Self {
+        Self::new(
+            addrs
+                .into_iter()
+                .map(TrustedPeer::from_socket_addr)
+                .collect(),
+        )
     }
 
     async fn traces(

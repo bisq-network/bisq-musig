@@ -12,7 +12,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         // Add Serde serialization for walletrpc response types...
         .serde_serialized_types(&["WalletBalanceResponse", "NewAddressResponse", "ListUnspentResponse"])
-        .serde_serialized_type("TransactionOutput", &[
+        // NB: fully qualified, since `wallet.proto` and `bmp_wallet.proto` both declare a
+        // `TransactionOutput` and unqualified paths match on any suffix.
+        .serde_serialized_type(".walletrpc.TransactionOutput", &[
             rev_hex("txId"), hex("scriptPubKey")
         ])
         .serde_serialized_type("ConfEvent", &[
@@ -83,16 +85,72 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             hex("customPayoutTx")
         ])
 
+        // ...and for the bisq2-facing `wallet` (BMPWallet) types.
+        .pipe(configure_bmp_wallet_serde)
+
         // Now compile all the protos...
         .compile_protos(
             &[
                 "src/main/proto/rpc.proto",
                 "src/main/proto/wallet.proto",
+                "src/main/proto/bmp_wallet.proto",
                 "src/main/proto/bmp_protocol.proto",
             ],
             &["src/main/proto"],
         )?;
     Ok(())
+}
+
+/// Serde config for the `wallet` package declared in `bmp_wallet.proto`.
+///
+/// Every path is fully qualified: `wallet.proto` and `bmp_wallet.proto` both declare a
+/// `TransactionOutput`, and unqualified paths match on any suffix, so a bare name would
+/// silently apply the wrong field attributes to the other package's message.
+///
+/// Secrets are redacted rather than skipped, so the request log still records that a field was
+/// present without ever writing out its value.
+fn configure_bmp_wallet_serde(builder: tonic_prost_build::Builder) -> tonic_prost_build::Builder {
+    builder
+        .serde_serialized_types(&[
+            ".wallet.IsWalletReadyRequest",
+            ".wallet.IsWalletReadyResponse",
+            ".wallet.GetUnusedAddressRequest",
+            ".wallet.GetUnusedAddressResponse",
+            ".wallet.GetWalletAddressesRequest",
+            ".wallet.GetWalletAddressesResponse",
+            ".wallet.ListTransactionsRequest",
+            ".wallet.ListTransactionsResponse",
+            ".wallet.ListUtxosRequest",
+            ".wallet.ListUtxosResponse",
+            ".wallet.SendToAddressResponse",
+            ".wallet.IsWalletEncryptedRequest",
+            ".wallet.IsWalletEncryptedResponse",
+            ".wallet.GetBalanceRequest",
+            ".wallet.GetBalanceResponse",
+            ".wallet.GetSeedWordsRequest",
+            ".wallet.EncryptWalletResponse",
+            ".wallet.DecryptWalletResponse",
+            ".wallet.TransactionInput",
+            ".wallet.TransactionOutput",
+            ".wallet.Transaction",
+            ".wallet.Utxo",
+        ])
+        .serde_serialized_type(
+            ".wallet.SendToAddressRequest",
+            &[redacted_opt_string("passphrase")],
+        )
+        .serde_serialized_type(
+            ".wallet.GetSeedWordsResponse",
+            &[redacted_string_vec("seedWords")],
+        )
+        .serde_serialized_type(
+            ".wallet.EncryptWalletRequest",
+            &[redacted_string("password")],
+        )
+        .serde_serialized_type(
+            ".wallet.DecryptWalletRequest",
+            &[redacted_string("password")],
+        )
 }
 
 type CustomField<'a> = (&'a str, Cow<'static, str>);
@@ -121,6 +179,27 @@ fn enum_field<'a>(field: &'a str, type_name: &'_ str) -> CustomField<'a> {
     (field, Cow::Owned(format!("#[serde_as(as = \"::serde_with::TryFromInto<{type_name}>\")]")))
 }
 
+const fn redacted_string(field: &str) -> CustomField<'_> {
+    (
+        field,
+        Cow::Borrowed("#[serde(serialize_with = \"crate::pb::convert::redact::string\")]"),
+    )
+}
+
+const fn redacted_opt_string(field: &str) -> CustomField<'_> {
+    (
+        field,
+        Cow::Borrowed("#[serde(serialize_with = \"crate::pb::convert::redact::opt_string\")]"),
+    )
+}
+
+const fn redacted_string_vec(field: &str) -> CustomField<'_> {
+    (
+        field,
+        Cow::Borrowed("#[serde(serialize_with = \"crate::pb::convert::redact::string_vec\")]"),
+    )
+}
+
 trait BuilderEx {
     fn serde_serialized_enum(self, path: &str) -> Self;
 
@@ -131,6 +210,14 @@ trait BuilderEx {
             self = self.serde_serialized_type(path, &[]);
         }
         self
+    }
+
+    /// Applies a configuration step written as a free function, so long chains can be broken up.
+    fn pipe(self, step: impl FnOnce(Self) -> Self) -> Self
+    where
+        Self: Sized,
+    {
+        step(self)
     }
 }
 

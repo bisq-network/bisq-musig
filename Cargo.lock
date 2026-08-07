@@ -2234,6 +2234,7 @@ dependencies = [
  "rpc",
  "serde",
  "serde_with",
+ "tempfile",
  "testenv",
  "thiserror 2.0.19",
  "tokio",
