@@ -534,7 +534,12 @@ impl BMPWallet<Connection> {
     ///
     /// Passing an empty password leaves the file encrypted with a well-known key, which is how
     /// [`Self::decrypt_wallet`] removes protection.
-    pub fn encrypt_wallet(&mut self, password: &str) -> anyhow::Result<()> {
+    ///
+    /// This is the raw primitive and authenticates nobody: it re-keys whatever the current state
+    /// is. Every caller must establish its own precondition first — see [`Self::encrypt_wallet`],
+    /// which requires that no password is set yet, and [`Self::decrypt_wallet`], which requires
+    /// proof of the current one.
+    fn rekey(&mut self, password: &str) -> anyhow::Result<()> {
         let mut salt = [0u8; 16];
         rand::rng().fill_bytes(&mut salt);
         let new_key = derive_key_from_password(password, &salt)?;
@@ -558,12 +563,26 @@ impl BMPWallet<Connection> {
         Ok(())
     }
 
+    /// Puts the wallet under password protection.
+    ///
+    /// Refuses when a password is already set. `EncryptWalletRequest` carries a single field, so
+    /// there is no *old* password to authenticate the caller with; re-keying regardless would let
+    /// anyone able to reach the RPC port rotate the key and lock the owner out. Changing a
+    /// password is therefore decrypt-then-encrypt, which does prove knowledge of the current one.
+    /// This mirrors Bitcoin Core's `encryptwallet`, which likewise fails on an encrypted wallet.
+    pub fn encrypt_wallet(&mut self, password: &str) -> anyhow::Result<()> {
+        if self.encrypted {
+            anyhow::bail!("wallet is already encrypted; decrypt it first to change the password");
+        }
+        self.rekey(password)
+    }
+
     /// Removes password protection, after verifying `password` is the one currently in force.
     pub fn decrypt_wallet(&mut self, password: &str) -> anyhow::Result<()> {
         if !self.check_password(password)? {
             anyhow::bail!("invalid wallet password");
         }
-        self.encrypt_wallet("")
+        self.rekey("")
     }
 
     /// Builds, signs and persists a payment to `address`. The caller is responsible for
@@ -774,6 +793,17 @@ impl WalletApi for BMPWallet<Connection> {
 
         let db_path = path.join(Self::DB_NAME);
         let db_path_str = db_path.to_str().expect("Should get path value");
+
+        // Never create over an existing wallet. The salt written below is what the existing
+        // database's encryption key was derived from, so overwriting it would leave that
+        // database permanently unopenable — its key could no longer be re-derived from any
+        // password. Callers meaning to open an existing wallet must use `load_wallet`.
+        if db_path.exists() {
+            anyhow::bail!(
+                "a wallet database already exists at {}; refusing to overwrite it",
+                db_path.display()
+            );
+        }
 
         let mut db = Connection::new(db_path_str)?;
 
@@ -1014,6 +1044,7 @@ impl DerefMut for BMPWallet<Connection> {
 
 #[cfg(test)]
 mod tests {
+    use std::fs;
     use std::str::FromStr as _;
 
     use bdk_kyoto::FeeRate;
@@ -1027,6 +1058,7 @@ mod tests {
     };
     use bdk_wallet::chain::{self, BlockId};
     use bdk_wallet::miniscript::Descriptor;
+    use bdk_wallet::rusqlite::Connection;
     use bdk_wallet::test_utils::{ReceiveTo, receive_output_to_address};
     use bdk_wallet::{AddressInfo, KeychainKind, SignOptions};
     use bmp_tracing::tracing;
@@ -1500,6 +1532,44 @@ mod tests {
         // Load the wallet with right decryption key
         let lw = BMPWallet::load_wallet(dir.path(), Network::Regtest, "secret123").unwrap();
         assert_eq!(lw.get_seed_phrase().unwrap(), seed);
+        Ok(())
+    }
+
+    /// Creating over an existing wallet must fail *before* the salt is touched. A caller that
+    /// treats a failed `load_wallet` (e.g. a wrong password) as "no wallet here" would otherwise
+    /// rewrite the salt and leave the existing database impossible to decrypt.
+    #[test]
+    fn new_refuses_to_overwrite_an_existing_wallet() -> anyhow::Result<()> {
+        let dir = get_dir();
+        let salt_path = dir
+            .path()
+            .join(format!("{}.salt", BMPWallet::<Connection>::DB_NAME));
+
+        let seed = {
+            let wallet = BMPWallet::new(dir.path(), "secret123", Network::Regtest)?;
+            wallet.get_seed_phrase()?
+        };
+        let salt_before = fs::read(&salt_path)?;
+
+        // `BMPWallet` isn't `Debug`, so `expect_err` isn't available here.
+        let Err(err) = BMPWallet::new(dir.path(), "a different password", Network::Regtest) else {
+            panic!("creating over an existing wallet must fail");
+        };
+        assert!(
+            err.to_string().contains("refusing to overwrite"),
+            "unexpected error: {err}"
+        );
+
+        assert_eq!(
+            fs::read(&salt_path)?,
+            salt_before,
+            "the salt must survive a refused creation, or the wallet becomes unopenable"
+        );
+
+        // The original password still opens the original wallet.
+        let reloaded = BMPWallet::load_wallet(dir.path(), Network::Regtest, "secret123")?;
+        assert_eq!(reloaded.get_seed_phrase()?, seed);
+
         Ok(())
     }
 
@@ -1990,6 +2060,60 @@ mod tests {
             stale.is_err() || stale.unwrap().get_seed_phrase().is_err(),
             "the pre-encryption password must no longer open the wallet"
         );
+
+        Ok(())
+    }
+
+    /// Encrypting carries no old password, so it must not be usable to re-key a wallet that is
+    /// already protected — that would let anyone reaching the RPC port lock the owner out.
+    #[test]
+    fn encrypt_wallet_refuses_when_already_encrypted() -> anyhow::Result<()> {
+        let dir = get_dir();
+        let mut wallet = BMPWallet::new(dir.path(), "orig", Network::Regtest)?;
+        let seed = wallet.get_seed_phrase()?;
+
+        let Err(err) = wallet.encrypt_wallet("attacker") else {
+            panic!("re-keying an encrypted wallet must fail");
+        };
+        assert!(
+            err.to_string().contains("already encrypted"),
+            "unexpected error: {err}"
+        );
+
+        assert!(wallet.is_encrypted());
+        assert!(
+            wallet.check_password("orig")?,
+            "the original password must still be the one in force"
+        );
+        assert!(
+            !wallet.check_password("attacker")?,
+            "the rejected password must not have taken effect"
+        );
+        drop(wallet);
+
+        // ...and that survives a reload, i.e. nothing reached disk.
+        let reloaded = BMPWallet::load_wallet(dir.path(), Network::Regtest, "orig")?;
+        assert_eq!(reloaded.get_seed_phrase()?, seed);
+
+        Ok(())
+    }
+
+    /// Changing a password is decrypt-then-encrypt, which does prove knowledge of the old one.
+    #[test]
+    fn password_change_goes_through_decrypt_then_encrypt() -> anyhow::Result<()> {
+        let dir = get_dir();
+        let mut wallet = BMPWallet::new(dir.path(), "orig", Network::Regtest)?;
+        let seed = wallet.get_seed_phrase()?;
+
+        wallet.decrypt_wallet("orig")?;
+        wallet.encrypt_wallet("fresh")?;
+
+        assert!(wallet.is_encrypted());
+        assert!(wallet.check_password("fresh")?);
+        drop(wallet);
+
+        let reloaded = BMPWallet::load_wallet(dir.path(), Network::Regtest, "fresh")?;
+        assert_eq!(reloaded.get_seed_phrase()?, seed);
 
         Ok(())
     }

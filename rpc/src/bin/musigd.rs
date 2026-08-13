@@ -1,11 +1,13 @@
 use std::error::Error;
 use std::net::{AddrParseError, SocketAddr};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
+use anyhow::Context as _;
 use bdk_bitcoind_rpc::bitcoincore_rpc::{Auth, Client as BitcoinCoreClient};
 use bdk_wallet::bitcoin::Network;
+use bdk_wallet::rusqlite::Connection;
 use bmp_tracing::tracing::{info, warn};
 use chain::CBFScanner;
 use clap::Parser;
@@ -64,22 +66,32 @@ struct Cli {
     wallet_poll_secs: Option<u64>,
 }
 
-/// Opens the BMP wallet at `dir`, creating a fresh one if none exists there yet.
+/// Opens the BMP wallet at `dir`, creating a fresh one only if none exists there yet.
+///
+/// Creating is chosen on the *absence* of the database file, never on a failed load. A load
+/// failure most likely means the wrong `--wallet-password` was given, and creating a wallet
+/// rewrites the Argon2 salt the existing database's key was derived from — which would render
+/// that wallet, and any funds in it, permanently unrecoverable.
 fn open_or_create_wallet(
-    dir: &PathBuf,
+    dir: &Path,
     password: &str,
     network: Network,
-) -> anyhow::Result<BMPWallet<bdk_wallet::rusqlite::Connection>> {
+) -> anyhow::Result<BMPWallet<Connection>> {
     std::fs::create_dir_all(dir)?;
-    match BMPWallet::load_wallet(dir, network, password) {
-        Ok(wallet) => {
-            info!(dir = %dir.display(), "Loaded existing BMP wallet.");
-            Ok(wallet)
-        }
-        Err(e) => {
-            info!(dir = %dir.display(), "No BMP wallet to load ({e}); creating a new one.");
-            BMPWallet::new(dir, password, network)
-        }
+    let db_path = dir.join(BMPWallet::<Connection>::DB_NAME);
+
+    if db_path.exists() {
+        let wallet = BMPWallet::load_wallet(dir, network, password).with_context(|| {
+            format!(
+                "failed to open the existing wallet at {} (wrong --wallet-password?)",
+                db_path.display()
+            )
+        })?;
+        info!(dir = %dir.display(), "Loaded existing BMP wallet.");
+        Ok(wallet)
+    } else {
+        info!(dir = %dir.display(), "No BMP wallet found; creating a new one.");
+        BMPWallet::new(dir, password, network)
     }
 }
 

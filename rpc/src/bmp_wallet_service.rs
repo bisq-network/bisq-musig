@@ -500,6 +500,15 @@ impl wallet_server::Wallet for BmpWalletImpl {
         request: Request<EncryptWalletRequest>,
     ) -> Result<Response<EncryptWalletResponse>> {
         handle_request_async(request, |request| async move {
+            // Re-keying an already-protected wallet would lock its owner out, and this request
+            // carries no old password to authenticate the caller with. Report it as a state
+            // error rather than a server fault, so the client can tell the two apart.
+            if self.wallet_service.is_encrypted().await {
+                return Err(Status::failed_precondition(
+                    "wallet is already encrypted; decrypt it first to change the password",
+                ));
+            }
+
             self.wallet_service
                 .encrypt_wallet(&request.password)
                 .await
@@ -667,6 +676,26 @@ mod tests {
             "a failed decrypt must not clear the flag"
         );
 
+        service.decrypt_wallet("hunter2").await.unwrap();
+        assert!(!service.is_encrypted().await);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn encrypting_an_encrypted_wallet_is_refused() {
+        let (_dir, service) = service();
+
+        service.encrypt_wallet("hunter2").await.unwrap();
+
+        let err = service
+            .encrypt_wallet("attacker")
+            .await
+            .expect_err("re-keying an encrypted wallet must fail");
+        assert!(
+            err.to_string().contains("already encrypted"),
+            "unexpected error: {err}"
+        );
+
+        // The original password is still the one that works.
         service.decrypt_wallet("hunter2").await.unwrap();
         assert!(!service.is_encrypted().await);
     }
