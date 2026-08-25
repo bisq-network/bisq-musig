@@ -41,7 +41,7 @@ use crate::wallet_info::{TxInfo, TxInputInfo, TxOutputInfo, UtxoInfo};
 /// `secret`. A missing tap tree means a key-path-only output (`tr(P)`, as in BIP86).
 ///
 /// The full descriptor is kept (rather than just the merkle root) because BDK wallets are
-/// descriptor-driven: it is what lets the per-key sub-wallet in [`get_imported_wallets`] watch
+/// descriptor-driven: it is what lets the per-key sub-wallet in [`load_imported_wallets`] watch
 /// the right script pubkey, and what [`BMPWallet::imported_utxos`] and [`WalletApi::sign`] use
 /// to recognise and tweak-sign the output.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -256,7 +256,7 @@ impl BMPWalletPersister for Connection {
     }
 }
 
-const STOP_GAP: usize = 50;
+pub(crate) const STOP_GAP: usize = 50;
 
 pub struct BMPWallet<P: BMPWalletPersister> {
     wallet: PersistedWallet<P>,
@@ -338,6 +338,10 @@ impl BMPWallet<Connection> {
     #[cfg(any(test, feature = "test-utils"))]
     pub fn imported_keys(&self) -> &[ImportedKey] {
         &self.imported_keys
+    }
+
+    pub const fn imported_balance(&self) -> &Balance {
+        &self.imported_balance
     }
 
     fn imported_utxos(&self) -> Vec<WeightedUtxo> {
@@ -640,6 +644,47 @@ impl BMPWallet<Connection> {
 
         Ok(tx)
     }
+
+    fn load_imported_wallets(
+        imported_keys: &[ImportedKey],
+        db: &Connection,
+        network: Network,
+        db_name: &str,
+    ) -> anyhow::Result<Vec<(PersistedWallet<Connection>, Connection)>> {
+        let mut res = vec![];
+        for key in imported_keys {
+            let pubk = key.internal_key();
+            // One sub-wallet DB per output template: the same internal key may back a key-path-only
+            // output and a `tr(P, tree)` output, which have different script pubkeys.
+            let db_file = match key.merkle_root() {
+                None => format!("bmp_{pubk}.db3"),
+                Some(root) => format!("bmp_{pubk}_{root}.db3"),
+            };
+            let path_str = db
+                .path()
+                .expect("DB path should not be empty")
+                .replace(db_name, "");
+            let db_path = Path::new(&path_str).join(db_file);
+            let descriptor = key.descriptor().to_string();
+
+            let mut db = Connection::open(db_path)?;
+            let imported_wallet_opt = Wallet::load()
+                .descriptor(KeychainKind::External, Some(descriptor.clone()))
+                .check_network(network)
+                .extract_keys()
+                .load_wallet(&mut db)?;
+
+            let imported_wallet = if let Some(wallet) = imported_wallet_opt {
+                wallet
+            } else {
+                Wallet::create_single(descriptor)
+                    .network(network)
+                    .create_wallet(&mut db)?
+            };
+            res.push((imported_wallet, db));
+        }
+        Ok(res)
+    }
 }
 
 impl WalletExt for BMPWallet<Connection> {
@@ -728,47 +773,6 @@ pub trait WalletApi {
     fn drain_imported_balance(&mut self, fee_rate: FeeRate) -> anyhow::Result<Psbt>;
 }
 
-pub fn get_imported_wallets(
-    imported_keys: &[ImportedKey],
-    db: &Connection,
-    network: Network,
-    db_name: &str,
-) -> anyhow::Result<Vec<(PersistedWallet<Connection>, Connection)>> {
-    let mut res = vec![];
-    for key in imported_keys {
-        let pubk = key.internal_key();
-        // One sub-wallet DB per output template: the same internal key may back a key-path-only
-        // output and a `tr(P, tree)` output, which have different script pubkeys.
-        let db_file = match key.merkle_root() {
-            None => format!("bmp_{pubk}.db3"),
-            Some(root) => format!("bmp_{pubk}_{root}.db3"),
-        };
-        let path_str = db
-            .path()
-            .expect("DB path should not be empty")
-            .replace(db_name, "");
-        let db_path = Path::new(&path_str).join(db_file);
-        let descriptor = key.descriptor().to_string();
-
-        let mut db = Connection::open(db_path)?;
-        let imported_wallet_opt = Wallet::load()
-            .descriptor(KeychainKind::External, Some(descriptor.clone()))
-            .check_network(network)
-            .extract_keys()
-            .load_wallet(&mut db)?;
-
-        let imported_wallet = if let Some(wallet) = imported_wallet_opt {
-            wallet
-        } else {
-            Wallet::create_single(descriptor)
-                .network(network)
-                .create_wallet(&mut db)?
-        };
-        res.push((imported_wallet, db));
-    }
-    Ok(res)
-}
-
 /// Opens the wallet database at `db_path` with the key derived from `password` and `salt`.
 ///
 /// Factored out of [`WalletApi::load_wallet`] so that it can be retried with the *staged* salt
@@ -817,7 +821,7 @@ impl WalletApi for BMPWallet<Connection> {
         let network = self.network();
         let mut vec = vec![&mut self.wallet];
         let mut imported =
-            get_imported_wallets(&self.imported_keys, &self.db, network, Self::DB_NAME)?;
+            Self::load_imported_wallets(&self.imported_keys, &self.db, network, Self::DB_NAME)?;
 
         vec.extend(
             imported
