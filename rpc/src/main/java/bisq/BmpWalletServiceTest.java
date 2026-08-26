@@ -4,6 +4,7 @@ import bisq.wallet.protobuf.DecryptWalletRequest;
 import bisq.wallet.protobuf.EncryptWalletRequest;
 import bisq.wallet.protobuf.GetBalanceRequest;
 import bisq.wallet.protobuf.GetSeedWordsRequest;
+import bisq.wallet.protobuf.GetNewAddressRequest;
 import bisq.wallet.protobuf.GetUnusedAddressRequest;
 import bisq.wallet.protobuf.GetWalletAddressesRequest;
 import bisq.wallet.protobuf.IsWalletEncryptedRequest;
@@ -78,7 +79,7 @@ public class BmpWalletServiceTest {
         check("IsWalletReady", this::isWalletReady);
         check("GetBalance", this::getBalance);
         check("GetSeedWords", this::getSeedWords);
-        check("GetUnusedAddress + GetWalletAddresses", this::addresses);
+        check("GetNewAddress + GetUnusedAddress + GetWalletAddresses", this::addresses);
         check("ListTransactions", this::listTransactions);
         check("ListUtxos", this::listUtxos);
         check("SendToAddress", this::sendToAddress);
@@ -122,11 +123,17 @@ public class BmpWalletServiceTest {
                 stub.getUnusedAddress(GetUnusedAddressRequest.newBuilder().build()).getAddress();
         assertTrue(!address.isBlank(), "address must not be blank");
 
+        String fresh = stub.getNewAddress(GetNewAddressRequest.newBuilder().build()).getAddress();
+        assertTrue(!fresh.isBlank(), "new address must not be blank");
+        assertTrue(!fresh.equals(address), "GetNewAddress must not repeat the last address");
+
         List<String> all = stub.getWalletAddresses(GetWalletAddressesRequest.newBuilder().build())
                 .getAddressesList();
         assertTrue(all.contains(address),
                 "a revealed address (" + address + ") must appear among the wallet's addresses");
-        System.out.printf("    unused=%s, %d address(es) revealed%n", address, all.size());
+        assertTrue(all.contains(fresh),
+                "a new address (" + fresh + ") must appear among the wallet's addresses");
+        System.out.printf("    unused=%s, new=%s, %d address(es) revealed%n", address, fresh, all.size());
     }
 
     private void listTransactions() {

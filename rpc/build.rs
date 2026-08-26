@@ -114,6 +114,8 @@ fn configure_bmp_wallet_serde(builder: tonic_prost_build::Builder) -> tonic_pros
         .serde_serialized_types(&[
             ".wallet.IsWalletReadyRequest",
             ".wallet.IsWalletReadyResponse",
+            ".wallet.GetNewAddressRequest",
+            ".wallet.GetNewAddressResponse",
             ".wallet.GetUnusedAddressRequest",
             ".wallet.GetUnusedAddressResponse",
             ".wallet.GetWalletAddressesRequest",

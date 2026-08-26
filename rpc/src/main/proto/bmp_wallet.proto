@@ -20,7 +20,9 @@ syntax = "proto3";
 // Deliberately mirrors bisq2's `wallet/src/main/proto/wallet.proto`, package and all, so that
 // bisq2's `bisq.wallet.WalletGrpcClient` can talk to this server without any change on its side.
 // Keep the package, service name, method names and field numbers in sync with bisq2; additions
-// here must stay backwards compatible (new optional fields only).
+// here must stay backwards compatible (new optional fields only). Upstream messages that are only
+// used for bisq2's client-side persistence (`ReceiveAddressEntry`, `ReceiveAddressStore` — local
+// address labels) are deliberately not mirrored, since they never cross the wire.
 //
 // NOTE: this is a *different* service from `walletrpc.Wallet` in `wallet.proto`. That one is the
 // low-level wallet the trade protocol drives; this one is the user-facing wallet backed by
@@ -33,6 +35,7 @@ option java_package = "bisq.wallet.protobuf";
 // The WalletService definition.
 service Wallet {
     rpc IsWalletReady (IsWalletReadyRequest) returns (IsWalletReadyResponse);
+    rpc GetNewAddress (GetNewAddressRequest) returns (GetNewAddressResponse);
     rpc GetUnusedAddress (GetUnusedAddressRequest) returns (GetUnusedAddressResponse);
     rpc GetWalletAddresses (GetWalletAddressesRequest) returns (GetWalletAddressesResponse);
     rpc ListTransactions (ListTransactionsRequest) returns (ListTransactionsResponse);
@@ -51,6 +54,12 @@ message IsWalletReadyRequest {}
 
 message IsWalletReadyResponse {
     bool ready = 1;
+}
+
+message GetNewAddressRequest {}
+
+message GetNewAddressResponse {
+    string address = 1;
 }
 
 message GetUnusedAddressRequest {}

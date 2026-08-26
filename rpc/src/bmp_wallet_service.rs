@@ -39,12 +39,12 @@ use crate::observable::ObservableHashMap;
 pub use crate::pb::bmp_wallet::wallet_server::WalletServer as BmpWalletServer;
 use crate::pb::bmp_wallet::{
     self, DecryptWalletRequest, DecryptWalletResponse, EncryptWalletRequest, EncryptWalletResponse,
-    GetBalanceRequest, GetBalanceResponse, GetSeedWordsRequest, GetSeedWordsResponse,
-    GetUnusedAddressRequest, GetUnusedAddressResponse, GetWalletAddressesRequest,
-    GetWalletAddressesResponse, IsWalletEncryptedRequest, IsWalletEncryptedResponse,
-    IsWalletReadyRequest, IsWalletReadyResponse, ListTransactionsRequest, ListTransactionsResponse,
-    ListUtxosRequest, ListUtxosResponse, SendToAddressRequest, SendToAddressResponse,
-    wallet_server,
+    GetBalanceRequest, GetBalanceResponse, GetNewAddressRequest, GetNewAddressResponse,
+    GetSeedWordsRequest, GetSeedWordsResponse, GetUnusedAddressRequest, GetUnusedAddressResponse,
+    GetWalletAddressesRequest, GetWalletAddressesResponse, IsWalletEncryptedRequest,
+    IsWalletEncryptedResponse, IsWalletReadyRequest, IsWalletReadyResponse,
+    ListTransactionsRequest, ListTransactionsResponse, ListUtxosRequest, ListUtxosResponse,
+    SendToAddressRequest, SendToAddressResponse, wallet_server,
 };
 use crate::server::handle_request_async;
 use crate::wallet::{Result as WalletResult, TxConfidence, WalletService, tx_confidence_entries};
@@ -65,6 +65,14 @@ pub trait BmpWalletService: WalletService {
     /// Whether the wallet is loaded and, if a chain data source is configured, has completed at
     /// least one sync.
     fn is_ready(&self) -> bool;
+
+    /// Reveals a fresh receive address.
+    ///
+    /// Like [`Self::unused_address`], this routes through the gap-capped
+    /// [`BMPWallet::next_address`], so a click-happy client cycles through the existing unused
+    /// addresses once the gap limit is reached instead of growing it without bound. Either way a
+    /// different address is returned on every call.
+    async fn new_address(&self) -> anyhow::Result<String>;
 
     async fn unused_address(&self) -> anyhow::Result<String>;
 
@@ -250,7 +258,7 @@ impl<S: ChainDataSource + Send + Sync + 'static> BmpWalletService for BMPWalletS
         self.ready.load(Ordering::Acquire)
     }
 
-    async fn unused_address(&self) -> anyhow::Result<String> {
+    async fn new_address(&self) -> anyhow::Result<String> {
         Ok(self
             .wallet
             .lock()
@@ -258,6 +266,12 @@ impl<S: ChainDataSource + Send + Sync + 'static> BmpWalletService for BMPWalletS
             .get_new_address()?
             .address
             .to_string())
+    }
+
+    async fn unused_address(&self) -> anyhow::Result<String> {
+        // Currently behaves like `new_address`: both hand out the next (gap-capped) unused
+        // address, matching what bisq2 expects from either RPC.
+        self.new_address().await
     }
 
     async fn wallet_addresses(&self) -> Vec<String> {
@@ -357,6 +371,23 @@ impl wallet_server::Wallet for BmpWalletImpl {
             Ok(IsWalletReadyResponse {
                 ready: self.wallet_service.is_ready(),
             })
+        })
+        .await
+    }
+
+    #[instrument(skip_all)]
+    async fn get_new_address(
+        &self,
+        request: Request<GetNewAddressRequest>,
+    ) -> Result<Response<GetNewAddressResponse>> {
+        handle_request_async(request, |_request| async {
+            let address = self
+                .wallet_service
+                .new_address()
+                .await
+                .map_err(|e| internal(&e))?;
+
+            Ok(GetNewAddressResponse { address })
         })
         .await
     }
@@ -656,6 +687,11 @@ mod tests {
         assert!(service.wallet_addresses().await.is_empty());
         let address = service.unused_address().await.unwrap();
         assert!(service.wallet_addresses().await.contains(&address));
+
+        // `new_address` reveals a fresh address, distinct from the one just handed out.
+        let new_address = service.new_address().await.unwrap();
+        assert_ne!(new_address, address);
+        assert!(service.wallet_addresses().await.contains(&new_address));
     }
 
     #[tokio::test(flavor = "multi_thread")]
