@@ -6,6 +6,7 @@ import bisq.wallet.protobuf.GetUnusedAddressRequest;
 import bisq.wallet.protobuf.IsWalletReadyRequest;
 import bisq.wallet.protobuf.ListTransactionsRequest;
 import bisq.wallet.protobuf.ListUtxosRequest;
+import bisq.wallet.protobuf.OpenOrCreateWalletRequest;
 import bisq.wallet.protobuf.SendToAddressRequest;
 import bisq.wallet.protobuf.Transaction;
 import bisq.wallet.protobuf.Utxo;
@@ -85,6 +86,12 @@ public class BmpWalletServiceIntegrationTest {
 
         channel = ManagedChannelBuilder.forAddress("127.0.0.1", MUSIGD_PORT).usePlaintext().build();
         stub = WalletGrpc.newBlockingStub(channel);
+
+        // musigd no longer creates the wallet at startup: the client opens (or creates) it over
+        // gRPC, supplying the wallet password — empty here, for a throwaway test wallet.
+        assertTrue(stub.openOrCreateWallet(OpenOrCreateWalletRequest.newBuilder().build())
+                        .getSuccess(),
+                "OpenOrCreateWallet must succeed against a fresh wallet directory");
     }
 
     @AfterAll

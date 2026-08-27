@@ -1,13 +1,11 @@
 use std::error::Error;
 use std::net::{AddrParseError, SocketAddr};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
-use anyhow::Context as _;
 use bdk_bitcoind_rpc::bitcoincore_rpc::{Auth, Client as BitcoinCoreClient};
 use bdk_wallet::bitcoin::Network;
-use bdk_wallet::rusqlite::Connection;
 use bmp_tracing::tracing::{info, warn};
 use chain::CBFScanner;
 use clap::Parser;
@@ -15,9 +13,8 @@ use rpc::bmp_wallet_service::{
     BMPWalletServiceImpl, BitcoinCoreChainApi, BmpWalletImpl, BmpWalletServer,
 };
 use rpc::server::{MusigImpl, MusigServer, WalletImpl, WalletServer};
-use rpc::wallet::{WalletService as _, WalletServiceImpl};
+use rpc::wallet::WalletServiceImpl;
 use tonic::transport::Server;
-use wallet::bmp_wallet::{BMPWallet, WalletApi as _};
 
 #[derive(Debug, Parser)]
 #[command(version, about, long_about = None)]
@@ -43,13 +40,11 @@ struct Cli {
     bitcoin_rpc_pass: Option<String>,
 
     /// Directory holding the BMP wallet database. When set, the bisq2-facing wallet.Wallet
-    /// service is served from a BMPWallet in this directory, creating it if absent.
+    /// service is served from a BMPWallet in this directory. The wallet itself is opened (or
+    /// created) by the client through the OpenOrCreateWallet RPC, which carries the wallet
+    /// password, so no password is taken on the command line.
     #[arg(long)]
     wallet_dir: Option<PathBuf>,
-
-    /// Password protecting the BMP wallet database. Empty means unencrypted.
-    #[arg(long, default_value = "")]
-    wallet_password: String,
 
     /// Bitcoin network the BMP wallet operates on.
     #[arg(long, default_value = "regtest")]
@@ -66,35 +61,6 @@ struct Cli {
     wallet_poll_secs: Option<u64>,
 }
 
-/// Opens the BMP wallet at `dir`, creating a fresh one only if none exists there yet.
-///
-/// Creating is chosen on the *absence* of the database file, never on a failed load. A load
-/// failure most likely means the wrong `--wallet-password` was given, and creating a wallet
-/// rewrites the Argon2 salt the existing database's key was derived from — which would render
-/// that wallet, and any funds in it, permanently unrecoverable.
-fn open_or_create_wallet(
-    dir: &Path,
-    password: &str,
-    network: Network,
-) -> anyhow::Result<BMPWallet<Connection>> {
-    std::fs::create_dir_all(dir)?;
-    let db_path = dir.join(BMPWallet::<Connection>::DB_NAME);
-
-    if db_path.exists() {
-        let wallet = BMPWallet::load_wallet(dir, network, password).with_context(|| {
-            format!(
-                "failed to open the existing wallet at {} (wrong --wallet-password?)",
-                db_path.display()
-            )
-        })?;
-        info!(dir = %dir.display(), "Loaded existing BMP wallet.");
-        Ok(wallet)
-    } else {
-        info!(dir = %dir.display(), "No BMP wallet found; creating a new one.");
-        BMPWallet::new(dir, password, network)
-    }
-}
-
 fn parse_peers(peers: &[String]) -> Result<Vec<SocketAddr>, AddrParseError> {
     peers.iter().map(|peer| peer.parse()).collect()
 }
@@ -105,7 +71,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
     bmp_tracing::init("info");
     // Create RPC client. (No connection is made at this point.)
     let rpc_client = {
-        let auth = if let (Some(user), Some(pass)) = (&cli.bitcoin_rpc_user, &cli.bitcoin_rpc_pass) {
+        let auth = if let (Some(user), Some(pass)) = (&cli.bitcoin_rpc_user, &cli.bitcoin_rpc_pass)
+        {
             Auth::UserPass(user.clone(), pass.clone())
         } else {
             Auth::None
@@ -130,9 +97,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     // The bisq2-facing wallet service is optional: without --wallet-dir there is no BMPWallet to
     // serve, and musigd behaves exactly as before.
     let bmp_wallet = if let Some(dir) = &cli.wallet_dir {
-        let wallet = open_or_create_wallet(dir, &cli.wallet_password, cli.wallet_network)?;
-
-        let mut service = BMPWalletServiceImpl::new(wallet)
+        let mut service = BMPWalletServiceImpl::new(dir.clone(), cli.wallet_network)
             .with_broadcaster(Arc::new(BitcoinCoreChainApi::new(Arc::clone(&rpc_client))));
 
         if let Some(secs) = cli.wallet_poll_secs {
@@ -145,7 +110,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         } else {
             info!(
                 peer_count = peers.len(),
-                "Syncing the BMP wallet over compact block filters."
+                "Syncing the BMP wallet over compact block filters once it has been opened."
             );
             service = service.with_chain_data_source(CBFScanner::from_socket_addrs(peers));
         }

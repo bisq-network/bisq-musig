@@ -1,3 +1,4 @@
+use std::io::Write as _;
 use std::ops::{Deref, DerefMut};
 use std::path::{Path, PathBuf};
 use std::{fs, vec};
@@ -31,7 +32,7 @@ use crate::protocol_wallet_api::{
     ProtocolWalletApi, WalletErrorKind, WalletExt, finish_standard_psbt, internal_key_at_index,
     sign_selected_inputs_with,
 };
-use crate::utils::{derive_key_from_password, get_salt};
+use crate::utils::{derive_key_from_password, get_salt, key_verifier};
 use crate::wallet_info::{TxInfo, TxInputInfo, TxOutputInfo, UtxoInfo};
 
 /// An external (non-HD) private key imported into the wallet, together with the Taproot output
@@ -264,13 +265,15 @@ pub struct BMPWallet<P: BMPWalletPersister> {
     db: P,
     last_unused_address: Option<String>,
     /// Path of the `SQLCipher` database file, kept so that the encryption key can be rotated
-    /// in place (see [`BMPWallet::encrypt_wallet`]) without re-deriving it from `db`.
+    /// in place (see [`BMPWallet::change_password`]) without re-deriving it from `db`.
     db_path: PathBuf,
-    /// Argon2 salt backing `enc_key`, mirrored on disk as `<db_path>.salt`.
+    /// Argon2 salt backing the current database key, mirrored on disk as `<db_path>.salt`.
     salt: Vec<u8>,
-    /// Hex-encoded `SQLCipher` key currently in force. Retained so a caller-supplied password can
-    /// be *verified* (re-derive and compare) without keeping the plaintext password in memory.
-    enc_key: String,
+    /// SHA-256 fingerprint of the `SQLCipher` key currently in force. Retained so a caller-
+    /// supplied password can be *verified* (re-derive, fingerprint, compare) without keeping the
+    /// plaintext password — or the key itself — in memory: the derived key only exists
+    /// transiently, for `PRAGMA key`/`rekey`, and is zeroized right after use.
+    key_verifier: [u8; 32],
     /// Whether the user actually set a password. The database is always encrypted — an empty
     /// password still yields a valid Argon2 key — so this records intent, not mechanism.
     encrypted: bool,
@@ -525,64 +528,83 @@ impl BMPWallet<Connection> {
     }
 
     /// Checks `password` against the key currently protecting the database, without needing the
-    /// plaintext password to have been retained.
+    /// plaintext password (or the key itself) to have been retained: the freshly derived key is
+    /// compared by its one-way fingerprint and dropped again.
     pub fn check_password(&self, password: &str) -> anyhow::Result<bool> {
-        Ok(derive_key_from_password(password, &self.salt)? == self.enc_key)
+        let key = derive_key_from_password(password, &self.salt)?;
+        Ok(key_verifier(&key) == self.key_verifier)
     }
 
-    /// Re-keys the database to `password`, rotating the Argon2 salt at the same time.
+    /// Re-keys the database to `new_password`, rotating the Argon2 salt at the same time.
     ///
-    /// Passing an empty password leaves the file encrypted with a well-known key, which is how
-    /// [`Self::decrypt_wallet`] removes protection.
+    /// Passing an empty `new_password` leaves the file encrypted with a well-known key, which is
+    /// how [`Self::change_password`] removes protection.
     ///
-    /// This is the raw primitive and authenticates nobody: it re-keys whatever the current state
-    /// is. Every caller must establish its own precondition first — see [`Self::encrypt_wallet`],
-    /// which requires that no password is set yet, and [`Self::decrypt_wallet`], which requires
-    /// proof of the current one.
-    fn rekey(&mut self, password: &str) -> anyhow::Result<()> {
+    /// The rotation is staged so that the database is at no point keyed by a salt that exists
+    /// nowhere on disk (a crash then would make the wallet permanently unopenable): the new salt
+    /// is written to `<db_path>.salt.new` *before* the re-key, and renamed over `<db_path>.salt`
+    /// after it. A crash in between is healed on the next [`WalletApi::load_wallet`], which
+    /// falls back to the staged salt and completes the rename.
+    ///
+    /// This is the raw primitive and authenticates nobody: `old_password` is only used to undo
+    /// the re-key when committing the new salt fails. Every caller must verify it first — see
+    /// [`Self::change_password`].
+    fn rekey(&mut self, old_password: &str, new_password: &str) -> anyhow::Result<()> {
         let mut salt = [0u8; 16];
         rand::rng().fill_bytes(&mut salt);
-        let new_key = derive_key_from_password(password, &salt)?;
+        let new_key = derive_key_from_password(new_password, &salt)?;
 
-        self.db.pragma_update(None, "rekey", &new_key)?;
-
-        // The salt must survive alongside the DB or the new key can never be re-derived, so if
-        // we fail to persist it we must undo the re-key rather than leave an unopenable wallet.
         let salt_path = format!(
             "{}.salt",
             self.db_path.to_str().expect("Path must not be empty")
         );
-        if let Err(e) = fs::write(&salt_path, general_purpose::STANDARD.encode(salt)) {
-            self.db.pragma_update(None, "rekey", &self.enc_key)?;
+        let staged_salt_path = format!("{salt_path}.new");
+
+        // Stage the new salt on disk (durably) before re-keying; if this fails, nothing has
+        // changed. A stale staged file left by an early return here is ignored — and cleaned
+        // up — by `load_wallet`.
+        let mut staged_salt_file = fs::File::create(&staged_salt_path)?;
+        staged_salt_file.write_all(general_purpose::STANDARD.encode(salt).as_bytes())?;
+        staged_salt_file.sync_all()?;
+        drop(staged_salt_file);
+
+        if let Err(e) = self.db.pragma_update(None, "rekey", new_key.as_str()) {
+            let _ = fs::remove_file(&staged_salt_path);
+            return Err(e.into());
+        }
+
+        // Commit the rotated salt. If that fails, undo the re-key with a key re-derived from
+        // the (just verified) old password, rather than leave database and salt out of step.
+        if let Err(e) = fs::rename(&staged_salt_path, &salt_path) {
+            let old_key = derive_key_from_password(old_password, &self.salt)?;
+            self.db.pragma_update(None, "rekey", old_key.as_str())?;
+            let _ = fs::remove_file(&staged_salt_path);
             return Err(e.into());
         }
 
         self.salt = salt.to_vec();
-        self.enc_key = new_key;
-        self.encrypted = !password.is_empty();
+        self.key_verifier = key_verifier(&new_key);
+        self.encrypted = !new_password.is_empty();
         Ok(())
     }
 
-    /// Puts the wallet under password protection.
+    /// Changes the wallet password from `old_password` to `new_password`, re-keying the
+    /// database and rotating the Argon2 salt.
     ///
-    /// Refuses when a password is already set. `EncryptWalletRequest` carries a single field, so
-    /// there is no *old* password to authenticate the caller with; re-keying regardless would let
-    /// anyone able to reach the RPC port rotate the key and lock the owner out. Changing a
-    /// password is therefore decrypt-then-encrypt, which does prove knowledge of the current one.
-    /// This mirrors Bitcoin Core's `encryptwallet`, which likewise fails on an encrypted wallet.
-    pub fn encrypt_wallet(&mut self, password: &str) -> anyhow::Result<()> {
-        if self.encrypted {
-            anyhow::bail!("wallet is already encrypted; decrypt it first to change the password");
-        }
-        self.rekey(password)
-    }
-
-    /// Removes password protection, after verifying `password` is the one currently in force.
-    pub fn decrypt_wallet(&mut self, password: &str) -> anyhow::Result<()> {
-        if !self.check_password(password)? {
+    /// `old_password` must be the password currently in force — the empty string for a wallet
+    /// that has no password yet — so nobody who cannot present the current password can rotate
+    /// the key and lock the owner out. An empty `new_password` removes password protection.
+    /// This single method subsumes the former encrypt/decrypt operations: encrypting is
+    /// `change_password("", password)` and decrypting is `change_password(password, "")`.
+    pub fn change_password(
+        &mut self,
+        old_password: &str,
+        new_password: &str,
+    ) -> anyhow::Result<()> {
+        if !self.check_password(old_password)? {
             anyhow::bail!("invalid wallet password");
         }
-        self.rekey("")
+        self.rekey(old_password, new_password)
     }
 
     /// Builds, signs and persists a payment to `address`. The caller is responsible for
@@ -734,6 +756,45 @@ pub fn get_imported_wallets(
     Ok(res)
 }
 
+/// Opens the wallet database at `db_path` with the key derived from `password` and `salt`.
+///
+/// Factored out of [`WalletApi::load_wallet`] so that it can be retried with the *staged* salt
+/// when recovering from an interrupted password change (see [`BMPWallet::rekey`]).
+fn load_with_salt(
+    db_path: &Path,
+    salt: Vec<u8>,
+    network: Network,
+    password: &str,
+) -> anyhow::Result<BMPWallet<Connection>> {
+    let mut db = Connection::open(db_path)?;
+    let key = derive_key_from_password(password, &salt)?;
+    db.pragma_update(None, "key", key.as_str())?;
+
+    let wallet_opt = Wallet::load().check_network(network).load_wallet(&mut db)?;
+
+    if let Some(wallet) = wallet_opt {
+        let imported_keys = Connection::load_imported_keys(
+            &mut db,
+            BMPWallet::<Connection>::IMPORTED_KEYS_TABLE_NAME,
+        )?;
+
+        return Ok(BMPWallet {
+            wallet,
+            imported_keys,
+            imported_balance: Balance::default(),
+            signers_loaded: false,
+            db,
+            last_unused_address: None,
+            db_path: db_path.to_path_buf(),
+            salt,
+            key_verifier: key_verifier(&key),
+            encrypted: !password.is_empty(),
+        });
+    }
+
+    Err(anyhow::anyhow!("Unable to load wallet"))
+}
+
 impl WalletApi for BMPWallet<Connection> {
     const SEEDS_TABLE_NAME: &'static str = "bmp_seeds";
     const IMPORTED_KEYS_TABLE_NAME: &'static str = "bmp_imported_keys";
@@ -812,8 +873,8 @@ impl WalletApi for BMPWallet<Connection> {
         let mut salt = [0u8; 16];
         rand::rng().fill_bytes(&mut salt);
         fs::write(&salt_path, general_purpose::STANDARD.encode(salt))?;
-        let enc_key = derive_key_from_password(password, &salt)?;
-        db.pragma_update(None, "key", &enc_key)?;
+        let key = derive_key_from_password(password, &salt)?;
+        db.pragma_update(None, "key", key.as_str())?;
 
         let wallet = Wallet::create(descriptor, change_descriptor)
             .network(network)
@@ -840,7 +901,7 @@ impl WalletApi for BMPWallet<Connection> {
             last_unused_address: None,
             db_path,
             salt: salt.to_vec(),
-            enc_key,
+            key_verifier: key_verifier(&key),
             encrypted: !password.is_empty(),
         })
     }
@@ -934,38 +995,39 @@ impl WalletApi for BMPWallet<Connection> {
     // This will also load the imported keys
     fn load_wallet(path: &Path, network: Network, password: &str) -> anyhow::Result<Self> {
         let db_path = path.join(Self::DB_NAME);
-        let (salt, mut db) = {
-            tracing::debug!(path = %db_path.display(), "Loading wallet database.");
-            (
-                get_salt(db_path.to_str().expect("Path must not be empty"))?,
-                Connection::open(&db_path)?,
-            )
-        };
+        let db_path_str = db_path.to_str().expect("Path must not be empty");
+        tracing::debug!(path = %db_path.display(), "Loading wallet database.");
 
-        let decrypt_key = derive_key_from_password(password, &salt)?;
-        db.pragma_update(None, "key", &decrypt_key)?;
-
-        let wallet_opt = Wallet::load().check_network(network).load_wallet(&mut db)?;
-
-        if let Some(wallet) = wallet_opt {
-            let imported_keys =
-                Connection::load_imported_keys(&mut db, Self::IMPORTED_KEYS_TABLE_NAME)?;
-
-            return Ok(Self {
-                wallet,
-                imported_keys,
-                imported_balance: Balance::default(),
-                signers_loaded: false,
-                db,
-                last_unused_address: None,
-                db_path,
-                salt,
-                enc_key: decrypt_key,
-                encrypted: !password.is_empty(),
-            });
+        let staged_salt_path = format!("{db_path_str}.salt.new");
+        match load_with_salt(&db_path, get_salt(db_path_str)?, network, password) {
+            Ok(wallet) => {
+                // A leftover staged salt (from a password change that failed before re-keying,
+                // see `BMPWallet::rekey`) is dead weight once the primary salt has opened the
+                // database.
+                let _ = fs::remove_file(&staged_salt_path);
+                Ok(wallet)
+            }
+            Err(primary_error) => {
+                // A crash between the re-key and committing the rotated salt (see
+                // `BMPWallet::rekey`) leaves the database keyed by the *staged* salt at
+                // `<db_path>.salt.new`. If that salt opens the database, finish the interrupted
+                // rotation; otherwise report the original failure.
+                let Some(staged_salt) = fs::read_to_string(&staged_salt_path)
+                    .ok()
+                    .and_then(|salt| general_purpose::STANDARD.decode(salt.as_bytes()).ok())
+                else {
+                    return Err(primary_error);
+                };
+                let wallet = load_with_salt(&db_path, staged_salt, network, password)
+                    .map_err(|_| primary_error)?;
+                fs::rename(&staged_salt_path, format!("{db_path_str}.salt"))?;
+                tracing::warn!(
+                    "Completed a password change that was interrupted before its rotated salt \
+                     was committed."
+                );
+                Ok(wallet)
+            }
         }
-
-        Err(anyhow::anyhow!("Unable to load wallet"))
     }
 
     fn build_tx(&mut self) -> TxBuilder<'_, AlwaysSpendImportedFirst> {
@@ -2022,7 +2084,7 @@ mod tests {
     }
 
     #[test]
-    fn encrypt_wallet_rotates_the_key_and_survives_a_reload() -> anyhow::Result<()> {
+    fn change_password_rotates_the_key_and_survives_a_reload() -> anyhow::Result<()> {
         let dir = get_dir();
         let seed = {
             let mut wallet = BMPWallet::new(dir.path(), "", Network::Regtest)?;
@@ -2033,7 +2095,7 @@ mod tests {
             );
 
             let seed = wallet.get_seed_phrase()?;
-            wallet.encrypt_wallet("s3cret")?;
+            wallet.change_password("", "s3cret")?;
 
             assert!(wallet.is_encrypted());
             assert!(wallet.check_password("s3cret")?, "new password must verify");
@@ -2064,19 +2126,19 @@ mod tests {
         Ok(())
     }
 
-    /// Encrypting carries no old password, so it must not be usable to re-key a wallet that is
-    /// already protected — that would let anyone reaching the RPC port lock the owner out.
+    /// Re-keying requires proof of the current password, so a caller who cannot present it must
+    /// not be able to rotate the key and lock the owner out.
     #[test]
-    fn encrypt_wallet_refuses_when_already_encrypted() -> anyhow::Result<()> {
+    fn change_password_refuses_a_wrong_old_password() -> anyhow::Result<()> {
         let dir = get_dir();
         let mut wallet = BMPWallet::new(dir.path(), "orig", Network::Regtest)?;
         let seed = wallet.get_seed_phrase()?;
 
-        let Err(err) = wallet.encrypt_wallet("attacker") else {
-            panic!("re-keying an encrypted wallet must fail");
+        let Err(err) = wallet.change_password("attacker", "attacker") else {
+            panic!("re-keying without the current password must fail");
         };
         assert!(
-            err.to_string().contains("already encrypted"),
+            err.to_string().contains("invalid wallet password"),
             "unexpected error: {err}"
         );
 
@@ -2098,18 +2160,21 @@ mod tests {
         Ok(())
     }
 
-    /// Changing a password is decrypt-then-encrypt, which does prove knowledge of the old one.
+    /// Replacing one password with another happens in a single authenticated step.
     #[test]
-    fn password_change_goes_through_decrypt_then_encrypt() -> anyhow::Result<()> {
+    fn change_password_replaces_the_password_in_one_step() -> anyhow::Result<()> {
         let dir = get_dir();
         let mut wallet = BMPWallet::new(dir.path(), "orig", Network::Regtest)?;
         let seed = wallet.get_seed_phrase()?;
 
-        wallet.decrypt_wallet("orig")?;
-        wallet.encrypt_wallet("fresh")?;
+        wallet.change_password("orig", "fresh")?;
 
         assert!(wallet.is_encrypted());
         assert!(wallet.check_password("fresh")?);
+        assert!(
+            !wallet.check_password("orig")?,
+            "old password must stop verifying"
+        );
         drop(wallet);
 
         let reloaded = BMPWallet::load_wallet(dir.path(), Network::Regtest, "fresh")?;
@@ -2118,28 +2183,115 @@ mod tests {
         Ok(())
     }
 
+    /// An empty new password removes protection — but only for the holder of the current one.
     #[test]
-    fn decrypt_wallet_requires_the_current_password() -> anyhow::Result<()> {
+    fn removing_the_password_requires_the_current_one() -> anyhow::Result<()> {
         let dir = get_dir();
         let mut wallet = BMPWallet::new(dir.path(), "orig", Network::Regtest)?;
         let seed = wallet.get_seed_phrase()?;
         assert!(wallet.is_encrypted());
 
         assert!(
-            wallet.decrypt_wallet("wrong").is_err(),
+            wallet.change_password("wrong", "").is_err(),
             "wrong password must be rejected"
         );
         assert!(
             wallet.is_encrypted(),
-            "a rejected decrypt must not clear the flag"
+            "a rejected change must not clear the flag"
         );
         assert!(wallet.check_password("orig")?, "...nor rotate the key");
 
-        wallet.decrypt_wallet("orig")?;
+        wallet.change_password("orig", "")?;
         assert!(!wallet.is_encrypted());
         drop(wallet);
 
         let reloaded = BMPWallet::load_wallet(dir.path(), Network::Regtest, "")?;
+        assert_eq!(reloaded.get_seed_phrase()?, seed);
+
+        Ok(())
+    }
+
+    /// A leftover staged salt — from a password change that failed before the re-key — must
+    /// neither stop nor confuse a normal load, and must be cleaned up.
+    #[test]
+    fn load_ignores_and_cleans_a_stale_staged_salt() -> anyhow::Result<()> {
+        let dir = get_dir();
+        let seed = {
+            let wallet = BMPWallet::new(dir.path(), "pw", Network::Regtest)?;
+            wallet.get_seed_phrase()?
+        };
+
+        let staged_salt_path = dir
+            .path()
+            .join(format!("{}.salt.new", BMPWallet::<Connection>::DB_NAME));
+        fs::write(&staged_salt_path, "bm90LXRoZS1yZWFsLXNhbHQ=")?; // valid base64, wrong salt
+
+        let wallet = BMPWallet::load_wallet(dir.path(), Network::Regtest, "pw")?;
+        assert_eq!(wallet.get_seed_phrase()?, seed);
+        assert!(
+            !staged_salt_path.exists(),
+            "the stale staged salt must be cleaned up"
+        );
+
+        Ok(())
+    }
+
+    /// Simulates a crash *between* the `SQLCipher` re-key and the rename that commits the rotated
+    /// salt (see `BMPWallet::rekey`): the primary salt no longer matches the database key, only
+    /// the staged one does. `load_wallet` must complete the interrupted rotation.
+    #[test]
+    fn load_recovers_an_interrupted_salt_rotation() -> anyhow::Result<()> {
+        use base64::Engine as _;
+
+        use crate::utils::{derive_key_from_password, get_salt};
+
+        let dir = get_dir();
+        let seed = {
+            let wallet = BMPWallet::new(dir.path(), "pw", Network::Regtest)?;
+            wallet.get_seed_phrase()?
+        };
+
+        let db_path = dir.path().join(BMPWallet::<Connection>::DB_NAME);
+        let db_path_str = db_path.to_str().unwrap();
+        let staged_salt_path = format!("{db_path_str}.salt.new");
+
+        // Re-key the database to a fresh salt that is staged but not yet committed — exactly
+        // the state a crash at rekey's commit point leaves behind.
+        let old_salt = get_salt(db_path_str)?;
+        let mut new_salt = [0u8; 16];
+        rand::rng().fill_bytes(&mut new_salt);
+        fs::write(
+            &staged_salt_path,
+            base64::engine::general_purpose::STANDARD.encode(new_salt),
+        )?;
+        {
+            let db = Connection::open(&db_path)?;
+            let old_key = derive_key_from_password("pw", &old_salt)?;
+            db.pragma_update(None, "key", old_key.as_str())?;
+            let new_key = derive_key_from_password("pw", &new_salt)?;
+            db.pragma_update(None, "rekey", new_key.as_str())?;
+        }
+
+        let wallet = BMPWallet::load_wallet(dir.path(), Network::Regtest, "pw")?;
+        assert_eq!(
+            wallet.get_seed_phrase()?,
+            seed,
+            "recovery must yield the same wallet"
+        );
+        assert!(
+            !std::path::Path::new(&staged_salt_path).exists(),
+            "the staged salt must have been committed"
+        );
+        assert_eq!(
+            get_salt(db_path_str)?,
+            new_salt.to_vec(),
+            "the committed salt must be the rotated one"
+        );
+        assert!(wallet.check_password("pw")?, "password still verifies");
+        drop(wallet);
+
+        // And a subsequent plain load works off the committed salt.
+        let reloaded = BMPWallet::load_wallet(dir.path(), Network::Regtest, "pw")?;
         assert_eq!(reloaded.get_seed_phrase()?, seed);
 
         Ok(())

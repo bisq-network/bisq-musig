@@ -24,6 +24,11 @@ syntax = "proto3";
 // used for bisq2's client-side persistence (`ReceiveAddressEntry`, `ReceiveAddressStore` — local
 // address labels) are deliberately not mirrored, since they never cross the wire.
 //
+// Deliberate divergences from bisq2's copy (to be upstreamed): `EncryptWallet`/`DecryptWallet`
+// are replaced by the authenticated `ChangePassword`, and `OpenOrCreateWallet` opens (or
+// creates) the wallet database itself, so the daemon no longer needs the password on its
+// command line.
+//
 // NOTE: this is a *different* service from `walletrpc.Wallet` in `wallet.proto`. That one is the
 // low-level wallet the trade protocol drives; this one is the user-facing wallet backed by
 // `BMPWallet`. Both are served by musigd on the same port.
@@ -34,6 +39,9 @@ option java_package = "bisq.wallet.protobuf";
 
 // The WalletService definition.
 service Wallet {
+    // Opens the wallet database in the server's wallet directory, creating a fresh wallet if
+    // none exists there yet. Must be called before any other wallet operation.
+    rpc OpenOrCreateWallet (OpenOrCreateWalletRequest) returns (OpenOrCreateWalletResponse);
     rpc IsWalletReady (IsWalletReadyRequest) returns (IsWalletReadyResponse);
     rpc GetNewAddress (GetNewAddressRequest) returns (GetNewAddressResponse);
     rpc GetUnusedAddress (GetUnusedAddressRequest) returns (GetUnusedAddressResponse);
@@ -44,8 +52,10 @@ service Wallet {
     rpc IsWalletEncrypted (IsWalletEncryptedRequest) returns (IsWalletEncryptedResponse);
     rpc GetBalance (GetBalanceRequest) returns (GetBalanceResponse);
     rpc GetSeedWords (GetSeedWordsRequest) returns (GetSeedWordsResponse);
-    rpc EncryptWallet (EncryptWalletRequest) returns (EncryptWalletResponse);
-    rpc DecryptWallet (DecryptWalletRequest) returns (DecryptWalletResponse);
+    // Re-keys the wallet database from oldPassword to newPassword. Requires the password
+    // currently in force (empty for an unprotected wallet); an empty newPassword removes
+    // password protection.
+    rpc ChangePassword (ChangePasswordRequest) returns (ChangePasswordResponse);
 }
 
 
@@ -125,19 +135,23 @@ message GetSeedWordsResponse {
     repeated string seedWords = 1;
 }
 
-message EncryptWalletRequest {
+message OpenOrCreateWalletRequest {
+    // The password protecting the wallet database; empty for an unprotected wallet.
     string password = 1;
 }
 
-message EncryptWalletResponse {
+message OpenOrCreateWalletResponse {
     bool success = 1;
 }
 
-message DecryptWalletRequest {
-    string password = 1;
+message ChangePasswordRequest {
+    // The password currently in force; empty for a wallet without password protection.
+    string oldPassword = 1;
+    // The new password; empty removes password protection.
+    string newPassword = 2;
 }
 
-message DecryptWalletResponse {
+message ChangePasswordResponse {
     bool success = 1;
 }
 

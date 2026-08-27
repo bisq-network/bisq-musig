@@ -1,7 +1,6 @@
 package bisq;
 
-import bisq.wallet.protobuf.DecryptWalletRequest;
-import bisq.wallet.protobuf.EncryptWalletRequest;
+import bisq.wallet.protobuf.ChangePasswordRequest;
 import bisq.wallet.protobuf.GetBalanceRequest;
 import bisq.wallet.protobuf.GetSeedWordsRequest;
 import bisq.wallet.protobuf.GetNewAddressRequest;
@@ -11,6 +10,7 @@ import bisq.wallet.protobuf.IsWalletEncryptedRequest;
 import bisq.wallet.protobuf.IsWalletReadyRequest;
 import bisq.wallet.protobuf.ListTransactionsRequest;
 import bisq.wallet.protobuf.ListUtxosRequest;
+import bisq.wallet.protobuf.OpenOrCreateWalletRequest;
 import bisq.wallet.protobuf.SendToAddressRequest;
 import bisq.wallet.protobuf.Transaction;
 import bisq.wallet.protobuf.Utxo;
@@ -39,6 +39,10 @@ import java.util.concurrent.TimeUnit;
  *   mvn -f rpc/pom.xml -P bmp-wallet compile exec:java
  * </pre>
  * Host/port can be overridden with {@code -Dwallet.host=... -Dwallet.port=...}.
+ * <p>
+ * The wallet itself is opened (or created) through the {@code OpenOrCreateWallet} RPC as the
+ * first check — musigd takes no wallet password on its command line — and is expected to be
+ * password-free, as the password checks restore that state on the way out.
  */
 public class BmpWalletServiceTest {
     private static final String TEST_PASSWORD = "bmp-wallet-service-test";
@@ -75,6 +79,8 @@ public class BmpWalletServiceTest {
     }
 
     private void runAll() {
+        // The wallet must be opened before anything else works.
+        check("OpenOrCreateWallet", this::openOrCreateWallet);
         // Read-only probes first, so a failure here doesn't leave the wallet half-reconfigured.
         check("IsWalletReady", this::isWalletReady);
         check("GetBalance", this::getBalance);
@@ -84,10 +90,18 @@ public class BmpWalletServiceTest {
         check("ListUtxos", this::listUtxos);
         check("SendToAddress", this::sendToAddress);
         // Mutating, and restores the original state on the way out.
-        check("IsWalletEncrypted + EncryptWallet + DecryptWallet", this::encryptionRoundTrip);
+        check("IsWalletEncrypted + ChangePassword", this::changePasswordRoundTrip);
     }
 
     // --- individual checks -------------------------------------------------------------------
+
+    private void openOrCreateWallet() {
+        // An empty password: the smoke test expects (and leaves behind) an unprotected wallet.
+        boolean success = stub.openOrCreateWallet(
+                OpenOrCreateWalletRequest.newBuilder().build()).getSuccess();
+        assertTrue(success, "OpenOrCreateWallet must report success");
+        System.out.println("    wallet opened (or created)");
+    }
 
     private void isWalletReady() {
         // Either answer is legitimate — an unsynced wallet reports false — but the call itself
@@ -180,33 +194,41 @@ public class BmpWalletServiceTest {
         }
     }
 
-    private void encryptionRoundTrip() {
+    private void changePasswordRoundTrip() {
         boolean encryptedBefore = isEncrypted();
         assertTrue(!encryptedBefore,
                 "expected an unencrypted wallet to start from; refusing to re-key one that "
                         + "already has a password");
 
-        stub.encryptWallet(EncryptWalletRequest.newBuilder().setPassword(TEST_PASSWORD).build());
-        assertTrue(isEncrypted(), "wallet must report itself encrypted after EncryptWallet");
+        // Setting a password is a change from the empty password.
+        stub.changePassword(ChangePasswordRequest.newBuilder()
+                .setNewPassword(TEST_PASSWORD)
+                .build());
+        assertTrue(isEncrypted(), "wallet must report itself encrypted after ChangePassword");
 
         // The seed must still be readable through the rotated SQLCipher key.
         assertTrue(!stub.getSeedWords(GetSeedWordsRequest.newBuilder().build())
                 .getSeedWordsList().isEmpty(), "seed unreadable after re-keying");
 
         try {
-            stub.decryptWallet(
-                    DecryptWalletRequest.newBuilder().setPassword("definitely-wrong").build());
-            fail("DecryptWallet accepted a wrong password");
+            stub.changePassword(ChangePasswordRequest.newBuilder()
+                    .setOldPassword("definitely-wrong")
+                    .setNewPassword("irrelevant")
+                    .build());
+            fail("ChangePassword accepted a wrong old password");
         } catch (StatusRuntimeException e) {
             assertTrue(e.getStatus().getCode() == Status.Code.PERMISSION_DENIED,
                     "expected PERMISSION_DENIED for a wrong password, got " + e.getStatus().getCode());
         }
-        assertTrue(isEncrypted(), "a rejected DecryptWallet must leave the wallet encrypted");
+        assertTrue(isEncrypted(), "a rejected ChangePassword must leave the wallet encrypted");
 
-        stub.decryptWallet(
-                DecryptWalletRequest.newBuilder().setPassword(TEST_PASSWORD).build());
-        assertTrue(!isEncrypted(), "wallet must report itself unencrypted after DecryptWallet");
-        System.out.println("    encrypt -> reject wrong password -> decrypt round trip ok");
+        // An empty new password removes protection, restoring the original state.
+        stub.changePassword(ChangePasswordRequest.newBuilder()
+                .setOldPassword(TEST_PASSWORD)
+                .build());
+        assertTrue(!isEncrypted(), "wallet must report itself unencrypted after the password "
+                + "was removed");
+        System.out.println("    set password -> reject wrong password -> remove password ok");
     }
 
     private boolean isEncrypted() {

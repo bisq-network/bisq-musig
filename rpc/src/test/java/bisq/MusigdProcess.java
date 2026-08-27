@@ -22,18 +22,22 @@ public class MusigdProcess implements AutoCloseable {
 
     private final Process process;
     private final Path walletDir;
+    /** Whether we created {@code walletDir} ourselves and so should delete it on close. */
+    private final boolean ownsWalletDir;
     private final Path logFile;
     private final int port;
 
-    private MusigdProcess(Process process, Path walletDir, Path logFile, int port) {
+    private MusigdProcess(Process process, Path walletDir, boolean ownsWalletDir, Path logFile,
+                          int port) {
         this.process = process;
         this.walletDir = walletDir;
+        this.ownsWalletDir = ownsWalletDir;
         this.logFile = logFile;
         this.port = port;
     }
 
     /**
-     * Launches musigd on {@code port} with a fresh wallet directory.
+     * Launches musigd on {@code port} with a fresh, throwaway wallet directory.
      *
      * @param p2pAddr bitcoind's P2P address for compact-block-filter syncing, or {@code null} to
      *                run without chain syncing
@@ -45,8 +49,29 @@ public class MusigdProcess implements AutoCloseable {
                                       String rpcPass,
                                       String p2pAddr,
                                       int pollSeconds) throws IOException {
+        return start(port, rpcUrl, rpcUser, rpcPass, p2pAddr, pollSeconds, null);
+    }
+
+    /**
+     * As {@link #start(int, String, String, String, String, int)}, but on a caller-supplied
+     * wallet directory, so a test can stop and restart musigd against the same wallet. The
+     * caller keeps ownership of (and responsibility for deleting) that directory.
+     *
+     * @param walletDir the wallet directory to hand to musigd, or {@code null} for a fresh
+     *                  throwaway one
+     */
+    public static MusigdProcess start(int port,
+                                      String rpcUrl,
+                                      String rpcUser,
+                                      String rpcPass,
+                                      String p2pAddr,
+                                      int pollSeconds,
+                                      Path walletDir) throws IOException {
         Path binary = locateBinary();
-        Path walletDir = Files.createTempDirectory("bmp-wallet-it-");
+        boolean ownsWalletDir = walletDir == null;
+        if (ownsWalletDir) {
+            walletDir = Files.createTempDirectory("bmp-wallet-it-");
+        }
         Path logFile = Files.createTempFile("musigd-it-", ".log");
 
         List<String> command = new ArrayList<>(List.of(
@@ -70,7 +95,7 @@ public class MusigdProcess implements AutoCloseable {
         builder.environment().put("RUST_LOG", "info");
 
         MusigdProcess musigd =
-                new MusigdProcess(builder.start(), walletDir, logFile, port);
+                new MusigdProcess(builder.start(), walletDir, ownsWalletDir, logFile, port);
         try {
             musigd.awaitPort();
         } catch (RuntimeException e) {
@@ -147,7 +172,9 @@ public class MusigdProcess implements AutoCloseable {
                 process.destroyForcibly();
             }
         }
-        deleteRecursively(walletDir);
+        if (ownsWalletDir) {
+            deleteRecursively(walletDir);
+        }
         // The log's usefulness is in `tailLog()`, which failures already embed in their message,
         // so there's nothing left to keep the file around for.
         try {
@@ -157,7 +184,8 @@ public class MusigdProcess implements AutoCloseable {
         }
     }
 
-    private static void deleteRecursively(Path path) {
+    /** Best-effort recursive delete, shared with tests that own their wallet directory. */
+    public static void deleteRecursively(Path path) {
         try (var paths = Files.walk(path)) {
             paths.sorted((a, b) -> b.getNameCount() - a.getNameCount()).forEach(p -> {
                 try {

@@ -130,8 +130,8 @@ fn configure_bmp_wallet_serde(builder: tonic_prost_build::Builder) -> tonic_pros
             ".wallet.GetBalanceRequest",
             ".wallet.GetBalanceResponse",
             ".wallet.GetSeedWordsRequest",
-            ".wallet.EncryptWalletResponse",
-            ".wallet.DecryptWalletResponse",
+            ".wallet.OpenOrCreateWalletResponse",
+            ".wallet.ChangePasswordResponse",
             ".wallet.TransactionInput",
             ".wallet.TransactionOutput",
             ".wallet.Transaction",
@@ -146,12 +146,12 @@ fn configure_bmp_wallet_serde(builder: tonic_prost_build::Builder) -> tonic_pros
             &[redacted_string_vec("seedWords")],
         )
         .serde_serialized_type(
-            ".wallet.EncryptWalletRequest",
+            ".wallet.OpenOrCreateWalletRequest",
             &[redacted_string("password")],
         )
         .serde_serialized_type(
-            ".wallet.DecryptWalletRequest",
-            &[redacted_string("password")],
+            ".wallet.ChangePasswordRequest",
+            &[redacted_string("oldPassword"), redacted_string("newPassword")],
         )
 }
 
