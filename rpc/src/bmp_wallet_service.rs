@@ -335,7 +335,7 @@ impl<S: ChainDataSource + Send + Sync + 'static> BmpWalletService for BMPWalletS
         let db_path = self.wallet_dir.join(BMPWallet::<Connection>::DB_NAME);
         let wallet = if db_path.exists() {
             let wallet =
-                BMPWallet::load_wallet(&self.wallet_dir, self.network, password).map_err(|e| {
+                BMPWallet::load_wallet(self.wallet_dir.as_path().into(), self.network, password).map_err(|e| {
                     e.context(InvalidPassword).context(format!(
                         "failed to open the existing wallet at {} (wrong password?)",
                         db_path.display()
@@ -345,7 +345,7 @@ impl<S: ChainDataSource + Send + Sync + 'static> BmpWalletService for BMPWalletS
             wallet
         } else {
             info!(dir = %self.wallet_dir.display(), "No BMP wallet found; creating a new one.");
-            BMPWallet::new(&self.wallet_dir, password, self.network)?
+            BMPWallet::new(self.wallet_dir.as_path().into(), password, self.network)?
         };
 
         self.tx_confidence_map
@@ -783,7 +783,7 @@ mod tests {
 
         async fn sync(
             &self,
-            _persister: Vec<&mut PersistedWallet<impl ::wallet::bmp_wallet::BMPWalletPersister>>,
+            _persister: Vec<&mut PersistedWallet<impl wallet::persisted::BMPWalletPersister>>,
         ) -> anyhow::Result<()> {
             Ok(())
         }
