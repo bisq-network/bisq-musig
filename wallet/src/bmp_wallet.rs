@@ -398,7 +398,7 @@ impl BMPWallet<Connection> {
 
         let salt_path = format!(
             "{}.salt",
-            self.db.location().path().display()
+            self.db.storage().path().display()
         );
         let staged_salt_path = format!("{salt_path}.new");
 
@@ -482,7 +482,7 @@ impl BMPWallet<Connection> {
         Ok(tx)
     }
 
-    fn load_imported_wallets(
+    pub(crate) fn load_imported_wallets(
         imported_keys: &[ImportedKey],
         storage: &DBStorage,
         network: Network,
@@ -651,7 +651,7 @@ impl WalletApi for BMPWallet<Connection> {
         let network = self.network();
         let mut vec = vec![&mut self.wallet];
         let mut imported =
-            Self::load_imported_wallets(&self.imported_keys, self.db.location(), network)?;
+            Self::load_imported_wallets(&self.imported_keys, self.db.storage(), network)?;
 
         vec.extend(
             imported
@@ -701,7 +701,7 @@ impl WalletApi for BMPWallet<Connection> {
 
         // Never create over an existing wallet.
         if storage.db_exists(Self::DB_NAME) {
-            anyhow::bail!("a wallet database already exists refusing to overwrite it",);
+            anyhow::bail!("a wallet database already exists refusing to overwrite it");
         }
 
         let mut db = storage.open(Self::DB_NAME)?;

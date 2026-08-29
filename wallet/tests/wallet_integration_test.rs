@@ -559,3 +559,61 @@ fn change_password_rotates_the_key_and_survives_a_reload() -> anyhow::Result<()>
 
     Ok(())
 }
+
+/// Creating over an existing wallet must fail *before* the salt is touched. A caller that
+/// treats a failed `load_wallet` (e.g. a wrong password) as "no wallet here" would otherwise
+/// rewrite the salt and leave the existing database impossible to decrypt.
+#[test]
+fn new_refuses_to_overwrite_an_existing_wallet() -> anyhow::Result<()> {
+    let dir = get_dir();
+    let salt_path = dir
+        .path()
+        .join(format!("{}.salt", BMPWallet::<Connection>::DB_NAME));
+
+    let seed = {
+        let wallet = BMPWallet::new(dir.path().into(), "secret123", Network::Regtest)?;
+        wallet.get_seed_phrase()?
+    };
+    let salt_before = fs::read(&salt_path)?;
+
+    let Err(err) = BMPWallet::new(dir.path().into(), "a different password", Network::Regtest)
+    else {
+        panic!("creating over an existing wallet must fail");
+    };
+    assert!(
+        err.to_string().contains("refusing to overwrite"),
+        "unexpected error: {err}"
+    );
+
+    assert_eq!(
+        fs::read(&salt_path)?,
+        salt_before,
+        "the salt must survive a refused creation, or the wallet becomes unopenable"
+    );
+
+    // The original password still opens the original wallet.
+    let reloaded = BMPWallet::load_wallet(dir.path().into(), Network::Regtest, "secret123")?;
+    assert_eq!(reloaded.get_seed_phrase()?, seed);
+
+    Ok(())
+}
+
+#[test]
+#[should_panic = "file is not a database"]
+fn encrypted_wallet() {
+    let dir = get_dir();
+    let dir = dir.path();
+
+    let bmp_wallet = BMPWallet::new(dir.into(), "", Network::Regtest).unwrap();
+    let seed = bmp_wallet.get_seed_phrase().unwrap();
+
+    assert!(!seed.is_empty());
+    assert_eq!(seed.split_whitespace().count(), 24);
+
+    assert!(!seed.is_empty());
+    assert_eq!(seed.split_whitespace().count(), 24);
+
+    // Try loading the wallet with wrong decryption key should panic
+    let lw = BMPWallet::load_wallet(dir.into(), Network::Regtest, "secret123").unwrap();
+    lw.get_seed_phrase().unwrap();
+}
