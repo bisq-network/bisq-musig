@@ -1,6 +1,7 @@
 use std::io::Write as _;
 use std::ops::{Deref, DerefMut};
 use std::path::{Path, PathBuf};
+use std::time::UNIX_EPOCH;
 use std::{fs, vec};
 
 use base64::Engine as _;
@@ -609,6 +610,15 @@ impl BMPWallet<Connection> {
 
     /// Builds, signs and persists a payment to `address`. The caller is responsible for
     /// broadcasting the returned transaction.
+    ///
+    /// The signed transaction is recorded in the wallet as unconfirmed before it is returned,
+    /// so its inputs count as spent from here on. The wallet cannot rely on the chain to tell
+    /// it: compact block filter sync only ever reports confirmed transactions, so until the
+    /// payment was mined the spent coins would still look unspent, and a second payment would
+    /// happily pick the same inputs — and, since BDK opts into RBF, could replace the first one
+    /// in the mempool. Treating a signed-and-handed-out transaction as spent is the safe
+    /// direction: a payment that never made it to the network leaves coins looking locked
+    /// (recoverable) rather than double-spent (not).
     pub fn send_to_address(
         &mut self,
         address: &Address,
@@ -623,6 +633,9 @@ impl BMPWallet<Connection> {
 
         <Self as WalletApi>::sign(self, &mut psbt, SignOptions::default())?;
         let tx = psbt.extract_tx()?;
+
+        let last_seen = UNIX_EPOCH.elapsed()?.as_secs();
+        self.wallet.apply_unconfirmed_txs([(tx.clone(), last_seen)]);
         <Self as WalletApi>::persist(self)?;
 
         Ok(tx)
@@ -1883,8 +1896,6 @@ mod tests {
             Amount::from_sat(100_000),
             FeeRate::from_sat_per_kwu(250),
         )?;
-        // The wallet only learns about its own spend once the tx is in its graph.
-        bdk_wallet::test_utils::insert_tx(&mut wallet.wallet, tx.clone());
 
         let spend = wallet
             .list_transactions()
@@ -1914,6 +1925,58 @@ mod tests {
             spend.inputs.iter().all(|input| !input.witness.is_empty()),
             "signed inputs must carry a witness"
         );
+
+        Ok(())
+    }
+
+    /// A payment must count as spent the moment it is handed out, not once it confirms —
+    /// otherwise the next payment re-selects the same coin and (RBF) replaces the first one.
+    #[tokio::test]
+    async fn send_to_address_marks_its_inputs_spent() -> anyhow::Result<()> {
+        let dir = get_dir();
+        let mut wallet = BMPWallet::new(dir.path(), "", Network::Regtest)?;
+        wallet.sync_all(&MockedBDKElectrum {}).await?;
+        assert_eq!(wallet.balance(), Amount::ONE_BTC, "one coin to spend from");
+
+        let to_address = "tb1pyfv094rr0vk28lf8v9yx3veaacdzg26ztqk4ga84zucqqhafnn5q9my9rz"
+            .parse::<Address<_>>()?
+            .assume_checked();
+        let amount = Amount::from_sat(60_000_000);
+        let fee_rate = FeeRate::from_sat_per_kwu(250);
+
+        let first = wallet.send_to_address(&to_address, amount, fee_rate)?;
+        let spent: Vec<OutPoint> = first.input.iter().map(|i| i.previous_output).collect();
+
+        // The coin just spent is gone from the unspent set right away, and the balance drops
+        // to the (unconfirmed) change.
+        assert!(
+            wallet.list_unspent().all(|u| !spent.contains(&u.outpoint)),
+            "inputs of an unconfirmed payment must not be listed as unspent"
+        );
+        assert!(
+            wallet.balance() < Amount::ONE_BTC - amount,
+            "balance {} must exclude the payment",
+            wallet.balance()
+        );
+
+        // Only ~0.4 BTC of change is left, so a second 0.6 BTC payment has to fail. Before the
+        // spend was recorded it would instead "succeed" by re-selecting the 1 BTC input — a
+        // replacement of the first payment.
+        let err = wallet
+            .send_to_address(&to_address, amount, fee_rate)
+            .expect_err("must not re-spend the inputs of an unconfirmed payment");
+        assert!(err.to_string().contains("Insufficient funds"), "got: {err}");
+
+        // The spend is persisted, not merely staged: it survives a reload.
+        drop(wallet);
+        let reloaded = BMPWallet::load_wallet(dir.path(), Network::Regtest, "")?;
+        assert!(
+            reloaded
+                .list_unspent()
+                .all(|u| !spent.contains(&u.outpoint)),
+            "a reloaded wallet must still know about the spend"
+        );
+        assert!(reloaded.balance() < Amount::ONE_BTC - amount);
 
         Ok(())
     }
