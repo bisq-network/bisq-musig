@@ -40,6 +40,11 @@ fn main() -> Result<()> {
     println!("TESTENV_RPC_USER=bitcoin");
     println!("TESTENV_RPC_PASS={}", env.bitcoin_rpc_password());
     println!("TESTENV_ELECTRUM_URL={electrum_url}");
+    // bitcoind's P2P address. Needed by clients that sync over compact block filters (BIP157/158)
+    // rather than RPC — testenv already starts bitcoind with -blockfilterindex/-peerblockfilters.
+    if let Some(p2p) = env.p2p_socket_addr() {
+        println!("TESTENV_P2P_ADDR={p2p}");
+    }
     println!("TESTENV_WORKDIR={}", workdir.display());
     if let Some(data_dir) = &args.data_dir {
         println!("TESTENV_PERSISTENT=true");

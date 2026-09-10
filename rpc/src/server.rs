@@ -1,4 +1,5 @@
 use std::fmt::{Display, Formatter};
+use std::future::Future;
 use std::marker::{Send, Sync};
 use std::pin::Pin;
 use std::sync::Arc;
@@ -419,6 +420,30 @@ fn handle_request<Req, Res, F>(request: Request<Req>, handler: F) -> Result<Resp
     debug!(%message, "Got a request.");
 
     let response = handler(request.into_inner())
+        .inspect_err(|e| error!("Error response: {e}"))?;
+
+    let message = LazyJson(&response);
+    trace!(%message, "Sending response.");
+    Ok(Response::new(response))
+}
+
+/// As [`handle_request`], but for handlers that need to await — e.g. anything taking an async
+/// lock on the wallet.
+pub(crate) async fn handle_request_async<Req, Res, F, Fut>(
+    request: Request<Req>,
+    handler: F,
+) -> Result<Response<Res>>
+where
+    Req: Serialize,
+    Res: Serialize,
+    F: FnOnce(Req) -> Fut,
+    Fut: Future<Output = Result<Res>>,
+{
+    let message = LazyJson(request.get_ref());
+    debug!(%message, "Got a request.");
+
+    let response = handler(request.into_inner())
+        .await
         .inspect_err(|e| error!("Error response: {e}"))?;
 
     let message = LazyJson(&response);

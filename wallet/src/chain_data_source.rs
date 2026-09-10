@@ -46,9 +46,7 @@ impl ChainDataSource for CBFScanner {
             })
             .collect::<BTreeMap<_, _>>();
 
-        let updates = self
-            .sync_cbf(network, self.peers.clone(), wallet_iter)
-            .await?;
+        let updates = self.sync_cbf(network, wallet_iter).await?;
 
         for (descriptor, update) in updates {
             let idx = descriptors_map

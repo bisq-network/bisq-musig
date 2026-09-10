@@ -10,6 +10,9 @@
 
     <properties>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+        <!-- Overridable with -Dmusigd.bin=/path/to/musigd. The default is where a debug
+             cargo build of the musigd binary lands, relative to the workspace root. -->
+        <musigd.bin>${project.basedir}/../target/debug/musigd</musigd.bin>
     </properties>
 
     <dependencies>
@@ -132,6 +135,11 @@
                         <bitcoinRpcUrl>${env.TESTENV_RPC_URL}</bitcoinRpcUrl>
                         <bitcoinRpcUser>${env.TESTENV_RPC_USER}</bitcoinRpcUser>
                         <bitcoinRpcPass>${env.TESTENV_RPC_PASS}</bitcoinRpcPass>
+                        <!-- bitcoind's P2P endpoint, for wallets that sync over compact block
+                             filters. Printed by testenv-server as TESTENV_P2P_ADDR. -->
+                        <bitcoinP2pAddr>${env.TESTENV_P2P_ADDR}</bitcoinP2pAddr>
+                        <!-- Where BmpWalletServiceIntegrationTest finds the daemon to launch. -->
+                        <musigd.bin>${musigd.bin}</musigd.bin>
                     </systemPropertyVariables>
                 </configuration>
                 <executions>
@@ -175,6 +183,21 @@
                         <version>3.5.0</version>
                         <configuration>
                             <mainClass>bisq.WalletClient</mainClass>
+                        </configuration>
+                    </plugin>
+                </plugins>
+            </build>
+        </profile>
+        <profile>
+            <id>bmp-wallet</id>
+            <build>
+                <plugins>
+                    <plugin>
+                        <groupId>org.codehaus.mojo</groupId>
+                        <artifactId>exec-maven-plugin</artifactId>
+                        <version>3.5.0</version>
+                        <configuration>
+                            <mainClass>bisq.BmpWalletServiceTest</mainClass>
                         </configuration>
                     </plugin>
                 </plugins>

@@ -1,4 +1,5 @@
 use std::collections::BTreeMap;
+use std::net::SocketAddr;
 use std::sync::Arc;
 
 use bdk_kyoto::bip157::{Builder, Network};
@@ -40,8 +41,24 @@ pub struct CBFScanner {
 }
 
 impl CBFScanner {
-    pub const fn new(peers: Vec<TrustedPeer>) -> Self {
+    #[expect(
+        clippy::missing_const_for_fn,
+        reason = "a const CBFScanner isn't useful, as a \
+        non-empty peer list can't be built at compile time; keeps the body free to grow"
+    )]
+    pub fn new(peers: Vec<TrustedPeer>) -> Self {
         Self { peers }
+    }
+
+    /// Builds a scanner from plain `host:port` peer addresses, so callers don't need to depend
+    /// on `bdk_kyoto` just to name a peer.
+    pub fn from_socket_addrs(addrs: impl IntoIterator<Item = SocketAddr>) -> Self {
+        Self::new(
+            addrs
+                .into_iter()
+                .map(TrustedPeer::from_socket_addr)
+                .collect(),
+        )
     }
 
     async fn traces(
@@ -79,11 +96,10 @@ impl CBFScanner {
     pub async fn sync_cbf(
         &self,
         network: Network,
-        peers: Vec<TrustedPeer>,
         wallets: Vec<(&Wallet, ScanType)>,
     ) -> anyhow::Result<BTreeMap<DescriptorId, Update>> {
         let client = Builder::new(network)
-            .add_peers(peers)
+            .add_peers(self.peers.iter().cloned())
             .build_with_wallets(wallets)?;
 
         let (client, logging, mut update_subscriber) = client.subscribe();

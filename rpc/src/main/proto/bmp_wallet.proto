@@ -1,0 +1,190 @@
+/*
+ * This file is part of Bisq.
+ *
+ * Bisq is free software: you can redistribute it and/or modify it
+ * under the terms of the GNU Affero General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or (at
+ * your option) any later version.
+ *
+ * Bisq is distributed in the hope that it will be useful, but WITHOUT
+ * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
+ * FITNESS FOR A PARTICULAR PURPOSE. See the GNU Affero General Public
+ * License for more details.
+ *
+ * You should have received a copy of the GNU Affero General Public License
+ * along with Bisq. If not, see <http://www.gnu.org/licenses/>.
+ */
+
+syntax = "proto3";
+
+// Deliberately mirrors bisq2's `wallet/src/main/proto/wallet.proto`, package and all, so that
+// bisq2's `bisq.wallet.WalletGrpcClient` can talk to this server without any change on its side.
+// Keep the package, service name, method names and field numbers in sync with bisq2; additions
+// here must stay backwards compatible (new optional fields only). Upstream messages that are only
+// used for bisq2's client-side persistence (`ReceiveAddressEntry`, `ReceiveAddressStore` — local
+// address labels) are deliberately not mirrored, since they never cross the wire.
+//
+// Deliberate divergences from bisq2's copy (to be upstreamed): `EncryptWallet`/`DecryptWallet`
+// are replaced by the authenticated `ChangePassword`, and `OpenOrCreateWallet` opens (or
+// creates) the wallet database itself, so the daemon no longer needs the password on its
+// command line.
+//
+// NOTE: this is a *different* service from `walletrpc.Wallet` in `wallet.proto`. That one is the
+// low-level wallet the trade protocol drives; this one is the user-facing wallet backed by
+// `BMPWallet`. Both are served by musigd on the same port.
+package wallet;
+
+option java_multiple_files = true;
+option java_package = "bisq.wallet.protobuf";
+
+// The WalletService definition.
+service Wallet {
+    // Opens the wallet database in the server's wallet directory, creating a fresh wallet if
+    // none exists there yet. Must be called before any other wallet operation.
+    rpc OpenOrCreateWallet (OpenOrCreateWalletRequest) returns (OpenOrCreateWalletResponse);
+    rpc IsWalletReady (IsWalletReadyRequest) returns (IsWalletReadyResponse);
+    rpc GetNewAddress (GetNewAddressRequest) returns (GetNewAddressResponse);
+    rpc GetUnusedAddress (GetUnusedAddressRequest) returns (GetUnusedAddressResponse);
+    rpc GetWalletAddresses (GetWalletAddressesRequest) returns (GetWalletAddressesResponse);
+    rpc ListTransactions (ListTransactionsRequest) returns (ListTransactionsResponse);
+    rpc ListUtxos (ListUtxosRequest) returns (ListUtxosResponse);
+    rpc SendToAddress (SendToAddressRequest) returns (SendToAddressResponse);
+    rpc IsWalletEncrypted (IsWalletEncryptedRequest) returns (IsWalletEncryptedResponse);
+    rpc GetBalance (GetBalanceRequest) returns (GetBalanceResponse);
+    rpc GetSeedWords (GetSeedWordsRequest) returns (GetSeedWordsResponse);
+    // Re-keys the wallet database from oldPassword to newPassword. Requires the password
+    // currently in force (empty for an unprotected wallet); an empty newPassword removes
+    // password protection.
+    rpc ChangePassword (ChangePasswordRequest) returns (ChangePasswordResponse);
+}
+
+
+
+message IsWalletReadyRequest {}
+
+message IsWalletReadyResponse {
+    bool ready = 1;
+}
+
+message GetNewAddressRequest {}
+
+message GetNewAddressResponse {
+    string address = 1;
+}
+
+message GetUnusedAddressRequest {}
+
+message GetUnusedAddressResponse {
+    string address = 1;
+}
+
+message GetWalletAddressesRequest {}
+
+message GetWalletAddressesResponse {
+    repeated string addresses = 1;
+}
+
+message ListTransactionsRequest {}
+
+message ListTransactionsResponse {
+    repeated Transaction transactions = 1;
+}
+
+message ListUtxosRequest {}
+
+message ListUtxosResponse {
+    repeated Utxo utxos = 1;
+}
+
+message SendToAddressRequest {
+    optional string passphrase = 1;
+    string address = 2;
+    uint64 amount = 3;
+    // Addition over bisq2's copy: fee rate in satoshis per 1000 weight units. Clients that
+    // don't set it (including bisq2 today) get the server's default rate.
+    optional uint64 feeRatePerKwu = 4;
+}
+
+message SendToAddressResponse {
+    string txId = 1;
+}
+
+message IsWalletEncryptedRequest {}
+
+message IsWalletEncryptedResponse {
+    bool encrypted = 1;
+}
+
+message GetBalanceRequest {}
+
+message GetBalanceResponse {
+    // Balance in satoshis
+    uint64 balance = 1;
+    // Additions over bisq2's copy: the full BDK breakdown, so a client can distinguish settled
+    // funds from pending ones. `balance` above stays the trusted-spendable total for
+    // compatibility.
+    uint64 confirmed = 2;
+    uint64 trustedPending = 3;
+    uint64 untrustedPending = 4;
+    uint64 immature = 5;
+}
+
+message GetSeedWordsRequest {}
+
+message GetSeedWordsResponse {
+    repeated string seedWords = 1;
+}
+
+message OpenOrCreateWalletRequest {
+    // The password protecting the wallet database; empty for an unprotected wallet.
+    string password = 1;
+}
+
+message OpenOrCreateWalletResponse {
+    bool success = 1;
+}
+
+message ChangePasswordRequest {
+    // The password currently in force; empty for a wallet without password protection.
+    string oldPassword = 1;
+    // The new password; empty removes password protection.
+    string newPassword = 2;
+}
+
+message ChangePasswordResponse {
+    bool success = 1;
+}
+
+message TransactionInput {
+    string prevOutTxId = 1;
+    int32 prevOutIndex = 2;
+    int64 sequenceNumber = 3;
+    bytes scriptSig = 4;
+    string witness = 5;
+}
+
+message TransactionOutput {
+    uint64 value = 1;
+    string address = 2;
+    bytes scriptPubKey = 3;
+}
+
+message Transaction {
+    string txId = 1;
+    repeated TransactionInput inputs = 2;
+    repeated TransactionOutput outputs = 3;
+    uint64 lockTime = 4;
+    uint32 blockHeight = 5;
+    uint64 date = 6; // Unix timestamp, in SECONDS (bisq2 decodes it with Instant.ofEpochSecond)
+    uint32 numConfirmations = 7;
+    uint64 amount = 8;
+    bool incoming = 9;
+}
+
+message Utxo {
+    string txId = 1;
+    uint32 vout = 2;
+    uint64 amount = 3;
+    string address = 4;
+    uint32 numConfirmations = 5;
+}
