@@ -1,5 +1,6 @@
 use std::io::Write as _;
 use std::ops::{Deref, DerefMut};
+use std::path::Path;
 use std::time::UNIX_EPOCH;
 use std::{fs, vec};
 
@@ -396,9 +397,11 @@ impl BMPWallet<Connection> {
         rand::rng().fill_bytes(&mut salt);
         let new_key = derive_key_from_password(new_password, &salt)?;
 
+        let db_path = self.db.storage().path();
+        let db_path_str = db_path.join(Self::DB_NAME);
         let salt_path = format!(
             "{}.salt",
-            self.db.storage().path().display()
+            db_path_str.display()
         );
         let staged_salt_path = format!("{salt_path}.new");
 
@@ -733,7 +736,7 @@ impl WalletApi for BMPWallet<Connection> {
             signers_loaded: true,
             db: BMPDatabase::new(storage,db),
             last_unused_address: None,
-            salt: salt.clone(),
+            salt,
             key_verifier: key_verifier(&key),
             encrypted: !password.is_empty(),
         })
@@ -828,17 +831,20 @@ impl WalletApi for BMPWallet<Connection> {
     // This will also load the imported keys
     fn load_wallet(storage: DBStorage, network: Network, password: &str) -> anyhow::Result<Self> {
         let db_path = storage.path();
-        let db_path_str = db_path.to_str().expect("Path must not be empty");
+        let db_path_str = db_path.join(Self::DB_NAME);
         tracing::debug!(path = %db_path.display(), "Loading wallet database.");
 
-        let staged_salt_path = format!("{db_path_str}.salt.new");
+        let staged_salt_path = format!("{}.salt.new", db_path_str.display());
         let salt = storage.load_salt(Self::DB_NAME)?;
         match Self::load_with_salt(storage, salt, network, password) {
             Ok(wallet) => {
                 // A leftover staged salt (from a password change that failed before re-keying,
                 // see `BMPWallet::rekey`) is dead weight once the primary salt has opened the
                 // database.
-                let _ = fs::remove_file(&staged_salt_path);
+                let exist = Path::new(&staged_salt_path).exists();
+                if exist {
+                    fs::remove_file(staged_salt_path)?;
+                }
                 Ok(wallet)
             }
             Err(primary_error) => {
@@ -854,7 +860,7 @@ impl WalletApi for BMPWallet<Connection> {
                 };
                 let wallet = Self::load_with_salt(db_path.as_path().into(), staged_salt, network, password)
                     .map_err(|_| primary_error)?;
-                fs::rename(&staged_salt_path, format!("{db_path_str}.salt"))?;
+                fs::rename(&staged_salt_path, format!("{}.salt", db_path_str.display()))?;
                 tracing::warn!(
                     "Completed a password change that was interrupted before its rotated salt \
                      was committed."

@@ -546,10 +546,11 @@ fn change_password_rotates_the_key_and_survives_a_reload() -> anyhow::Result<()>
     };
 
     // The rotated salt and key must both have reached disk.
-    let reloaded = BMPWallet::load_wallet(dir.path().into(), Network::Regtest, "s3cret")?;
-    assert_eq!(reloaded.get_seed_phrase()?, seed);
-    assert!(reloaded.is_encrypted());
-    drop(reloaded);
+    {
+        let reloaded = BMPWallet::load_wallet(dir.path().into(), Network::Regtest, "s3cret")?;
+        assert_eq!(reloaded.get_seed_phrase()?, seed);
+        assert!(reloaded.is_encrypted());
+    }
 
     let stale = BMPWallet::load_wallet(dir.path().into(), Network::Regtest, "");
     assert!(
