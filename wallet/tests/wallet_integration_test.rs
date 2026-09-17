@@ -446,7 +446,7 @@ fn load_recovers_an_interrupted_salt_rotation() -> anyhow::Result<()> {
         wallet.get_seed_phrase()?
     };
 
-    let db_path = dir.path().join(BMPWallet::<Connection>::DB_NAME);
+    let db_path = dir.path().join(BMPWallet::DB_NAME);
     let db_path_str = db_path.to_str().unwrap();
     let staged_salt_path = format!("{db_path_str}.salt.new");
 
@@ -504,7 +504,7 @@ fn load_ignores_and_cleans_a_stale_staged_salt() -> anyhow::Result<()> {
 
     let staged_salt_path = dir
         .path()
-        .join(format!("{}.salt.new", BMPWallet::<Connection>::DB_NAME));
+        .join(format!("{}.salt.new", BMPWallet::DB_NAME));
     fs::write(&staged_salt_path, "bm90LXRoZS1yZWFsLXNhbHQ=")?; // valid base64, wrong salt
 
     let wallet = BMPWallet::load_wallet(dir.path().into(), Network::Regtest, "pw")?;
@@ -569,7 +569,7 @@ fn new_refuses_to_overwrite_an_existing_wallet() -> anyhow::Result<()> {
     let dir = get_dir();
     let salt_path = dir
         .path()
-        .join(format!("{}.salt", BMPWallet::<Connection>::DB_NAME));
+        .join(format!("{}.salt", BMPWallet::DB_NAME));
 
     let seed = {
         let wallet = BMPWallet::new(dir.path().into(), "secret123", Network::Regtest)?;

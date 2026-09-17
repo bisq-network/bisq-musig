@@ -29,7 +29,7 @@ use secp::Scalar;
 
 use crate::chain_data_source::ChainDataSource;
 use crate::coin_selection::{AlwaysSpendImportedFirst, SpendImportedOnly};
-use crate::persisted::{BMPDatabase, BMPWalletPersister, DBStorage};
+use crate::persisted::{BMPDatabase, BMPWalletPersister as _, DBStorage};
 use crate::protocol_wallet_api::{
     ProtocolWalletApi, WalletErrorKind, WalletExt, finish_standard_psbt, internal_key_at_index,
     sign_selected_inputs_with,
@@ -99,12 +99,12 @@ impl ImportedKey {
 
 pub(crate) const STOP_GAP: usize = 50;
 
-pub struct BMPWallet<P: BMPWalletPersister> {
-    wallet: PersistedWallet<P>,
+pub struct BMPWallet {
+    wallet: PersistedWallet<Connection>,
     imported_keys: Vec<ImportedKey>,
     imported_balance: Balance,
     signers_loaded: bool,
-    db: BMPDatabase<P>,
+    db: BMPDatabase<Connection>,
     last_unused_address: Option<String>,
     /// Argon2 salt backing the current database key, mirrored on disk as `<db_path>.salt`.
     salt: Vec<u8>,
@@ -118,7 +118,7 @@ pub struct BMPWallet<P: BMPWalletPersister> {
     encrypted: bool,
 }
 
-impl BMPWallet<Connection> {
+impl BMPWallet {
     pub fn list_unused_addresses_since_last_used(
         &self,
         key_chain: KeychainKind,
@@ -559,13 +559,13 @@ impl BMPWallet<Connection> {
     }
 }
 
-impl WalletExt for BMPWallet<Connection> {
+impl WalletExt for BMPWallet {
     fn update_psbt_with_derivation_paths(&self, psbt: &mut Psbt) {
         self.wallet.update_psbt_with_derivation_paths(psbt);
     }
 }
 
-impl ProtocolWalletApi for BMPWallet<Connection> {
+impl ProtocolWalletApi for BMPWallet {
     fn network(&self) -> Network {
         self.wallet.network()
     }
@@ -645,7 +645,7 @@ pub trait WalletApi {
     fn drain_imported_balance(&mut self, fee_rate: FeeRate) -> anyhow::Result<Psbt>;
 }
 
-impl WalletApi for BMPWallet<Connection> {
+impl WalletApi for BMPWallet {
     const SEEDS_TABLE_NAME: &'static str = "bmp_seeds";
     const IMPORTED_KEYS_TABLE_NAME: &'static str = "bmp_imported_keys";
     const DB_NAME: &str = "bmp_bdk_wallet.db3";
@@ -931,14 +931,14 @@ impl WalletApi for BMPWallet<Connection> {
     }
 }
 
-impl Deref for BMPWallet<Connection> {
+impl Deref for BMPWallet {
     type Target = PersistedWallet<Connection>;
     fn deref(&self) -> &Self::Target {
         &self.wallet
     }
 }
 
-impl DerefMut for BMPWallet<Connection> {
+impl DerefMut for BMPWallet {
     fn deref_mut(&mut self) -> &mut Self::Target {
         &mut self.wallet
     }

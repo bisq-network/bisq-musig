@@ -1,7 +1,6 @@
 use bdk_electrum::BdkElectrumClient;
 use bdk_electrum::electrum_client::Client as ElectrumClient;
 use bdk_wallet::bitcoin;
-use bdk_wallet::rusqlite::Connection;
 use bitcoin::key::{Keypair, Secp256k1, TapTweak as _, TweakedKeypair, TweakedPublicKey};
 use bitcoin::secp256k1::Message;
 use bitcoin::{Amount, FeeRate, Network, TapSighashType, XOnlyPublicKey};
@@ -25,7 +24,7 @@ fn test_initial_tx_creation() -> anyhow::Result<()> {
 }
 
 /// Single entry point used by every test below to obtain a funded trade wallet. The concrete
-/// backend (`MemWallet` vs `BMPWallet<Connection>`) is selected by the `WALLET_BACKEND`
+/// backend (`MemWallet` vs `BMPWallet`) is selected by the `WALLET_BACKEND`
 /// environment variable (`mem` or `bmp`); it defaults to `bmp` when unset. Both implement
 /// [`wallet::protocol_wallet_api::ProtocolWalletApi`] and are interchangeable from the protocol's
 /// point of view.
@@ -42,9 +41,8 @@ pub fn funded_wallet(env: &mut TestEnv) -> BoxedTradeWallet {
     }
 }
 
-fn funded_bmp_wallet(env: &mut TestEnv) -> BMPWallet<Connection> {
-    let mut wallet =
-        BMPWallet::<Connection>::new(env.new_temp_path().into(), "", Network::Regtest).unwrap();
+fn funded_bmp_wallet(env: &mut TestEnv) -> BMPWallet {
+    let mut wallet = BMPWallet::new(env.new_temp_path().into(), "", Network::Regtest).unwrap();
 
     let address = wallet.get_new_address().unwrap();
     let txid = env
@@ -376,7 +374,7 @@ fn imported_payout_key_matches_deposit_payout_descriptor() {
     let dir = std::env::temp_dir().join(format!("bmp-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
 
-    let mut w = BMPWallet::<Connection>::new(dir.as_path().into(), "", Network::Regtest).unwrap();
+    let mut w = BMPWallet::new(dir.as_path().into(), "", Network::Regtest).unwrap();
     let trade_wallet: &mut dyn ProtocolWalletApi = &mut w;
     trade_wallet
         .import_private_key(
