@@ -58,7 +58,8 @@ impl DBStorage {
                 let path = path.join(db_name);
                 path.exists()
             }
-            _ => false,
+            #[cfg(any(test, feature = "test-utils"))]
+            Self::Memory(_) => false,
         }
     }
 
@@ -78,10 +79,11 @@ impl DBStorage {
         }
     }
 
-    pub fn path(&self) -> PathBuf {
+    pub fn base_path(&self) -> Option<PathBuf> {
         match self {
-            Self::File(p) => p.clone(),
-            _ => PathBuf::new(),
+            Self::File(p) => Some(p.clone()),
+            #[cfg(any(test, feature = "test-utils"))]
+            Self::Memory(_) => None,
         }
     }
 
@@ -121,6 +123,90 @@ impl DBStorage {
                 .get(name)
                 .cloned()
                 .ok_or_else(|| anyhow::anyhow!("no salt registered for {name}")),
+        }
+    }
+
+    /// Path to the staged salt file (`<db>.salt.new`) for file-backed storage.
+    pub fn staged_salt_path(&self, db_name: &str) -> Option<PathBuf> {
+        self.base_path()
+            .map(|p| p.join(format!("{db_name}.salt.new")))
+    }
+
+    /// Path to the committed salt file (`<db>.salt`) for file-backed storage.
+    pub fn committed_salt_path(&self, db_name: &str) -> Option<PathBuf> {
+        self.base_path().map(|p| p.join(format!("{db_name}.salt")))
+    }
+
+    /// Write a staged salt
+    pub fn write_staged_salt(&self, db_name: &str, salt: &[u8]) -> anyhow::Result<()> {
+        match self {
+            Self::File(path) => {
+                let staged = path.join(format!("{db_name}.salt.new"));
+                fs::write(staged, general_purpose::STANDARD.encode(salt))?;
+                Ok(())
+            }
+            #[cfg(any(test, feature = "test-utils"))]
+            Self::Memory(name) => {
+                let mut map = MEMORY_SALT_STORE.lock().unwrap();
+                map.insert(format!("{name}.salt.new"), salt.to_vec());
+                Ok(())
+            }
+        }
+    }
+
+    /// Read the staged salt if present. Returns `None` when there is no staged salt.
+    pub fn read_staged_salt(&self, db_name: &str) -> Option<Vec<u8>> {
+        match self {
+            Self::File(path) => {
+                let staged = path.join(format!("{db_name}.salt.new"));
+                fs::read_to_string(staged)
+                    .ok()
+                    .and_then(|s| general_purpose::STANDARD.decode(s.as_bytes()).ok())
+            }
+            #[cfg(any(test, feature = "test-utils"))]
+            Self::Memory(name) => MEMORY_SALT_STORE
+                .lock()
+                .unwrap()
+                .get(&format!("{name}.salt.new"))
+                .cloned(),
+        }
+    }
+
+    pub fn remove_staged_salt(&self, db_name: &str) -> anyhow::Result<()> {
+        match self {
+            Self::File(path) => {
+                let staged = path.join(format!("{db_name}.salt.new"));
+                let _ = fs::remove_file(staged);
+                Ok(())
+            }
+            #[cfg(any(test, feature = "test-utils"))]
+            Self::Memory(name) => {
+                let mut map = MEMORY_SALT_STORE.lock().unwrap();
+                let _ = map.remove(&format!("{name}.salt.new"));
+                Ok(())
+            }
+        }
+    }
+
+    /// Commit a staged salt rename `<db>.salt.new` to `<db>.salt`
+    pub fn commit_staged_salt(&self, db_name: &str) -> anyhow::Result<()> {
+        match self {
+            Self::File(path) => {
+                let staged = path.join(format!("{db_name}.salt.new"));
+                let committed = path.join(format!("{db_name}.salt"));
+                fs::rename(staged, committed)?;
+                Ok(())
+            }
+            #[cfg(any(test, feature = "test-utils"))]
+            Self::Memory(name) => {
+                let mut map = MEMORY_SALT_STORE.lock().unwrap();
+                if let Some(s) = map.remove(&format!("{name}.salt.new")) {
+                    map.insert(name.clone(), s);
+                    Ok(())
+                } else {
+                    Err(anyhow::anyhow!("no staged salt to commit"))
+                }
+            }
         }
     }
 }
