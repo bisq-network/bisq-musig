@@ -397,7 +397,7 @@ impl BMPWallet {
         self.db.storage().write_staged_salt(Self::DB_NAME, &salt)?;
 
         if let Err(e) = self.db.pragma_update(None, "rekey", new_key.as_str()) {
-            let _ = self.db.storage().remove_staged_salt(Self::DB_NAME);
+            self.db.storage().remove_staged_salt(Self::DB_NAME);
             return Err(e.into());
         }
 
@@ -406,7 +406,7 @@ impl BMPWallet {
         if let Err(e) = self.db.storage().commit_staged_salt(Self::DB_NAME) {
             let old_key = derive_key_from_password(old_password, &self.salt)?;
             self.db.pragma_update(None, "rekey", old_key.as_str())?;
-            let _ = self.db.storage().remove_staged_salt(Self::DB_NAME);
+            self.db.storage().remove_staged_salt(Self::DB_NAME);
             return Err(e);
         }
 
@@ -822,7 +822,7 @@ impl WalletApi for BMPWallet {
         let salt = storage.load_salt(Self::DB_NAME)?;
         match Self::load_with_salt(storage.clone(), salt, network, password) {
             Ok(wallet) => {
-                let _ = storage.remove_staged_salt(Self::DB_NAME);
+                storage.remove_staged_salt(Self::DB_NAME);
                 Ok(wallet)
             }
             Err(primary_error) => {
