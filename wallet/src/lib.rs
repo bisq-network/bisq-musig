@@ -26,7 +26,6 @@ mod tests {
     use bdk_wallet::chain::{self, BlockId};
     use bdk_wallet::miniscript::Descriptor;
     use bdk_wallet::miniscript::descriptor::TapTree;
-    use bdk_wallet::rusqlite::Connection;
     use bdk_wallet::test_utils::{ReceiveTo, receive_output_to_address};
     use bdk_wallet::{AddressInfo, KeychainKind, SignOptions};
     use bmp_tracing::tracing;
@@ -307,7 +306,7 @@ mod tests {
         let mut tx_builder = bmp_wallet.build_tx();
         tx_builder.add_recipient(to_address, to_spend);
 
-        let imported_wallets = BMPWallet::<Connection>::load_imported_wallets(
+        let imported_wallets = BMPWallet::load_imported_wallets(
             &keys,
             &mem_storage.store,
             Network::Regtest,
@@ -882,7 +881,7 @@ mod tests {
         wallet.import_private_key(new_private_key(), None)?;
         wallet.sync_all(&MockedBDKElectrum {}).await?;
 
-        let imported = |w: &BMPWallet<_>| w.list_utxos().iter().filter(|u| u.imported).count();
+        let imported = |w: &BMPWallet| w.list_utxos().iter().filter(|u| u.imported).count();
         assert_eq!(imported(&wallet), 1, "the imported coin starts out unspent");
 
         // Sweep the imported coin, then let the wallet see the spending transaction. Imported

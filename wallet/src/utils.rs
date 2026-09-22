@@ -1,8 +1,4 @@
-use std::fs;
-
 use argon2::{Argon2, Block, Params};
-use base64::Engine as _;
-use base64::engine::general_purpose;
 use bdk_wallet::bitcoin::hashes::{Hash as _, sha256};
 use zeroize::{Zeroize as _, Zeroizing};
 
@@ -34,10 +30,4 @@ pub fn derive_key_from_password(password: &str, salt: &[u8]) -> anyhow::Result<Z
 #[must_use]
 pub fn key_verifier(key_hex: &str) -> [u8; 32] {
     sha256::Hash::hash(key_hex.as_bytes()).to_byte_array()
-}
-
-pub fn get_salt(db_path: &str) -> anyhow::Result<Vec<u8>> {
-    let salt_path = format!("{db_path}.salt");
-    let salt_str = fs::read_to_string(&salt_path)?;
-    Ok(general_purpose::STANDARD.decode(salt_str.as_bytes())?)
 }

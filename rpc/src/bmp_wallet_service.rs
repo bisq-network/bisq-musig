@@ -27,7 +27,6 @@ use bdk_bitcoind_rpc::bitcoincore_rpc::{Client, RpcApi as _};
 use bdk_wallet::Balance;
 use bdk_wallet::bitcoin::address::NetworkUnchecked;
 use bdk_wallet::bitcoin::{Address, Amount, FeeRate, Network, Transaction, Txid};
-use bdk_wallet::rusqlite::Connection;
 use chain::ChainApi;
 use futures_util::never::Never;
 use futures_util::stream::{BoxStream, StreamExt as _};
@@ -152,7 +151,7 @@ pub struct BMPWalletServiceImpl<S> {
     ///
     /// NOTE: to avoid deadlocks, acquire this before `tx_confidence_map`, never the other way
     /// round — the same ordering `WalletServiceImpl` uses.
-    wallet: AsyncMutex<Option<BMPWallet<Connection>>>,
+    wallet: AsyncMutex<Option<BMPWallet>>,
     /// Directory holding (or to hold) the wallet database.
     wallet_dir: PathBuf,
     network: Network,
@@ -165,9 +164,7 @@ pub struct BMPWalletServiceImpl<S> {
 
 /// The open wallet behind `guard`, or [`WalletNotOpen`] if `OpenOrCreateWallet` hasn't
 /// succeeded yet.
-fn require_open(
-    guard: &mut Option<BMPWallet<Connection>>,
-) -> anyhow::Result<&mut BMPWallet<Connection>> {
+fn require_open(guard: &mut Option<BMPWallet>) -> anyhow::Result<&mut BMPWallet> {
     guard
         .as_mut()
         .ok_or_else(|| anyhow::Error::new(WalletNotOpen))
@@ -332,7 +329,7 @@ impl<S: ChainDataSource + Send + Sync + 'static> BmpWalletService for BMPWalletS
         // rewrites the Argon2 salt the existing database's key was derived from — which would
         // render that wallet, and any funds in it, permanently unrecoverable.
         fs::create_dir_all(&self.wallet_dir)?;
-        let db_path = self.wallet_dir.join(BMPWallet::<Connection>::DB_NAME);
+        let db_path = self.wallet_dir.join(BMPWallet::DB_NAME);
         let wallet = if db_path.exists() {
             let wallet =
                 BMPWallet::load_wallet(self.wallet_dir.as_path().into(), self.network, password).map_err(|e| {

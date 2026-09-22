@@ -1,11 +1,8 @@
-use std::io::Write as _;
 use std::ops::{Deref, DerefMut};
-use std::path::Path;
 use std::time::UNIX_EPOCH;
-use std::{fs, vec};
+use std::vec;
 
-use base64::Engine as _;
-use base64::engine::general_purpose;
+
 use bdk_electrum::bdk_core::bitcoin::{Address, FeeRate, OutPoint};
 use bdk_wallet::bitcoin::bip32::Xpriv;
 use bdk_wallet::bitcoin::hex::DisplayHex as _;
@@ -29,7 +26,7 @@ use secp::Scalar;
 
 use crate::chain_data_source::ChainDataSource;
 use crate::coin_selection::{AlwaysSpendImportedFirst, SpendImportedOnly};
-use crate::persisted::{BMPDatabase, BMPWalletPersister, DBStorage};
+use crate::persisted::{BMPDatabase, BMPWalletPersister as _, DBStorage};
 use crate::protocol_wallet_api::{
     ProtocolWalletApi, WalletErrorKind, WalletExt, finish_standard_psbt, internal_key_at_index,
     sign_selected_inputs_with,
@@ -99,12 +96,12 @@ impl ImportedKey {
 
 pub(crate) const STOP_GAP: usize = 50;
 
-pub struct BMPWallet<P: BMPWalletPersister> {
-    wallet: PersistedWallet<P>,
+pub struct BMPWallet {
+    wallet: PersistedWallet<Connection>,
     imported_keys: Vec<ImportedKey>,
     imported_balance: Balance,
     signers_loaded: bool,
-    db: BMPDatabase<P>,
+    db: BMPDatabase<Connection>,
     last_unused_address: Option<String>,
     /// Argon2 salt backing the current database key, mirrored on disk as `<db_path>.salt`.
     salt: Vec<u8>,
@@ -118,7 +115,7 @@ pub struct BMPWallet<P: BMPWalletPersister> {
     encrypted: bool,
 }
 
-impl BMPWallet<Connection> {
+impl BMPWallet {
     pub fn list_unused_addresses_since_last_used(
         &self,
         key_chain: KeychainKind,
@@ -397,34 +394,20 @@ impl BMPWallet<Connection> {
         rand::rng().fill_bytes(&mut salt);
         let new_key = derive_key_from_password(new_password, &salt)?;
 
-        let db_path = self.db.storage().path();
-        let db_path_str = db_path.join(Self::DB_NAME);
-        let salt_path = format!(
-            "{}.salt",
-            db_path_str.display()
-        );
-        let staged_salt_path = format!("{salt_path}.new");
-
-        // Stage the new salt on disk (durably) before re-keying; if this fails, nothing has
-        // changed. A stale staged file left by an early return here is ignored — and cleaned
-        // up — by `load_wallet`.
-        let mut staged_salt_file = fs::File::create(&staged_salt_path)?;
-        staged_salt_file.write_all(general_purpose::STANDARD.encode(salt).as_bytes())?;
-        staged_salt_file.sync_all()?;
-        drop(staged_salt_file);
+        self.db.storage().write_staged_salt(Self::DB_NAME, &salt)?;
 
         if let Err(e) = self.db.pragma_update(None, "rekey", new_key.as_str()) {
-            let _ = fs::remove_file(&staged_salt_path);
+            self.db.storage().remove_staged_salt(Self::DB_NAME);
             return Err(e.into());
         }
 
         // Commit the rotated salt. If that fails, undo the re-key with a key re-derived from
         // the (just verified) old password, rather than leave database and salt out of step.
-        if let Err(e) = fs::rename(&staged_salt_path, &salt_path) {
+        if let Err(e) = self.db.storage().commit_staged_salt(Self::DB_NAME) {
             let old_key = derive_key_from_password(old_password, &self.salt)?;
             self.db.pragma_update(None, "rekey", old_key.as_str())?;
-            let _ = fs::remove_file(&staged_salt_path);
-            return Err(e.into());
+            self.db.storage().remove_staged_salt(Self::DB_NAME);
+            return Err(e);
         }
 
         self.salt = salt.to_vec();
@@ -559,13 +542,13 @@ impl BMPWallet<Connection> {
     }
 }
 
-impl WalletExt for BMPWallet<Connection> {
+impl WalletExt for BMPWallet {
     fn update_psbt_with_derivation_paths(&self, psbt: &mut Psbt) {
         self.wallet.update_psbt_with_derivation_paths(psbt);
     }
 }
 
-impl ProtocolWalletApi for BMPWallet<Connection> {
+impl ProtocolWalletApi for BMPWallet {
     fn network(&self) -> Network {
         self.wallet.network()
     }
@@ -645,7 +628,7 @@ pub trait WalletApi {
     fn drain_imported_balance(&mut self, fee_rate: FeeRate) -> anyhow::Result<Psbt>;
 }
 
-impl WalletApi for BMPWallet<Connection> {
+impl WalletApi for BMPWallet {
     const SEEDS_TABLE_NAME: &'static str = "bmp_seeds";
     const IMPORTED_KEYS_TABLE_NAME: &'static str = "bmp_imported_keys";
     const DB_NAME: &str = "bmp_bdk_wallet.db3";
@@ -830,40 +813,30 @@ impl WalletApi for BMPWallet<Connection> {
     // For already created wallets this will load stored data
     // This will also load the imported keys
     fn load_wallet(storage: DBStorage, network: Network, password: &str) -> anyhow::Result<Self> {
-        let db_path = storage.path();
-        let db_path_str = db_path.join(Self::DB_NAME);
-        tracing::debug!(path = %db_path.display(), "Loading wallet database.");
+        if let Some(p) = storage.base_path() {
+            tracing::debug!(path = %p.display(), "Loading wallet database.");
+        } else {
+            tracing::debug!("Loading in-memory wallet database.");
+        }
 
-        let staged_salt_path = format!("{}.salt.new", db_path_str.display());
         let salt = storage.load_salt(Self::DB_NAME)?;
-        match Self::load_with_salt(storage, salt, network, password) {
+        match Self::load_with_salt(storage.clone(), salt, network, password) {
             Ok(wallet) => {
-                // A leftover staged salt (from a password change that failed before re-keying,
-                // see `BMPWallet::rekey`) is dead weight once the primary salt has opened the
-                // database.
-                let exist = Path::new(&staged_salt_path).exists();
-                if exist {
-                    fs::remove_file(staged_salt_path)?;
-                }
+                storage.remove_staged_salt(Self::DB_NAME);
                 Ok(wallet)
             }
             Err(primary_error) => {
-                // A crash between the re-key and committing the rotated salt (see
-                // `BMPWallet::rekey`) leaves the database keyed by the *staged* salt at
-                // `<db_path>.salt.new`. If that salt opens the database, finish the interrupted
-                // rotation; otherwise report the original failure.
-                let Some(staged_salt) = fs::read_to_string(&staged_salt_path)
-                    .ok()
-                    .and_then(|salt| general_purpose::STANDARD.decode(salt.as_bytes()).ok())
-                else {
+                let staged_salt = storage.read_staged_salt(Self::DB_NAME);
+                let Some(staged_salt) = staged_salt else {
                     return Err(primary_error);
                 };
-                let wallet = Self::load_with_salt(db_path.as_path().into(), staged_salt, network, password)
+
+                let wallet = Self::load_with_salt(storage.clone(), staged_salt, network, password)
                     .map_err(|_| primary_error)?;
-                fs::rename(&staged_salt_path, format!("{}.salt", db_path_str.display()))?;
+
+                storage.commit_staged_salt(Self::DB_NAME)?;
                 tracing::warn!(
-                    "Completed a password change that was interrupted before its rotated salt \
-                     was committed."
+                    "Completed a password change that was interrupted before its rotated salt was committed."
                 );
                 Ok(wallet)
             }
@@ -918,7 +891,9 @@ impl WalletApi for BMPWallet<Connection> {
                     self.imported_balance = Balance::default();
 
                     tracing::debug!(
-                        "AMOUNT TO SEND {amount_to_send}, fees {fees}, imported balance {}",
+                        "AMOUNT TO SEND {}, fees {}, imported balance {}",
+                        amount_to_send,
+                        fees,
                         self.imported_balance
                     );
 
@@ -931,14 +906,14 @@ impl WalletApi for BMPWallet<Connection> {
     }
 }
 
-impl Deref for BMPWallet<Connection> {
+impl Deref for BMPWallet {
     type Target = PersistedWallet<Connection>;
     fn deref(&self) -> &Self::Target {
         &self.wallet
     }
 }
 
-impl DerefMut for BMPWallet<Connection> {
+impl DerefMut for BMPWallet {
     fn deref_mut(&mut self) -> &mut Self::Target {
         &mut self.wallet
     }

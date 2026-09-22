@@ -1,4 +1,5 @@
 use std::fs;
+use std::io::Write as _;
 use std::ops::{Deref, DerefMut};
 use std::path::{Path, PathBuf};
 
@@ -11,7 +12,6 @@ use rusqlite::{Connection, named_params};
 use secp::Scalar;
 
 use crate::bmp_wallet::ImportedKey;
-use crate::utils::get_salt;
 
 #[cfg(any(test, feature = "test-utils"))]
 static MEMORY_SALT_STORE: std::sync::LazyLock<
@@ -58,7 +58,8 @@ impl DBStorage {
                 let path = path.join(db_name);
                 path.exists()
             }
-            _ => false,
+            #[cfg(any(test, feature = "test-utils"))]
+            Self::Memory(_) => false,
         }
     }
 
@@ -78,10 +79,11 @@ impl DBStorage {
         }
     }
 
-    pub fn path(&self) -> PathBuf {
+    pub fn base_path(&self) -> Option<PathBuf> {
         match self {
-            Self::File(p) => p.clone(),
-            _ => PathBuf::new(),
+            Self::File(p) => Some(p.clone()),
+            #[cfg(any(test, feature = "test-utils"))]
+            Self::Memory(_) => None,
         }
     }
 
@@ -90,9 +92,10 @@ impl DBStorage {
         let mut salt = [0u8; 16];
         rand::rng().fill_bytes(&mut salt);
         match self {
-            Self::File(path) => {
-                let p = &format!("{db_name}.salt");
-                let full_p = path.join(p);
+            Self::File(_) => {
+                let full_p = self
+                    .committed_salt_path(db_name)
+                    .expect("file-backed storage should have a committed salt path");
                 fs::write(full_p, general_purpose::STANDARD.encode(salt))?;
                 Ok(salt.to_vec())
             }
@@ -110,9 +113,12 @@ impl DBStorage {
 
     pub fn load_salt(&self, db_name: &str) -> anyhow::Result<Vec<u8>> {
         match self {
-            Self::File(path) => {
-                let salt_path = path.join(db_name);
-                get_salt(&salt_path.display().to_string())
+            Self::File(_) => {
+                let salt_path = self
+                    .committed_salt_path(db_name)
+                    .ok_or_else(|| anyhow::anyhow!("no committed salt path for {db_name}"))?;
+                let salt_str = fs::read_to_string(&salt_path)?;
+                Ok(general_purpose::STANDARD.decode(salt_str.as_bytes())?)
             }
             #[cfg(any(test, feature = "test-utils"))]
             Self::Memory(name) => MEMORY_SALT_STORE
@@ -121,6 +127,97 @@ impl DBStorage {
                 .get(name)
                 .cloned()
                 .ok_or_else(|| anyhow::anyhow!("no salt registered for {name}")),
+        }
+    }
+
+    /// Path to the staged salt file (`<db>.salt.new`) for file-backed storage.
+    pub fn staged_salt_path(&self, db_name: &str) -> Option<PathBuf> {
+        self.base_path()
+            .map(|p| p.join(format!("{db_name}.salt.new")))
+    }
+
+    /// Path to the committed salt file (`<db>.salt`) for file-backed storage.
+    pub fn committed_salt_path(&self, db_name: &str) -> Option<PathBuf> {
+        self.base_path().map(|p| p.join(format!("{db_name}.salt")))
+    }
+
+    /// Write a staged salt
+    pub fn write_staged_salt(&self, db_name: &str, salt: &[u8]) -> anyhow::Result<()> {
+        match self {
+            Self::File(_) => {
+                let staged = self
+                    .staged_salt_path(db_name)
+                    .expect("file-backed storage should have a staged salt path");
+                let mut staged_salt_file = fs::File::create(&staged)?;
+                staged_salt_file.write_all(general_purpose::STANDARD.encode(salt).as_bytes())?;
+                staged_salt_file.sync_all()?;
+                Ok(())
+            }
+            #[cfg(any(test, feature = "test-utils"))]
+            Self::Memory(name) => {
+                let mut map = MEMORY_SALT_STORE.lock().unwrap();
+                map.insert(format!("{name}.salt.new"), salt.to_vec());
+                Ok(())
+            }
+        }
+    }
+
+    /// Read the staged salt if present. Returns `None` when there is no staged salt.
+    pub fn read_staged_salt(&self, db_name: &str) -> Option<Vec<u8>> {
+        match self {
+            Self::File(_) => self.staged_salt_path(db_name).and_then(|staged| {
+                fs::read_to_string(staged)
+                    .ok()
+                    .and_then(|s| general_purpose::STANDARD.decode(s.as_bytes()).ok())
+            }),
+            #[cfg(any(test, feature = "test-utils"))]
+            Self::Memory(name) => MEMORY_SALT_STORE
+                .lock()
+                .unwrap()
+                .get(&format!("{name}.salt.new"))
+                .cloned(),
+        }
+    }
+
+    pub fn remove_staged_salt(&self, db_name: &str) {
+        match self {
+            Self::File(_) => {
+                let staged = self
+                    .staged_salt_path(db_name)
+                    .expect("file-backed storage should have a staged salt path");
+                let _ = fs::remove_file(staged);
+            }
+            #[cfg(any(test, feature = "test-utils"))]
+            Self::Memory(name) => {
+                let mut map = MEMORY_SALT_STORE.lock().unwrap();
+                map.remove(&format!("{name}.salt.new"));
+            }
+        }
+    }
+
+    /// Commit a staged salt rename `<db>.salt.new` to `<db>.salt`
+    pub fn commit_staged_salt(&self, db_name: &str) -> anyhow::Result<()> {
+        match self {
+            Self::File(_) => {
+                let staged = self
+                    .staged_salt_path(db_name)
+                    .expect("file-backed storage should have a staged salt path");
+                let committed = self
+                    .committed_salt_path(db_name)
+                    .expect("file-backed storage should have a committed salt path");
+                fs::rename(staged, committed)?;
+                Ok(())
+            }
+            #[cfg(any(test, feature = "test-utils"))]
+            Self::Memory(name) => {
+                let mut map = MEMORY_SALT_STORE.lock().unwrap();
+                if let Some(s) = map.remove(&format!("{name}.salt.new")) {
+                    map.insert(name.clone(), s);
+                    Ok(())
+                } else {
+                    Err(anyhow::anyhow!("no staged salt to commit"))
+                }
+            }
         }
     }
 }

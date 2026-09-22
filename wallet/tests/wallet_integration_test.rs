@@ -14,7 +14,8 @@ use secp::Scalar;
 use tempfile::{TempDir, tempdir};
 use testenv::TestEnv;
 use wallet::bmp_wallet::*;
-use wallet::utils::{derive_key_from_password, get_salt};
+use wallet::persisted::DBStorage;
+use wallet::utils::derive_key_from_password;
 
 fn new_private_key() -> Scalar {
     let mut seed: [u8; 32] = [0u8; 32];
@@ -441,18 +442,19 @@ fn get_dir() -> TempDir {
 #[test]
 fn load_recovers_an_interrupted_salt_rotation() -> anyhow::Result<()> {
     let dir = get_dir();
+    let db_name = BMPWallet::DB_NAME;
+    let storage: DBStorage = dir.path().into();
     let seed = {
-        let wallet = BMPWallet::new(dir.path().into(), "pw", Network::Regtest)?;
+        let wallet = BMPWallet::new(storage.clone(), "pw", Network::Regtest)?;
         wallet.get_seed_phrase()?
     };
 
-    let db_path = dir.path().join(BMPWallet::<Connection>::DB_NAME);
-    let db_path_str = db_path.to_str().unwrap();
-    let staged_salt_path = format!("{db_path_str}.salt.new");
+    let db_path = dir.path().join(db_name);
+    let staged_salt_path = storage.staged_salt_path(db_name).unwrap();
 
     // Re-key the database to a fresh salt that is staged but not yet committed — exactly
     // the state a crash at rekey's commit point leaves behind.
-    let old_salt = get_salt(db_path_str)?;
+    let old_salt = storage.load_salt(db_name)?;
     let mut new_salt = [0u8; 16];
     rand::rng().fill_bytes(&mut new_salt);
     fs::write(
@@ -477,8 +479,10 @@ fn load_recovers_an_interrupted_salt_rotation() -> anyhow::Result<()> {
         !std::path::Path::new(&staged_salt_path).exists(),
         "the staged salt must have been committed"
     );
+
+    let salt = storage.load_salt(db_name)?;
     assert_eq!(
-        get_salt(db_path_str)?,
+        salt,
         new_salt.to_vec(),
         "the committed salt must be the rotated one"
     );
@@ -504,7 +508,7 @@ fn load_ignores_and_cleans_a_stale_staged_salt() -> anyhow::Result<()> {
 
     let staged_salt_path = dir
         .path()
-        .join(format!("{}.salt.new", BMPWallet::<Connection>::DB_NAME));
+        .join(format!("{}.salt.new", BMPWallet::DB_NAME));
     fs::write(&staged_salt_path, "bm90LXRoZS1yZWFsLXNhbHQ=")?; // valid base64, wrong salt
 
     let wallet = BMPWallet::load_wallet(dir.path().into(), Network::Regtest, "pw")?;
@@ -569,7 +573,7 @@ fn new_refuses_to_overwrite_an_existing_wallet() -> anyhow::Result<()> {
     let dir = get_dir();
     let salt_path = dir
         .path()
-        .join(format!("{}.salt", BMPWallet::<Connection>::DB_NAME));
+        .join(format!("{}.salt", BMPWallet::DB_NAME));
 
     let seed = {
         let wallet = BMPWallet::new(dir.path().into(), "secret123", Network::Regtest)?;
