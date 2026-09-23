@@ -764,6 +764,8 @@ impl From<TxInfo> for bmp_wallet::Transaction {
 
 #[cfg(test)]
 mod tests {
+    use ::wallet::persisted::DBStorage;
+    use ::wallet::utils::derive_key_from_password;
     use bdk_wallet::PersistedWallet;
     use bdk_wallet::bitcoin::Network;
     use tempfile::tempdir;
@@ -878,6 +880,33 @@ mod tests {
         );
         reloaded.open_or_create_wallet("s3cret").await.unwrap();
         assert_eq!(reloaded.seed_words().await.unwrap(), seed);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn open_refuses_a_wallet_without_its_seed() {
+        let (dir, service) = open_service().await;
+        drop(service);
+
+        // Delete the seed row, so the database is left the way it is if creation stops after
+        // committing the BDK wallet but before storing the seed phrase.
+        let storage = DBStorage::File(dir.path().to_path_buf());
+        let salt = storage.load_salt(BMPWallet::DB_NAME).unwrap();
+        let db = storage.open(BMPWallet::DB_NAME).unwrap();
+        let key = derive_key_from_password("", &salt).unwrap();
+        db.pragma_update(None, "key", key.as_str()).unwrap();
+        db.execute(&format!("DELETE FROM {}", BMPWallet::SEEDS_TABLE_NAME), [])
+            .unwrap();
+        drop(db);
+
+        let reopened =
+            BMPWalletServiceImpl::<NoopChainDataSource>::new(dir.path(), Network::Regtest);
+        let err = reopened.open_or_create_wallet("").await.unwrap_err();
+        assert!(
+            format!("{err:#}").contains("seed phrase"),
+            "expected the missing seed to be the reason, got: {err:#}"
+        );
+        assert!(!reopened.is_ready());
+        assert!(reopened.new_address().await.is_err());
     }
 
     #[tokio::test(flavor = "multi_thread")]
