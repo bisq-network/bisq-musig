@@ -727,11 +727,11 @@ impl WalletApi for BMPWallet {
 
     fn persist(&mut self) -> anyhow::Result<bool> {
         // Persist imported keys and then persist staged changes from ChangeSet
-        let _ = Connection::persist_imported_keys(
+        Connection::persist_imported_keys(
             &mut self.db,
             Self::IMPORTED_KEYS_TABLE_NAME,
             &self.imported_keys,
-        );
+        )?;
 
         match self.wallet.staged_mut() {
             Some(stage) => {

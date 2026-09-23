@@ -188,6 +188,41 @@ mod tests {
         Ok(())
     }
 
+    #[test]
+    fn persist_reports_a_failed_imported_key_write() -> anyhow::Result<()> {
+        let mem_storage = MemDbHandle::new()?;
+        let mut wallet = BMPWallet::new(mem_storage.store.clone(), "", Network::Regtest)?;
+        wallet.import_private_key(new_private_key(), None)?;
+        let address = wallet.reveal_next_address(KeychainKind::External);
+
+        // Make only the imported-key write fail. BDK's own tables stay writable.
+        let db = mem_storage.store.open(BMPWallet::DB_NAME)?;
+        db.execute_batch(&format!(
+            "CREATE TRIGGER fail_import BEFORE INSERT ON {} \
+             BEGIN SELECT RAISE(ABORT, 'imported key write failed'); END",
+            BMPWallet::IMPORTED_KEYS_TABLE_NAME
+        ))?;
+
+        assert!(wallet.persist().is_err());
+        assert!(
+            wallet.staged().is_some(),
+            "unsaved BDK changes must be kept for a retry"
+        );
+
+        db.execute_batch("DROP TRIGGER fail_import")?;
+        drop(db);
+        assert!(wallet.persist()?);
+        drop(wallet);
+
+        let reloaded = BMPWallet::load_wallet(mem_storage.store, Network::Regtest, "")?;
+        assert_eq!(reloaded.imported_keys().len(), 1);
+        assert_eq!(
+            reloaded.derivation_index(KeychainKind::External),
+            Some(address.index)
+        );
+        Ok(())
+    }
+
     #[tokio::test]
     async fn test_sync() -> anyhow::Result<()> {
         let mem_storage = MemDbHandle::new()?;
