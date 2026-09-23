@@ -3,7 +3,6 @@ use std::time::UNIX_EPOCH;
 use std::vec;
 
 
-use anyhow::Context as _;
 use bdk_electrum::bdk_core::bitcoin::{Address, FeeRate, OutPoint};
 use bdk_wallet::bitcoin::bip32::Xpriv;
 use bdk_wallet::bitcoin::hex::DisplayHex as _;
@@ -523,10 +522,11 @@ impl BMPWallet {
         let wallet_opt = Wallet::load().check_network(network).load_wallet(&mut db)?;
 
         if let Some(wallet) = wallet_opt {
-            // Creation commits the BDK wallet before the seed phrase, so a wallet whose creation
-            // was cut short in between can still hand out addresses, but never sign for them:
-            Connection::get_seed_phrase(&db, Self::SEEDS_TABLE_NAME)
-                .context("wallet has no stored seed phrase")?;
+            // A wallet whose seed phrase was never stored, as when creation stops half way, can
+            // still hand out addresses but can never sign for them, so refuse to open it:
+            if !Connection::has_seed_phrase(&db, Self::SEEDS_TABLE_NAME)? {
+                anyhow::bail!("wallet has no stored seed phrase");
+            }
             let imported_keys =
                 Connection::load_imported_keys(&mut db, Self::IMPORTED_KEYS_TABLE_NAME)?;
 

@@ -35,7 +35,6 @@ mod tests {
     use crate::bmp_wallet::{BMPWallet, ImportedKey, STOP_GAP, WalletApi as _};
     use crate::persisted::DBStorage;
     use crate::test_utils::{MemDbHandle, MockedBDKElectrum, derive_public_key};
-    use crate::utils::derive_key_from_password;
 
     fn new_private_key() -> Scalar {
         let mut seed: [u8; 32] = [0u8; 32];
@@ -135,17 +134,12 @@ mod tests {
     #[test]
     fn load_refuses_wallet_without_seed_phrase() -> anyhow::Result<()> {
         let mem_storage = MemDbHandle::new()?;
-        drop(BMPWallet::new(
-            mem_storage.store.clone(),
-            "",
-            Network::Regtest,
-        )?);
+        BMPWallet::new(mem_storage.store.clone(), "", Network::Regtest)?;
 
         // Put the database in the state creation leaves it in if it stops after committing the
-        // BDK wallet, but before storing the seed phrase.
-        let salt = mem_storage.store.load_salt(BMPWallet::DB_NAME)?;
+        // BDK wallet, but before storing the seed phrase. (The in-memory database isn't
+        // encrypted, so this needs no key.)
         let db = mem_storage.store.open(BMPWallet::DB_NAME)?;
-        db.pragma_update(None, "key", derive_key_from_password("", &salt)?.as_str())?;
         db.execute(&format!("DELETE FROM {}", BMPWallet::SEEDS_TABLE_NAME), [])?;
         drop(db);
 

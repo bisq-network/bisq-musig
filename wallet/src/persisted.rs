@@ -289,6 +289,8 @@ pub trait BMPWalletPersister: WalletPersister {
 
     fn get_seed_phrase(db: &Self::DB, seeds_table_name: &str) -> anyhow::Result<String>;
 
+    fn has_seed_phrase(db: &Self::DB, seeds_table_name: &str) -> anyhow::Result<bool>;
+
     fn persist_staged_changes(
         db: &mut Self::DB,
         cs: &ChangeSet,
@@ -417,5 +419,15 @@ impl BMPWalletPersister for Connection {
             })?;
 
         Ok(mnemonic)
+    }
+
+    fn has_seed_phrase(db: &Self::DB, seeds_table_name: &str) -> anyhow::Result<bool> {
+        let exists = db.query_row(
+            &format!("SELECT EXISTS (SELECT 1 FROM {seeds_table_name})"),
+            (),
+            |row| row.get::<_, bool>(0),
+        )?;
+
+        Ok(exists)
     }
 }
