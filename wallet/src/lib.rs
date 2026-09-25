@@ -132,6 +132,28 @@ mod tests {
     }
 
     #[test]
+    fn load_refuses_wallet_without_seed_phrase() -> anyhow::Result<()> {
+        let mem_storage = MemDbHandle::new()?;
+        BMPWallet::new(mem_storage.store.clone(), "", Network::Regtest)?;
+
+        // Put the database in the state creation leaves it in if it stops after committing the
+        // BDK wallet, but before storing the seed phrase. (The in-memory database isn't
+        // encrypted, so this needs no key.)
+        let db = mem_storage.store.open(BMPWallet::DB_NAME)?;
+        db.execute(&format!("DELETE FROM {}", BMPWallet::SEEDS_TABLE_NAME), [])?;
+        drop(db);
+
+        let Err(err) = BMPWallet::load_wallet(mem_storage.store, Network::Regtest, "") else {
+            panic!("a wallet without its seed phrase must not load");
+        };
+        assert!(
+            err.to_string().contains("seed phrase"),
+            "unexpected error: {err}"
+        );
+        Ok(())
+    }
+
+    #[test]
     fn test_imported_keys() -> anyhow::Result<()> {
         let mem_storage = MemDbHandle::new()?;
         let mut bmp_wallet = BMPWallet::new(mem_storage.store.clone(), "", Network::Regtest)?;

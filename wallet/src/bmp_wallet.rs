@@ -522,6 +522,11 @@ impl BMPWallet {
         let wallet_opt = Wallet::load().check_network(network).load_wallet(&mut db)?;
 
         if let Some(wallet) = wallet_opt {
+            // A wallet whose seed phrase was never stored, as when creation stops half way, can
+            // still hand out addresses but can never sign for them, so refuse to open it:
+            if !Connection::has_seed_phrase(&db, Self::SEEDS_TABLE_NAME)? {
+                anyhow::bail!("wallet has no stored seed phrase");
+            }
             let imported_keys =
                 Connection::load_imported_keys(&mut db, Self::IMPORTED_KEYS_TABLE_NAME)?;
 
