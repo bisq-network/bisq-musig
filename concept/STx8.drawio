@@ -1,0 +1,164 @@
+<mxfile host="Electron" agent="Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Safari/537.36">
+  <diagram name="Page-1" id="4t2JOigZqfDRrmz9JXpL">
+    <mxGraphModel dx="2204" dy="1567" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="0" pageScale="1" pageWidth="827" pageHeight="1169" background="#FFFFFF" math="1" shadow="0">
+      <root>
+        <mxCell id="0" />
+        <mxCell id="1" parent="0" />
+        <mxCell id="2" parent="1" style="swimlane;fontStyle=0;childLayout=stackLayout;horizontal=1;startSize=30;horizontalStack=0;resizeParent=1;resizeParentMax=0;resizeLast=0;collapsible=1;marginBottom=0;whiteSpace=wrap;html=1;labelBackgroundColor=none;fillColor=#ffe6cc;strokeColor=#d79b00;" value="Alice&#39;s Funds" vertex="1">
+          <mxGeometry height="105" width="170" x="30" y="150" as="geometry" />
+        </mxCell>
+        <mxCell id="3" parent="2" style="text;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;spacingLeft=4;spacingRight=4;overflow=hidden;points=[[0,0.5],[1,0.5]];portConstraint=eastwest;rotatable=0;whiteSpace=wrap;html=1;labelBackgroundColor=none;" value="&lt;b&gt;Outputs&lt;/b&gt; (P2TR / P2WPKH): trade amount + seller&#39;s security deposit + trade fees" vertex="1">
+          <mxGeometry height="75" width="170" y="30" as="geometry" />
+        </mxCell>
+        <mxCell id="6" parent="1" style="swimlane;fontStyle=0;childLayout=stackLayout;horizontal=1;startSize=30;horizontalStack=0;resizeParent=1;resizeParentMax=0;resizeLast=0;collapsible=1;marginBottom=0;whiteSpace=wrap;html=1;labelBackgroundColor=none;fillColor=#ffe6cc;strokeColor=#d79b00;" value="Bob&#39;s Funds" vertex="1">
+          <mxGeometry height="90" width="170" x="30" y="400" as="geometry" />
+        </mxCell>
+        <mxCell id="7" parent="6" style="text;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;spacingLeft=4;spacingRight=4;overflow=hidden;points=[[0,0.5],[1,0.5]];portConstraint=eastwest;rotatable=0;whiteSpace=wrap;html=1;labelBackgroundColor=none;" value="&lt;b&gt;Outputs&lt;/b&gt; (P2TR / P2WPKH): buyer&#39;s security deposit" vertex="1">
+          <mxGeometry height="60" width="170" y="30" as="geometry" />
+        </mxCell>
+        <mxCell id="12" edge="1" parent="1" source="8" style="rounded=0;orthogonalLoop=1;jettySize=auto;html=1;entryX=1;entryY=0.5;entryDx=0;entryDy=0;labelBackgroundColor=none;fontColor=default;" target="3">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="22" connectable="0" parent="12" style="edgeLabel;html=1;align=center;verticalAlign=middle;resizable=0;points=[];labelBackgroundColor=none;" value="Alice&#39;s signature" vertex="1">
+          <mxGeometry relative="1" as="geometry">
+            <mxPoint x="-15" y="28" as="offset" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="8" parent="1" style="swimlane;fontStyle=0;childLayout=stackLayout;horizontal=1;startSize=30;horizontalStack=0;resizeParent=1;resizeParentMax=0;resizeLast=0;collapsible=1;marginBottom=0;whiteSpace=wrap;html=1;labelBackgroundColor=none;fillColor=#d5e8d4;strokeColor=#82b366;gradientColor=#97d077;" value="Deposit Tx" vertex="1">
+          <mxGeometry height="360" width="280" x="330" y="130" as="geometry" />
+        </mxCell>
+        <mxCell id="10" parent="8" style="text;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;spacingLeft=4;spacingRight=4;overflow=hidden;points=[[0,0.5],[1,0.5]];portConstraint=eastwest;rotatable=0;whiteSpace=wrap;html=1;labelBackgroundColor=none;" value="&lt;b&gt;Buyer payout&lt;/b&gt;: trade amount + buyer&#39;s security deposit&lt;br&gt;&lt;b&gt;Taproot key spend&lt;/b&gt;: P&#39;&lt;br&gt;&lt;b&gt;script spend 0&lt;/b&gt;:&lt;br&gt;&amp;lt;PubKey Bob V&amp;gt;&lt;br&gt;OP_CHECKSIGVERIFY&lt;br&gt;&amp;lt;PubKey Alice U&amp;gt;&lt;br&gt;OP_CHECKSIG" vertex="1">
+          <mxGeometry height="135" width="280" y="30" as="geometry" />
+        </mxCell>
+        <mxCell id="14" parent="8" style="text;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;spacingLeft=4;spacingRight=4;overflow=hidden;points=[[0,0.5],[1,0.5]];portConstraint=eastwest;rotatable=0;whiteSpace=wrap;html=1;labelBackgroundColor=none;" value="&lt;b&gt;Seller payout&lt;/b&gt;: seller&#39;s security deposit&lt;br&gt;&lt;b&gt;Taproot key spend&lt;/b&gt;: Q&#39;&lt;br&gt;&lt;b&gt;script spend 0&lt;/b&gt;: same script as above&lt;br&gt;&amp;lt;PubKey Bob V&amp;gt;&lt;br&gt;OP_CHECKSIGVERIFY&lt;br&gt;&amp;lt;PubKey Alice U&amp;gt;&lt;br&gt;OP_CHECKSIG" vertex="1">
+          <mxGeometry height="135" width="280" y="165" as="geometry" />
+        </mxCell>
+        <mxCell id="80" parent="8" style="text;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;spacingLeft=4;spacingRight=4;overflow=hidden;points=[[0,0.5],[1,0.5]];portConstraint=eastwest;rotatable=0;whiteSpace=wrap;html=1;labelBackgroundColor=none;" value="Inputs and outputs are shuffled, so the payouts have no fixed output index. All inputs have nSequence 0xFFFFFFFD." vertex="1">
+          <mxGeometry height="60" width="280" y="300" as="geometry" />
+        </mxCell>
+        <mxCell id="15" edge="1" parent="1" source="8" style="rounded=0;orthogonalLoop=1;jettySize=auto;html=1;entryX=1;entryY=0.5;entryDx=0;entryDy=0;labelBackgroundColor=none;fontColor=default;" target="7">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="23" connectable="0" parent="15" style="edgeLabel;html=1;align=center;verticalAlign=middle;resizable=0;points=[];labelBackgroundColor=none;" value="Bob&#39;s signature" vertex="1">
+          <mxGeometry relative="1" as="geometry">
+            <mxPoint x="-15" y="-34" as="offset" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="16" parent="1" style="swimlane;fontStyle=0;childLayout=stackLayout;horizontal=1;startSize=30;horizontalStack=0;resizeParent=1;resizeParentMax=0;resizeLast=0;collapsible=1;marginBottom=0;whiteSpace=wrap;html=1;labelBackgroundColor=none;fillColor=#e1d5e7;strokeColor=#9673a6;" value="Warning Tx Alice / Bob" vertex="1">
+          <mxGeometry height="365" width="320" x="860" y="-90" as="geometry" />
+        </mxCell>
+        <mxCell id="17" parent="16" style="text;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;spacingLeft=4;spacingRight=4;overflow=hidden;points=[[0,0.5],[1,0.5]];portConstraint=eastwest;rotatable=0;whiteSpace=wrap;html=1;labelBackgroundColor=none;opacity=0;" value="&lt;b&gt;&lt;font style=&quot;font-size: 14px;&quot;&gt;Output 0&lt;/font&gt;&lt;span style=&quot;font-size: 13px;&quot;&gt;: &lt;/span&gt;&lt;/b&gt;escrow = buyer payout + seller payout - anchor - mining fee&lt;br&gt;&lt;br&gt;&lt;b&gt;key spend&lt;/b&gt;: &lt;br&gt;P&#39; / Q&#39; (Bob / Alice can take the whole amount with the PenaltyTx if key exchange already happened)&lt;br&gt;&lt;br&gt;&lt;b&gt;script spend 0&lt;/b&gt;: &lt;br&gt;Alice / Bob can claim the whole amount after the claim lock time with script:&lt;br&gt;push pubkey R&lt;br&gt;OP_CHECKSIGVERIFY&lt;br&gt;push claim lock time&lt;br&gt;OP_CSV&lt;br&gt;&lt;font style=&quot;font-size: 10px;&quot;&gt;(script_paths.rs; BMPProtocol still locks the escrow to the key spend only)&lt;/font&gt;" vertex="1">
+          <mxGeometry height="290" width="320" y="30" as="geometry" />
+        </mxCell>
+        <mxCell id="74" parent="16" style="text;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;spacingLeft=4;spacingRight=4;overflow=hidden;points=[[0,0.5],[1,0.5]];portConstraint=eastwest;rotatable=0;whiteSpace=wrap;html=1;labelBackgroundColor=none;opacity=0;" value="&lt;b&gt;&lt;font style=&quot;font-size: 14px;&quot;&gt;Output 1&lt;/font&gt;&lt;span style=&quot;font-size: 13px;&quot;&gt;: &lt;/span&gt;&lt;/b&gt;anchor output 330 sats.&lt;br&gt;&lt;b&gt;key spend&lt;/b&gt;: Pubkey from Alice / Bob" vertex="1">
+          <mxGeometry height="45" width="320" y="320" as="geometry" />
+        </mxCell>
+        <mxCell id="20" edge="1" parent="1" source="16" style="rounded=0;orthogonalLoop=1;jettySize=auto;html=1;entryX=1;entryY=0.5;entryDx=0;entryDy=0;labelBackgroundColor=none;fontColor=default;" target="10">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="81" connectable="0" parent="20" style="edgeLabel;html=1;align=center;verticalAlign=middle;resizable=0;points=[];" value="both inputs: MuSig2 key spend&lt;br&gt;nSequence: warning lock time" vertex="1">
+          <mxGeometry relative="1" as="geometry">
+            <mxPoint x="30" y="-66" as="offset" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="21" edge="1" parent="1" source="16" style="rounded=0;orthogonalLoop=1;jettySize=auto;html=1;entryX=1;entryY=0.5;entryDx=0;entryDy=0;labelBackgroundColor=none;fontColor=default;" target="14">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="33" edge="1" parent="1" source="44" style="rounded=0;orthogonalLoop=1;jettySize=auto;html=1;labelBackgroundColor=none;fontColor=default;" target="17">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="83" connectable="0" parent="33" style="edgeLabel;html=1;align=center;verticalAlign=middle;resizable=0;points=[];" value="MuSig2 key spend&lt;br&gt;no relative lock time" vertex="1">
+          <mxGeometry relative="1" as="geometry">
+            <mxPoint y="31" as="offset" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="40" parent="1" style="swimlane;fontStyle=0;childLayout=stackLayout;horizontal=1;startSize=30;horizontalStack=0;resizeParent=1;resizeParentMax=0;resizeLast=0;collapsible=1;marginBottom=0;whiteSpace=wrap;html=1;labelBackgroundColor=none;fillColor=#e1d5e7;strokeColor=#9673a6;" value="SwapTx Alice" vertex="1">
+          <mxGeometry height="85" width="320" x="860" y="480" as="geometry" />
+        </mxCell>
+        <mxCell id="41" parent="40" style="text;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;spacingLeft=4;spacingRight=4;overflow=hidden;points=[[0,0.5],[1,0.5]];portConstraint=eastwest;rotatable=0;whiteSpace=wrap;html=1;labelBackgroundColor=none;" value="&lt;b&gt;Output 0:&lt;/b&gt; seller payout - mining fee&lt;br&gt;key spend to Alice&#39;s Wallet" vertex="1">
+          <mxGeometry height="55" width="320" y="30" as="geometry" />
+        </mxCell>
+        <mxCell id="42" edge="1" parent="1" source="40" style="rounded=0;orthogonalLoop=1;jettySize=auto;html=1;entryX=1;entryY=0.5;entryDx=0;entryDy=0;exitX=0;exitY=0.25;exitDx=0;exitDy=0;labelBackgroundColor=none;fontColor=default;" target="14">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="53" connectable="0" parent="42" style="edgeLabel;html=1;align=center;verticalAlign=middle;resizable=0;points=[];" value="MuSig2 adaptor signature&lt;br&gt;reveals p&lt;sub&gt;a&lt;/sub&gt; only to Bob" vertex="1">
+          <mxGeometry relative="1" as="geometry">
+            <mxPoint x="-35" y="46" as="offset" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="43" parent="1" style="text;html=1;align=left;verticalAlign=middle;whiteSpace=wrap;strokeColor=none;fillColor=none;labelBackgroundColor=none;" value="&lt;div&gt;&lt;font style=&quot;&quot;&gt;&lt;font style=&quot;font-size: 24px;&quot;&gt;Diagram synced with code 09/28/25&lt;/font&gt;&lt;/font&gt;&lt;/div&gt;&lt;font style=&quot;&quot;&gt;&lt;font style=&quot;font-size: 24px;&quot;&gt;Alice: Seller&amp;nbsp;&amp;nbsp;&lt;br&gt;Bob: Buyer&lt;/font&gt;&lt;br&gt;&lt;font style=&quot;font-size: 11px;&quot;&gt;P&#39; = MuSig2 aggregate of the key shares P&lt;sub&gt;a&lt;/sub&gt; and P&lt;sub&gt;b&lt;/sub&gt; (p_tik), Q&#39; = aggregate of Q&lt;sub&gt;a&lt;/sub&gt; and Q&lt;sub&gt;b&lt;/sub&gt; (q_tik)&lt;br&gt;an output with key spend P&#39; or Q&#39; is locked by that key, tweaked with its script spend 0 (if any)&lt;br&gt;U and V are script keys from the wallets of Alice and Bob&lt;br&gt;&lt;/font&gt;&lt;/font&gt;&lt;div&gt;&lt;font style=&quot;&quot;&gt;&lt;font style=&quot;font-size: 11px;&quot;&gt;change outputs, funding from multiple inputs and trade fee outputs are not shown&lt;/font&gt;&lt;br&gt;&lt;/font&gt;&lt;/div&gt;" vertex="1">
+          <mxGeometry height="210" width="560" x="10" y="-100" as="geometry" />
+        </mxCell>
+        <mxCell id="44" parent="1" style="swimlane;fontStyle=0;childLayout=stackLayout;horizontal=1;startSize=30;horizontalStack=0;resizeParent=1;resizeParentMax=0;resizeLast=0;collapsible=1;marginBottom=0;whiteSpace=wrap;html=1;labelBackgroundColor=none;fillColor=#e1d5e7;strokeColor=#9673a6;" value="Redirect Tx&lt;br&gt;Bob / Alice" vertex="1">
+          <mxGeometry height="130" width="260" x="1380" y="85" as="geometry" />
+        </mxCell>
+        <mxCell id="45" parent="44" style="text;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;spacingLeft=4;spacingRight=4;overflow=hidden;points=[[0,0.5],[1,0.5]];portConstraint=eastwest;rotatable=0;whiteSpace=wrap;html=1;labelBackgroundColor=none;" value="&lt;b&gt;&lt;font style=&quot;font-size: 14px;&quot;&gt;Outputs 0 ... n-1:&lt;/font&gt;&lt;/b&gt; key spend outputs to the n burning men." vertex="1">
+          <mxGeometry height="50" width="260" y="30" as="geometry" />
+        </mxCell>
+        <mxCell id="62" parent="44" style="text;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;spacingLeft=4;spacingRight=4;overflow=hidden;points=[[0,0.5],[1,0.5]];portConstraint=eastwest;rotatable=0;whiteSpace=wrap;html=1;labelBackgroundColor=none;" value="&lt;b&gt;&lt;font style=&quot;font-size: 14px;&quot;&gt;Output n:&lt;/font&gt;&lt;/b&gt; anchor output 330 sats.&lt;br&gt;&lt;b&gt;key spend:&lt;/b&gt; Pubkey of Bob / Alice" vertex="1">
+          <mxGeometry height="50" width="260" y="80" as="geometry" />
+        </mxCell>
+        <mxCell id="60" parent="1" style="text;html=1;strokeColor=none;fillColor=none;spacing=5;spacingTop=-20;whiteSpace=wrap;overflow=hidden;rounded=0;" value="&lt;h1&gt;Transactions&amp;nbsp;&lt;/h1&gt;&lt;p&gt;&lt;span style=&quot;background-color: rgb(255, 230, 204);&quot;&gt;Funding transaction. Keys / Signature for spending come from the wallet crate. The signatures for all other transaction are made by the protocol crate, except for the CustomPayoutTx.&lt;/span&gt;&lt;/p&gt;&lt;p&gt;&lt;span style=&quot;background-color: rgb(213, 232, 212);&quot;&gt;Only the DepositTx is broadcasted at the time of creation, the transactions right of it will have the problem that the necessary fee rate is not known for the time they are broadcasted.&lt;/span&gt;&lt;/p&gt;&lt;p&gt;&lt;/p&gt;&lt;p&gt;&lt;/p&gt;&lt;p&gt;&lt;span style=&quot;background-color: rgb(225, 213, 231);&quot;&gt;These transaction are presigned with MuSig2. They are created and signed when the trade starts (before the DepositTx is signed and broadcast). They need to be signed at the time when both traders are online.&lt;/span&gt;&lt;/p&gt;&lt;p&gt;&lt;span style=&quot;background-color: rgb(176, 227, 230);&quot;&gt;CustomPayoutTx and PenaltyTx are transaction signed on demand. The CustomPayoutTx is created when the traders agree on a payout, both wallets sign it with the script keys U and V. The PenaltyTx is signed by one trader alone, after the key exchange.&lt;/span&gt;&lt;/p&gt;" vertex="1">
+          <mxGeometry height="300" width="560" x="30" y="540" as="geometry" />
+        </mxCell>
+        <mxCell id="64" parent="1" style="swimlane;fontStyle=0;childLayout=stackLayout;horizontal=1;startSize=30;horizontalStack=0;resizeParent=1;resizeParentMax=0;resizeLast=0;collapsible=1;marginBottom=0;whiteSpace=wrap;html=1;labelBackgroundColor=none;fillColor=#b0e3e6;strokeColor=#0e8088;" value="PenaltyTx&lt;br&gt;Bob / Alice" vertex="1">
+          <mxGeometry height="215" width="260" x="1380" y="-170" as="geometry" />
+        </mxCell>
+        <mxCell id="65" parent="64" style="text;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;spacingLeft=4;spacingRight=4;overflow=hidden;points=[[0,0.5],[1,0.5]];portConstraint=eastwest;rotatable=0;whiteSpace=wrap;html=1;labelBackgroundColor=none;" value="prepared by the protocol together with the presigned transactions, but signed only when needed, by Bob / Alice alone with the private key p&#39; / q&#39;. It disincentivises the use of the WarningTx, when Bob / Alice has the key already." vertex="1">
+          <mxGeometry height="115" width="260" y="30" as="geometry" />
+        </mxCell>
+        <mxCell id="66" parent="64" style="text;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;spacingLeft=4;spacingRight=4;overflow=hidden;points=[[0,0.5],[1,0.5]];portConstraint=eastwest;rotatable=0;whiteSpace=wrap;html=1;labelBackgroundColor=none;" value="&lt;b&gt;&lt;font style=&quot;font-size: 14px;&quot;&gt;Output 0:&lt;/font&gt;&lt;/b&gt; escrow - mining fee&lt;br&gt;&lt;b&gt;key spend:&lt;/b&gt; Pubkey of Bob / Alice (same address as in the ClaimTx Bob / Alice)" vertex="1">
+          <mxGeometry height="70" width="260" y="145" as="geometry" />
+        </mxCell>
+        <mxCell id="67" edge="1" parent="1" source="64" style="rounded=0;orthogonalLoop=1;jettySize=auto;html=1;" target="17">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="84" connectable="0" parent="67" style="edgeLabel;html=1;align=center;verticalAlign=middle;resizable=0;points=[];" value="key spend with&lt;br&gt;private key p&#39; / q&#39;" vertex="1">
+          <mxGeometry relative="1" as="geometry">
+            <mxPoint x="-10" y="-35" as="offset" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="69" parent="1" style="swimlane;fontStyle=0;childLayout=stackLayout;horizontal=1;startSize=30;horizontalStack=0;resizeParent=1;resizeParentMax=0;resizeLast=0;collapsible=1;marginBottom=0;whiteSpace=wrap;html=1;labelBackgroundColor=none;fillColor=#e1d5e7;strokeColor=#9673a6;" value="ClaimTx Alice / Bob" vertex="1">
+          <mxGeometry height="85" width="260" x="1380" y="255" as="geometry" />
+        </mxCell>
+        <mxCell id="70" parent="69" style="text;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;spacingLeft=4;spacingRight=4;overflow=hidden;points=[[0,0.5],[1,0.5]];portConstraint=eastwest;rotatable=0;whiteSpace=wrap;html=1;labelBackgroundColor=none;" value="&lt;b&gt;&lt;font style=&quot;font-size: 14px;&quot;&gt;Output 0:&lt;/font&gt;&lt;/b&gt; escrow - mining fee&lt;br&gt;Alice / Bob sends funds to own wallet" vertex="1">
+          <mxGeometry height="55" width="260" y="30" as="geometry" />
+        </mxCell>
+        <mxCell id="72" edge="1" parent="1" source="69" style="rounded=0;orthogonalLoop=1;jettySize=auto;html=1;" target="17">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="73" connectable="0" parent="72" style="edgeLabel;html=1;align=center;verticalAlign=middle;resizable=0;points=[];" value="MuSig2 key spend&lt;br&gt;nSequence: claim lock time" vertex="1">
+          <mxGeometry relative="1" as="geometry">
+            <mxPoint x="-26" y="35" as="offset" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="75" parent="1" style="swimlane;fontStyle=0;childLayout=stackLayout;horizontal=1;startSize=30;horizontalStack=0;resizeParent=1;resizeParentMax=0;resizeLast=0;collapsible=1;marginBottom=0;whiteSpace=wrap;html=1;labelBackgroundColor=none;fillColor=#b0e3e6;strokeColor=#0e8088;" value="CustomPayoutTx" vertex="1">
+          <mxGeometry height="120" width="320" x="860" y="320" as="geometry" />
+        </mxCell>
+        <mxCell id="76" parent="75" style="text;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;spacingLeft=4;spacingRight=4;overflow=hidden;points=[[0,0.5],[1,0.5]];portConstraint=eastwest;rotatable=0;whiteSpace=wrap;html=1;labelBackgroundColor=none;" value="&lt;b&gt;&lt;font style=&quot;font-size: 14px;&quot;&gt;Output 0:&lt;/font&gt;&lt;/b&gt; agreed on&amp;nbsp;amount for Bob" vertex="1">
+          <mxGeometry height="30" width="320" y="30" as="geometry" />
+        </mxCell>
+        <mxCell id="77" parent="75" style="text;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;spacingLeft=4;spacingRight=4;overflow=hidden;points=[[0,0.5],[1,0.5]];portConstraint=eastwest;rotatable=0;whiteSpace=wrap;html=1;labelBackgroundColor=none;" value="&lt;font style=&quot;font-size: 14px;&quot;&gt;&lt;b&gt;Output 1:&lt;/b&gt; &lt;/font&gt;agreed on amount for Alice" vertex="1">
+          <mxGeometry height="30" width="320" y="60" as="geometry" />
+        </mxCell>
+        <mxCell id="85" parent="75" style="text;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;spacingLeft=4;spacingRight=4;overflow=hidden;points=[[0,0.5],[1,0.5]];portConstraint=eastwest;rotatable=0;whiteSpace=wrap;html=1;labelBackgroundColor=none;" value="Alice and Bob each pay half of the mining fee." vertex="1">
+          <mxGeometry height="30" width="320" y="90" as="geometry" />
+        </mxCell>
+        <mxCell id="78" edge="1" parent="1" source="75" style="rounded=0;orthogonalLoop=1;jettySize=auto;html=1;entryX=1;entryY=0.5;entryDx=0;entryDy=0;" target="10">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="79" edge="1" parent="1" source="75" style="rounded=0;orthogonalLoop=1;jettySize=auto;html=1;entryX=1;entryY=0.5;entryDx=0;entryDy=0;" target="14">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="86" connectable="0" parent="79" style="edgeLabel;html=1;align=center;verticalAlign=middle;resizable=0;points=[];" value="both inputs: script spend 0" vertex="1">
+          <mxGeometry relative="1" as="geometry">
+            <mxPoint x="35" y="24" as="offset" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="87" parent="1" style="text;html=1;strokeColor=none;fillColor=none;spacing=5;spacingTop=-20;whiteSpace=wrap;overflow=hidden;rounded=0;" value="&lt;h1&gt;Relative lock times&lt;/h1&gt;&lt;p&gt;nSequence of the inputs, see NetworkParams in transaction.rs:&lt;/p&gt;&lt;p&gt;warning lock time (WarningTx): 1440 blocks (10 days), regtest 5 blocks&lt;br&gt;claim lock time (ClaimTx): 720 blocks (5 days), regtest 5 blocks&lt;br&gt;RedirectTx, SwapTx, PenaltyTx and CustomPayoutTx: none&lt;/p&gt;&lt;p&gt;&lt;span style=&quot;background-color: transparent; color: light-dark(rgb(0, 0, 0), rgb(255, 255, 255));&quot;&gt;Mining fees&lt;/span&gt;&lt;/p&gt;&lt;p&gt;fee rate x fixed weight of the signed transaction: WarningTx 846 wu, SwapTx / ClaimTx / PenaltyTx 444 wu, CustomPayoutTx 1182 wu. The RedirectTx pays what the receivers and the anchor leave over.&lt;/p&gt;" vertex="1">
+          <mxGeometry height="330" width="540" x="640" y="620" as="geometry" />
+        </mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>
