@@ -28,7 +28,7 @@ Relevant properties of the current implementation (`protocol/src/transaction.rs`
   an anchor output which only the broadcasting party can spend.
 - `RedirectTx` has **no relative timelock** (`MAINNET_REDIRECT_LOCK_TIME = LockTime::ZERO`, i.e.
   nSequence = `0xFFFFFFFD`), so it can be broadcast while the `WarningTx` is still unconfirmed. 
-- `ClaimTx` spends the `WarningTx` escrow output via a script path with `OP_CSV`
+- `ClaimTx` spends the `WarningTx` escrow output via a key spent with a LockTIME
   (`MAINNET_CLAIM_LOCK_TIME`, 720 blocks), so it can never be in the mempool together with its
   `WarningTx`.
 
@@ -49,7 +49,7 @@ In this scenario the seller is the victim:
    RBF of the whole cluster: the buyer must pay a higher absolute fee than all evicted transactions
    combined (including his own junk chain), plus the incremental relay fee. This is the cost of the
    attack, but it can be small if the junk chain was kept at a low fee rate.
-6. If the seller's software does not react to its `WarningTx` being replaced by the peer's
+6. If the seller's software does not react to its `WarningTx` (which is the case today) being replaced by the peer's
    `WarningTx` (e.g. its internal state is still `SellersWarning`, which cannot send
    `SellersRedirectTx`), the seller will not broadcast the `SellersRedirectTx`.
 7. After the CSV delay of the `ClaimTx` has passed, the buyer broadcasts the `BuyersClaimTx` and
