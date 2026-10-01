@@ -422,12 +422,7 @@ impl BMPWalletPersister for Connection {
     }
 
     fn has_seed_phrase(db: &Self::DB, seeds_table_name: &str) -> anyhow::Result<bool> {
-        let exists = db.query_row(
-            &format!("SELECT EXISTS (SELECT 1 FROM {seeds_table_name})"),
-            (),
-            |row| row.get::<_, bool>(0),
-        )?;
-
-        Ok(exists)
+        let mut stmt = db.prepare(&format!("SELECT 1 FROM {seeds_table_name}"))?;
+        Ok(stmt.exists([])?)
     }
 }

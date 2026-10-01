@@ -525,6 +525,7 @@ impl BMPWallet {
             // A wallet whose seed phrase was never stored, as when creation stops half way, can
             // still hand out addresses but can never sign for them, so refuse to open it:
             if !Connection::has_seed_phrase(&db, Self::SEEDS_TABLE_NAME)? {
+                tracing::error!("Wallet database has no stored seed phrase.");
                 anyhow::bail!("wallet has no stored seed phrase");
             }
             let imported_keys =

@@ -137,8 +137,7 @@ mod tests {
         BMPWallet::new(mem_storage.store.clone(), "", Network::Regtest)?;
 
         // Put the database in the state creation leaves it in if it stops after committing the
-        // BDK wallet, but before storing the seed phrase. (The in-memory database isn't
-        // encrypted, so this needs no key.)
+        // BDK wallet, but before storing the seed phrase.
         let db = mem_storage.store.open(BMPWallet::DB_NAME)?;
         db.execute(&format!("DELETE FROM {}", BMPWallet::SEEDS_TABLE_NAME), [])?;
         drop(db);
