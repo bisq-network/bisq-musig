@@ -18,7 +18,9 @@ use bdk_wallet::template::{Bip86, DescriptorTemplate as _};
 use bdk_wallet::{AddressInfo, KeychainKind, SignOptions, TxBuilder, TxOrdering, Wallet};
 use rand::RngCore as _;
 use secp::Scalar;
-use thiserror::Error;
+
+use crate::bmp_wallet::WalletErrorKind::MalformedPsbt;
+use crate::bmp_wallet::{Result, WalletErrorKind};
 
 /// The Protocol Wallet API is used by the protocol to create and sign transactions.
 /// It's the part of functionality being exposed only to the protocol.
@@ -60,7 +62,7 @@ pub trait ProtocolWalletApi {
         &mut self,
         pk: Scalar,
         tap_tree: Option<TapTree<XOnlyPublicKey>>,
-    ) -> Result<(), WalletErrorKind>;
+    ) -> Result<()>;
 }
 
 pub struct MemWallet {
@@ -206,7 +208,7 @@ impl ProtocolWalletApi for MemWallet {
         &mut self,
         _pk: Scalar,
         _tap_tree: Option<TapTree<XOnlyPublicKey>>,
-    ) -> Result<(), WalletErrorKind> {
+    ) -> Result<()> {
         // `MemWallet` is an in-memory wallet that doesn't currently support imported keys.
         // If/when this is needed, mirror the `BMPWallet` implementation.
         todo!("MemWallet does not yet support importing private keys")
@@ -253,7 +255,7 @@ impl ProtocolWalletApi for Wallet {
         &mut self,
         _pk: Scalar,
         _tap_tree: Option<TapTree<XOnlyPublicKey>>,
-    ) -> Result<(), WalletErrorKind> {
+    ) -> Result<()> {
         unimplemented!(
             "bdk_wallet::Wallet does not support importing external private keys; \
             use BMPWallet for that"
@@ -278,10 +280,10 @@ pub(crate) fn sign_selected_inputs_with<W, F>(
 ) -> Result<()>
 where
     W: WalletExt + ?Sized,
-    F: FnOnce(&mut W, &mut Psbt, SignOptions) -> anyhow::Result<()>,
+    F: FnOnce(&mut W, &mut Psbt, SignOptions) -> Result<()>,
 {
     if !is_well_formed_psbt(psbt) {
-        return Err(WalletErrorKind::MalformedPsbt);
+        return Err(MalformedPsbt);
     }
     let mut psbt_copy = psbt.clone();
     // Populate the BIP32 derivation paths before BDK can finalize the inputs we own. Also
@@ -335,10 +337,7 @@ pub(crate) fn finish_standard_psbt<Cs: CoinSelectionAlgorithm>(
 /// implementation so that the descriptor-walking logic isn't repeated per wallet flavour;
 /// each implementor only needs to decide *which* index to feed in (e.g. via
 /// `reveal_next_address` or a gap-filling `next_address`).
-pub(crate) fn internal_key_at_index(
-    wallet: &Wallet,
-    index: u32,
-) -> Result<XOnlyPublicKey, WalletErrorKind> {
+pub(crate) fn internal_key_at_index(wallet: &Wallet, index: u32) -> Result<XOnlyPublicKey> {
     if let Descriptor::Tr(tr) = wallet.public_descriptor(KeychainKind::External) {
         let ik = tr.internal_key().clone();
         return Ok(ik
@@ -359,20 +358,4 @@ fn is_well_formed_psbt(psbt: &Psbt) -> bool {
             .input
             .iter()
             .all(|i| i.script_sig.is_empty() && i.witness.is_empty())
-}
-
-type Result<T, E = WalletErrorKind> = std::result::Result<T, E>;
-
-#[derive(Error, Debug)]
-#[error(transparent)]
-#[non_exhaustive]
-pub enum WalletErrorKind {
-    #[error("not a Taproot address")]
-    NotTaprootAddress,
-    #[error("malformed PSBT")]
-    MalformedPsbt,
-    ConversionError(#[from] bdk_wallet::miniscript::descriptor::ConversionError),
-    CreateTx(#[from] bdk_wallet::error::CreateTxError),
-    #[error(transparent)]
-    Other(#[from] anyhow::Error),
 }
