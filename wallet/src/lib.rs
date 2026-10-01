@@ -32,7 +32,7 @@ mod tests {
     use rand::RngCore as _;
     use secp::Scalar;
 
-    use crate::bmp_wallet::{BMPWallet, ImportedKey, STOP_GAP, WalletApi as _};
+    use crate::bmp_wallet::{BMPWallet, ImportedKey, STOP_GAP, WalletApi as _, WalletErrorKind};
     use crate::persisted::DBStorage;
     use crate::test_utils::{MemDbHandle, MockedBDKElectrum, derive_public_key};
 
@@ -1050,10 +1050,7 @@ mod tests {
         let Err(err) = wallet.change_password("attacker", "attacker") else {
             panic!("re-keying without the current password must fail");
         };
-        assert!(
-            err.to_string().contains("invalid wallet password"),
-            "unexpected error: {err}"
-        );
+        assert!(matches!(err, WalletErrorKind::InvalidPassword));
 
         assert!(wallet.is_encrypted());
         assert!(

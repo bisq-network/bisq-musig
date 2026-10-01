@@ -10,6 +10,7 @@ use bdk_wallet::{ChangeSet, WalletPersister};
 use rand::RngCore as _;
 use rusqlite::{Connection, named_params};
 use secp::Scalar;
+use thiserror::Error;
 
 use crate::bmp_wallet::ImportedKey;
 
@@ -27,6 +28,21 @@ pub enum DBStorage {
     File(PathBuf),
     #[cfg(any(test, feature = "test-utils"))]
     Memory(String),
+}
+
+pub type Result<T, E = PersistenceError> = std::result::Result<T, E>;
+
+#[derive(Debug, Error)]
+#[non_exhaustive]
+pub enum PersistenceError {
+    #[error("database error: {0}")]
+    Database(#[from] rusqlite::Error),
+    #[error("I/O error: {0}")]
+    Io(#[from] std::io::Error),
+    #[error("salt decode error: {0}")]
+    SaltDecode(#[from] base64::DecodeError),
+    #[error("wallet persistence error: {0}")]
+    Generic(String),
 }
 
 impl DBStorage {
@@ -88,7 +104,7 @@ impl DBStorage {
     }
 
     //// Persist and return the persisted salt
-    pub fn persist_salt(&self, db_name: &str) -> anyhow::Result<Vec<u8>> {
+    pub fn persist_salt(&self, db_name: &str) -> Result<Vec<u8>> {
         let mut salt = [0u8; 16];
         rand::rng().fill_bytes(&mut salt);
         match self {
@@ -111,12 +127,12 @@ impl DBStorage {
         }
     }
 
-    pub fn load_salt(&self, db_name: &str) -> anyhow::Result<Vec<u8>> {
+    pub fn load_salt(&self, db_name: &str) -> Result<Vec<u8>> {
         match self {
             Self::File(_) => {
                 let salt_path = self
                     .committed_salt_path(db_name)
-                    .ok_or_else(|| anyhow::anyhow!("no committed salt path for {db_name}"))?;
+                    .ok_or_else(|| PersistenceError::Generic(format!("no committed salt path for {db_name}")))?;
                 let salt_str = fs::read_to_string(&salt_path)?;
                 Ok(general_purpose::STANDARD.decode(salt_str.as_bytes())?)
             }
@@ -126,7 +142,7 @@ impl DBStorage {
                 .unwrap()
                 .get(name)
                 .cloned()
-                .ok_or_else(|| anyhow::anyhow!("no salt registered for {name}")),
+                .ok_or_else(|| PersistenceError::Generic(format!("no salt registered for {name}"))),
         }
     }
 
@@ -142,7 +158,7 @@ impl DBStorage {
     }
 
     /// Write a staged salt
-    pub fn write_staged_salt(&self, db_name: &str, salt: &[u8]) -> anyhow::Result<()> {
+    pub fn write_staged_salt(&self, db_name: &str, salt: &[u8]) -> Result<()> {
         match self {
             Self::File(_) => {
                 let staged = self
@@ -196,7 +212,7 @@ impl DBStorage {
     }
 
     /// Commit a staged salt rename `<db>.salt.new` to `<db>.salt`
-    pub fn commit_staged_salt(&self, db_name: &str) -> anyhow::Result<()> {
+    pub fn commit_staged_salt(&self, db_name: &str) -> Result<()> {
         match self {
             Self::File(_) => {
                 let staged = self
@@ -215,7 +231,7 @@ impl DBStorage {
                     map.insert(name.clone(), s);
                     Ok(())
                 } else {
-                    Err(anyhow::anyhow!("no staged salt to commit"))
+                    Err(PersistenceError::Generic("no staged salt to commit".to_owned()))
                 }
             }
         }
@@ -259,64 +275,49 @@ impl<C: BMPWalletPersister> DerefMut for BMPDatabase<C> {
 pub trait BMPWalletPersister: WalletPersister {
     type DB;
 
-    fn new(
-        db_location: DBStorage,
-        db_name: &str,
-    ) -> anyhow::Result<Self::DB, <Self as WalletPersister>::Error>;
+    fn new(db_location: DBStorage, db_name: &str) -> Result<Self::DB>;
 
     fn init(
         db: &mut Self::DB,
         imported_keys_table: Option<&str>,
         seeds_table_name: Option<&str>,
-    ) -> anyhow::Result<()>;
+    ) -> Result<()>;
 
     fn persist_seed_phrase(
         db: &mut Self::DB,
         seeds_table_name: &str,
         seed_phrase: &str,
-    ) -> anyhow::Result<()>;
+    ) -> Result<()>;
 
-    fn load_imported_keys(
-        db: &mut Self::DB,
-        keys_table_name: &str,
-    ) -> anyhow::Result<Vec<ImportedKey>>;
+    fn load_imported_keys(db: &mut Self::DB, keys_table_name: &str) -> Result<Vec<ImportedKey>>;
 
     fn persist_imported_keys(
         db: &mut Self::DB,
         keys_table_name: &str,
         keys: &[ImportedKey],
-    ) -> anyhow::Result<()>;
+    ) -> Result<()>;
 
-    fn get_seed_phrase(db: &Self::DB, seeds_table_name: &str) -> anyhow::Result<String>;
+    fn get_seed_phrase(db: &Self::DB, seeds_table_name: &str) -> Result<String>;
 
-    fn persist_staged_changes(
-        db: &mut Self::DB,
-        cs: &ChangeSet,
-    ) -> anyhow::Result<(), rusqlite::Error>;
+    fn persist_staged_changes(db: &mut Self::DB, cs: &ChangeSet) -> Result<()>;
 }
 
 impl BMPWalletPersister for Connection {
     type DB = Self;
 
-    fn new(
-        db_location: DBStorage,
-        db_name: &str,
-    ) -> Result<Self::DB, <Self as WalletPersister>::Error> {
-        db_location.open(db_name)
+    fn new(db_location: DBStorage, db_name: &str) -> Result<Self::DB> {
+        Ok(db_location.open(db_name)?)
     }
 
-    fn persist_staged_changes(
-        db: &mut Self::DB,
-        cs: &ChangeSet,
-    ) -> anyhow::Result<(), rusqlite::Error> {
-        Self::persist(db, cs)
+    fn persist_staged_changes(db: &mut Self::DB, cs: &ChangeSet) -> Result<()> {
+        Ok(Self::persist(db, cs)?)
     }
 
     fn init(
         db: &mut Self::DB,
         imported_keys_table: Option<&str>,
         seeds_table_name: Option<&str>,
-    ) -> anyhow::Result<()> {
+    ) -> Result<()> {
         let create_imported_keys_table = format!(
             "CREATE TABLE {} ( \
                     key TEXT PRIMARY KEY NOT NULL,
@@ -345,7 +346,7 @@ impl BMPWalletPersister for Connection {
         db: &mut Self::DB,
         seeds_table_name: &str,
         seed_phrase: &str,
-    ) -> anyhow::Result<()> {
+    ) -> Result<()> {
         let trx = db.transaction()?;
         {
             let mut stmt = trx.prepare(&format!(
@@ -361,10 +362,7 @@ impl BMPWalletPersister for Connection {
         Ok(())
     }
 
-    fn load_imported_keys(
-        db: &mut Self::DB,
-        keys_table_name: &str,
-    ) -> anyhow::Result<Vec<ImportedKey>> {
+    fn load_imported_keys(db: &mut Self::DB, keys_table_name: &str) -> Result<Vec<ImportedKey>> {
         let mut imported_keys = vec![];
 
         let mut statement =
@@ -379,8 +377,12 @@ impl BMPWalletPersister for Connection {
 
         for row in row_iter {
             let (key_hex, descriptor) = row?;
-            let secret = Scalar::from_hex(&key_hex)?;
-            imported_keys.push(ImportedKey::from_descriptor_str(secret, &descriptor)?);
+            let secret = Scalar::from_hex(&key_hex)
+                .map_err(|e| PersistenceError::Generic(e.to_string()))?;
+            imported_keys.push(
+                ImportedKey::from_descriptor_str(secret, &descriptor)
+                    .map_err(|e| PersistenceError::Generic(e.to_string()))?,
+            );
         }
 
         Ok(imported_keys)
@@ -390,7 +392,7 @@ impl BMPWalletPersister for Connection {
         db: &mut Self::DB,
         keys_table_name: &str,
         keys: &[ImportedKey],
-    ) -> anyhow::Result<()> {
+    ) -> Result<()> {
         let db_trx = db.transaction()?;
         {
             let mut statement = db_trx.prepare_cached(&format!(
@@ -410,7 +412,7 @@ impl BMPWalletPersister for Connection {
         Ok(())
     }
 
-    fn get_seed_phrase(db: &Self::DB, seeds_table_name: &str) -> anyhow::Result<String> {
+    fn get_seed_phrase(db: &Self::DB, seeds_table_name: &str) -> Result<String> {
         let mnemonic =
             db.query_row(&format!("SELECT seed FROM {seeds_table_name}"), (), |row| {
                 row.get::<_, String>("seed")

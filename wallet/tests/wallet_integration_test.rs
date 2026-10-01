@@ -5,6 +5,7 @@ use base64::Engine as _;
 use bdk_kyoto::bip157::tokio;
 use bdk_kyoto::{FeeRate, TrustedPeer};
 use bdk_wallet::bitcoin::{Address, Amount, Network};
+use bdk_wallet::error::CreateTxError::OutputBelowDustLimit;
 use bdk_wallet::psbt::PsbtUtils as _;
 use bdk_wallet::{KeychainKind, SignOptions};
 use chain::CBFScanner;
@@ -411,7 +412,6 @@ async fn test_drain_wallet_with_main_balance() -> anyhow::Result<()> {
 }
 
 #[tokio::test]
-#[should_panic(expected = "value: Output below the dust limit: 0")]
 async fn test_drain_wallet_no_balance() {
     // In this test drain is called but the wallet doesn't have any imported key
     // insuffucient balance should be thrown
@@ -427,9 +427,12 @@ async fn test_drain_wallet_no_balance() {
     env.fund_address(&addr, amount_to_send_main_wallet).unwrap();
     env.mine_block().unwrap();
 
-    wallet
-        .drain_imported_balance(FeeRate::from_sat_per_vb(10).unwrap())
-        .unwrap();
+    let res = wallet.drain_imported_balance(FeeRate::from_sat_per_vb(10).unwrap());
+
+    assert!(matches!(
+        res,
+        Err(WalletErrorKind::CreateTx(OutputBelowDustLimit(_)))
+    ));
 }
 
 fn get_dir() -> TempDir {
@@ -604,7 +607,6 @@ fn new_refuses_to_overwrite_an_existing_wallet() -> anyhow::Result<()> {
 }
 
 #[test]
-#[should_panic = "file is not a database"]
 fn encrypted_wallet() {
     let dir = get_dir();
     let dir = dir.path();
@@ -619,6 +621,6 @@ fn encrypted_wallet() {
     assert_eq!(seed.split_whitespace().count(), 24);
 
     // Try loading the wallet with wrong decryption key should panic
-    let lw = BMPWallet::load_wallet(dir.into(), Network::Regtest, "secret123").unwrap();
-    lw.get_seed_phrase().unwrap();
+    let lw = BMPWallet::load_wallet(dir.into(), Network::Regtest, "secret123");
+    assert!(matches!(lw, Err(WalletErrorKind::InvalidPassword)));
 }
