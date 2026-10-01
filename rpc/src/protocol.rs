@@ -18,6 +18,7 @@ use protocol::transaction::{
 use protocol::{mocks, script_paths};
 use thiserror::Error;
 use tracing::{info, instrument};
+use wallet::bmp_wallet::WalletErrorKind;
 use wallet::protocol_wallet_api::ProtocolWalletApi;
 
 use crate::storage::{ByRef, ByVal, Storage};
@@ -916,5 +917,5 @@ pub enum ProtocolErrorKind {
     AddressParse(#[from] bdk_wallet::bitcoin::address::ParseError),
     Transaction(#[from] protocol::transaction::TransactionErrorKind),
     Multisig(#[from] protocol::multisig::MultisigErrorKind),
-    Wallet(#[from] wallet::protocol_wallet_api::WalletErrorKind),
+    Wallet(#[from] WalletErrorKind),
 }
