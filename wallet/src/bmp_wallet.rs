@@ -51,7 +51,7 @@ pub struct ImportedKey {
 impl ImportedKey {
     pub fn new(secret: Scalar, tap_tree: Option<TapTree<XOnlyPublicKey>>) -> Result<Self> {
         let descriptor = Tr::new(Self::internal_key_of(&secret), tap_tree)
-            .map_err(|e| WalletErrorKind::Generic(e.to_string()))?;
+            .map_err(WalletErrorKind::generic)?;
         Ok(Self { secret, descriptor })
     }
 
@@ -123,6 +123,8 @@ pub type Result<T, E = WalletErrorKind> = std::result::Result<T, E>;
 pub enum WalletErrorKind {
     MiniscriptError(#[from] bdk_wallet::miniscript::Error),
     Persistence(#[from] PersistenceError),
+    #[error("failed to derive database key: {0}")]
+    KeyDerivation(String),
     #[error("Invalid Password provided")]
     InvalidPassword,
     SignerError(#[from] SignerError),
@@ -140,12 +142,31 @@ pub enum WalletErrorKind {
     MissingSeedPhrase,
     ExtractTxError(#[from] Box<ExtractTxError>),
     #[error("{0}")]
-    Generic(String),
+    Generic(#[source] Box<dyn std::error::Error + Sync + Send + 'static>),
+}
+
+impl WalletErrorKind {
+    fn generic<E>(err: E) -> Self
+    where
+        E: std::error::Error + Send + Sync + 'static,
+    {
+        Self::Generic(Box::new(err))
+    }
+
+    fn message(message: impl Into<String>) -> Self {
+        Self::Generic(Box::new(std::io::Error::other(message.into())))
+    }
 }
 
 impl From<ExtractTxError> for WalletErrorKind {
     fn from(value: ExtractTxError) -> Self {
         Self::ExtractTxError(Box::new(value))
+    }
+}
+
+impl From<argon2::Error> for WalletErrorKind {
+    fn from(value: argon2::Error) -> Self {
+        Self::KeyDerivation(value.to_string())
     }
 }
 
@@ -405,8 +426,7 @@ impl BMPWallet {
     /// plaintext password (or the key itself) to have been retained: the freshly derived key is
     /// compared by its one-way fingerprint and dropped again.
     pub fn check_password(&self, password: &str) -> Result<bool> {
-        let key = derive_key_from_password(password, &self.salt)
-            .map_err(|e| WalletErrorKind::Generic(e.to_string()))?;
+        let key = derive_key_from_password(password, &self.salt)?;
         Ok(key_verifier(&key) == self.key_verifier)
     }
 
@@ -427,8 +447,7 @@ impl BMPWallet {
     fn rekey(&mut self, old_password: &str, new_password: &str) -> Result<()> {
         let mut salt = [0u8; 16];
         rand::rng().fill_bytes(&mut salt);
-        let new_key = derive_key_from_password(new_password, &salt)
-            .map_err(|e| WalletErrorKind::Generic(e.to_string()))?;
+        let new_key = derive_key_from_password(new_password, &salt)?;
 
         self.db.storage().write_staged_salt(Self::DB_NAME, &salt)?;
 
@@ -440,8 +459,7 @@ impl BMPWallet {
         // Commit the rotated salt. If that fails, undo the re-key with a key re-derived from
         // the (just verified) old password, rather than leave database and salt out of step.
         if let Err(e) = self.db.storage().commit_staged_salt(Self::DB_NAME) {
-            let old_key = derive_key_from_password(old_password, &self.salt)
-                .map_err(|e| WalletErrorKind::Generic(e.to_string()))?;
+            let old_key = derive_key_from_password(old_password, &self.salt)?;
             self.db
                 .pragma_update(None, "rekey", old_key.as_str())
                 .map_err(|e| WalletErrorKind::from(PersistenceError::Database(e)))?;
@@ -498,7 +516,7 @@ impl BMPWallet {
 
         let last_seen = UNIX_EPOCH
             .elapsed()
-            .map_err(|e| WalletErrorKind::Generic(e.to_string()))?
+            .map_err(WalletErrorKind::generic)?
             .as_secs();
         self.wallet.apply_unconfirmed_txs([(tx.clone(), last_seen)]);
         <Self as WalletApi>::persist(self)?;
@@ -532,7 +550,7 @@ impl BMPWallet {
                 .check_network(network)
                 .extract_keys()
                 .load_wallet(&mut db)
-                .map_err(|e| WalletErrorKind::Generic(e.to_string()))?;
+                .map_err(WalletErrorKind::generic)?;
 
             let imported_wallet = if let Some(wallet) = imported_wallet_opt {
                 wallet
@@ -540,7 +558,7 @@ impl BMPWallet {
                 Wallet::create_single(descriptor)
                     .network(network)
                     .create_wallet(&mut db)
-                    .map_err(|e| WalletErrorKind::Generic(e.to_string()))?
+                    .map_err(WalletErrorKind::generic)?
             };
             res.push((imported_wallet, db));
         }
@@ -560,8 +578,7 @@ impl BMPWallet {
         let mut db = storage
             .open(Self::DB_NAME)
             .map_err(|e| WalletErrorKind::from(PersistenceError::Database(e)))?;
-        let key = derive_key_from_password(password, &salt)
-            .map_err(|e| WalletErrorKind::Generic(e.to_string()))?;
+        let key = derive_key_from_password(password, &salt)?;
         db.pragma_update(None, "key", key.as_str())
             .map_err(|e| WalletErrorKind::from(PersistenceError::Database(e)))?;
 
@@ -572,10 +589,10 @@ impl BMPWallet {
                 bdk_wallet::LoadWithPersistError::Persist(rusqlite::Error::SqliteFailure(sqlite_err, _)) => {
                     match sqlite_err.code {
                         rusqlite::ErrorCode::NotADatabase | rusqlite::ErrorCode::PermissionDenied => WalletErrorKind::InvalidPassword,
-                        _ => WalletErrorKind::Generic(sqlite_err.to_string()),
+                        _ => WalletErrorKind::message(sqlite_err.to_string()),
                     }
                 }
-                _ => WalletErrorKind::Generic(e.to_string()),
+                _ => WalletErrorKind::message(e.to_string()),
             })?;
 
         if let Some(wallet) = wallet_opt {
@@ -705,7 +722,7 @@ impl WalletApi for BMPWallet {
 
         s.sync(vec)
             .await
-            .map_err(|e| WalletErrorKind::Generic(e.to_string()))?;
+            .map_err(|e| WalletErrorKind::message(e.to_string()))?;
 
         let mut final_imported_balance = Balance::default();
 
@@ -740,19 +757,19 @@ impl WalletApi for BMPWallet {
         rand::rng().fill_bytes(&mut seed);
 
         let xprv = Xpriv::new_master(network, &seed)
-            .map_err(|e| WalletErrorKind::Generic(e.to_string()))?;
+            .map_err(WalletErrorKind::generic)?;
 
         let (descriptor, external_map, _) = Bip86(xprv, KeychainKind::External)
             .build(network.into())
-            .map_err(|e| WalletErrorKind::Generic(e.to_string()))?;
+            .map_err(WalletErrorKind::generic)?;
         let (change_descriptor, internal_map, _) = Bip86(xprv, KeychainKind::Internal)
             .build(network.into())
-            .map_err(|e| WalletErrorKind::Generic(e.to_string()))?;
+            .map_err(WalletErrorKind::generic)?;
 
         // Never create over an existing wallet.
         if storage.db_exists(Self::DB_NAME) {
-            return Err(WalletErrorKind::Generic(
-                "a wallet database already exists refusing to overwrite it".to_owned()
+            return Err(WalletErrorKind::message(
+                "a wallet database already exists refusing to overwrite it",
             ));
         }
 
@@ -761,8 +778,7 @@ impl WalletApi for BMPWallet {
             .map_err(|e| WalletErrorKind::from(PersistenceError::Database(e)))?;
         let salt = storage.persist_salt(Self::DB_NAME)?;
 
-        let key = derive_key_from_password(password, &salt)
-            .map_err(|e| WalletErrorKind::Generic(e.to_string()))?;
+        let key = derive_key_from_password(password, &salt)?;
         db.pragma_update(None, "key", key.as_str())
             .map_err(|e| WalletErrorKind::from(PersistenceError::Database(e)))?;
 
@@ -771,7 +787,7 @@ impl WalletApi for BMPWallet {
             .keymap(KeychainKind::External, external_map)
             .keymap(KeychainKind::Internal, internal_map)
             .create_wallet(&mut db)
-            .map_err(|e| WalletErrorKind::Generic(e.to_string()))?;
+            .map_err(WalletErrorKind::generic)?;
 
         Connection::init(
             &mut db,
@@ -779,8 +795,7 @@ impl WalletApi for BMPWallet {
             Some(Self::SEEDS_TABLE_NAME),
         )?;
 
-        let mnemonic =
-            Mnemonic::from_entropy(&seed).map_err(|e| WalletErrorKind::Generic(e.to_string()))?;
+        let mnemonic = Mnemonic::from_entropy(&seed).map_err(WalletErrorKind::generic)?;
         let words = mnemonic.to_string();
         Connection::persist_seed_phrase(&mut db, Self::SEEDS_TABLE_NAME, &words)?;
 
