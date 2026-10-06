@@ -20,7 +20,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 // Leading `::` disambiguates the `wallet` *crate* from this crate's own `wallet` module.
-use ::wallet::bmp_wallet::{BMPWallet, WalletApi as _};
+use ::wallet::bmp_wallet::{BMPWallet, WalletApi as _, WalletErrorKind};
 use ::wallet::chain_data_source::ChainDataSource;
 use ::wallet::wallet_info::{TxInfo, TxOutputInfo, UtxoInfo};
 use bdk_bitcoind_rpc::bitcoincore_rpc::{Client, RpcApi as _};
@@ -331,13 +331,39 @@ impl<S: ChainDataSource + Send + Sync + 'static> BmpWalletService for BMPWalletS
         fs::create_dir_all(&self.wallet_dir)?;
         let db_path = self.wallet_dir.join(BMPWallet::DB_NAME);
         let wallet = if db_path.exists() {
-            let wallet =
-                BMPWallet::load_wallet(self.wallet_dir.as_path().into(), self.network, password).map_err(|e| {
-                    e.context(InvalidPassword).context(format!(
-                        "failed to open the existing wallet at {} (wrong password?)",
-                        db_path.display()
-                    ))
-                })?;
+            let wallet = match BMPWallet::load_wallet(
+                self.wallet_dir.as_path().into(),
+                self.network,
+                password,
+            ) {
+                Ok(wallet) => wallet,
+                Err(err) => match err {
+                    WalletErrorKind::InvalidPassword => {
+                        return Err(anyhow::Error::new(InvalidPassword).context(format!(
+                            "failed to open the existing wallet at {} (wrong password)",
+                            db_path.display()
+                        )));
+                    }
+                    WalletErrorKind::Persistence(err) => {
+                        return Err(anyhow::Error::msg(format!(
+                            "failed to open the existing wallet at {}: persistence error: {err}",
+                            db_path.display()
+                        )));
+                    }
+                    WalletErrorKind::Generic(message) => {
+                        return Err(anyhow::Error::msg(format!(
+                            "failed to open the existing wallet at {}: {message}",
+                            db_path.display()
+                        )));
+                    }
+                    other => {
+                        return Err(anyhow::Error::msg(format!(
+                            "failed to open the existing wallet at {}: {other}",
+                            db_path.display()
+                        )));
+                    }
+                },
+            };
             info!(dir = %self.wallet_dir.display(), "Loaded the existing BMP wallet.");
             wallet
         } else {
@@ -365,7 +391,7 @@ impl<S: ChainDataSource + Send + Sync + 'static> BmpWalletService for BMPWalletS
         if !wallet.check_password(old_password)? {
             return Err(InvalidPassword.into());
         }
-        wallet.change_password(old_password, new_password)
+        Ok(wallet.change_password(old_password, new_password)?)
     }
 
     async fn new_address(&self) -> anyhow::Result<String> {

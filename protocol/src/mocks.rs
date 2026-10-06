@@ -8,11 +8,15 @@ use bdk_wallet::bitcoin::{
 };
 use bdk_wallet::miniscript::descriptor::TapTree;
 use musig2::secp::Scalar;
-use wallet::protocol_wallet_api::{ProtocolWalletApi, WalletErrorKind};
+use wallet::bmp_wallet::WalletErrorKind;
+use wallet::protocol_wallet_api::ProtocolWalletApi;
 
-use crate::mocks::WalletErrorKind::Other;
 use crate::psbt::Redact as _;
 use crate::transaction::{TransactionErrorKind, TxOutput};
+
+fn mock_error(kind: &TransactionErrorKind) -> WalletErrorKind {
+    WalletErrorKind::Generic(Box::new(std::io::Error::other(kind.to_string())))
+}
 
 struct MockTradeWallet<Cs: Iterator<Item = TxOutput>, As: Iterator<Item = Address>> {
     funding_coins: Cs,
@@ -28,11 +32,15 @@ impl<Cs: Iterator<Item = TxOutput>, As: Iterator<Item = Address>> ProtocolWallet
     fn network(&self) -> Network { Network::Regtest }
 
     fn new_address(&mut self) -> Result<Address, WalletErrorKind> {
-        self.new_addresses.next().ok_or_else(|| Other(TransactionErrorKind::MissingAddress.into()))
+        self.new_addresses
+            .next()
+            .ok_or_else(|| mock_error(&TransactionErrorKind::MissingAddress))
     }
 
     fn new_internal_key(&mut self) -> Result<XOnlyPublicKey, WalletErrorKind> {
-        self.internal_key.take().ok_or_else(|| Other(TransactionErrorKind::MissingAddress.into()))
+        self.internal_key
+            .take()
+            .ok_or_else(|| mock_error(&TransactionErrorKind::MissingAddress))
     }
 
     fn create_psbt(
@@ -40,9 +48,10 @@ impl<Cs: Iterator<Item = TxOutput>, As: Iterator<Item = Address>> ProtocolWallet
         mut recipients: Vec<(ScriptBuf, Amount)>,
         fee_rate: FeeRate,
     ) -> Result<Psbt, WalletErrorKind> {
-        let fee_cost_msat = |weight: Weight|
+        let fee_cost_msat = |weight: Weight| {
             fee_rate.to_sat_per_kwu().checked_mul(weight.to_wu())
-                .ok_or(Other(TransactionErrorKind::Overflow.into()));
+                .ok_or(mock_error(&TransactionErrorKind::Overflow))
+        };
 
         // Provisionally add a change recipient of zero value. We should never normally use
         // `new_address()` for change outputs, but this is just a mock.
@@ -57,7 +66,7 @@ impl<Cs: Iterator<Item = TxOutput>, As: Iterator<Item = Address>> ProtocolWallet
             cost_msat = (|| cost_msat
                 .checked_add(value.to_sat().checked_mul(1000)?)?
                 .checked_add(fee_cost_msat(tx_out.weight()).ok()?))()
-                .ok_or(Other(TransactionErrorKind::Overflow.into()))?;
+                .ok_or(mock_error(&TransactionErrorKind::Overflow))?;
             output.push(tx_out);
         }
 
@@ -67,13 +76,13 @@ impl<Cs: Iterator<Item = TxOutput>, As: Iterator<Item = Address>> ProtocolWallet
 
         while funds < Amount::from_sat(cost_msat.div_ceil(1000)) {
             let new_coin = self.funding_coins.next()
-                .ok_or(Other(TransactionErrorKind::MissingTxOutput.into()))?;
+                .ok_or(mock_error(&TransactionErrorKind::MissingTxOutput))?;
             let new_coin_weight = new_coin.estimated_input_weight()
-                .ok_or(Other(TransactionErrorKind::InvalidPsbt.into()))?;
+                .ok_or(mock_error(&TransactionErrorKind::InvalidPsbt))?;
             funds = funds.checked_add(new_coin.prevout.value)
-                .ok_or(Other(TransactionErrorKind::Overflow.into()))?;
+                .ok_or(mock_error(&TransactionErrorKind::Overflow))?;
             cost_msat = cost_msat.checked_add(fee_cost_msat(new_coin_weight)?)
-                .ok_or(Other(TransactionErrorKind::Overflow.into()))?;
+                .ok_or(mock_error(&TransactionErrorKind::Overflow))?;
             input.push(TxIn {
                 previous_output: new_coin.outpoint,
                 sequence: Sequence::ENABLE_RBF_NO_LOCKTIME,
