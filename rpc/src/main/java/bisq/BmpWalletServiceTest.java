@@ -210,7 +210,8 @@ public class BmpWalletServiceTest {
         stub.changePassword(ChangePasswordRequest.newBuilder()
                 .setNewPassword(TEST_PASSWORD)
                 .build());
-        assertTrue(BmpWalletProbes.opensWith(stub, TEST_PASSWORD) && !BmpWalletProbes.opensWith(stub, ""),
+        assertTrue(BmpWalletProbes.opensWith(stub, TEST_PASSWORD) &&
+                !BmpWalletProbes.opensWith(stub, ""),
                 "wallet must be protected by the new password after ChangePassword");
 
         // The seed must still be readable through the rotated SQLCipher key.
@@ -236,7 +237,8 @@ public class BmpWalletServiceTest {
         stub.changePassword(ChangePasswordRequest.newBuilder()
                 .setOldPassword(TEST_PASSWORD)
                 .build());
-        assertTrue(BmpWalletProbes.opensWith(stub, ""), "wallet must be unprotected after the password was removed");
+        assertTrue(BmpWalletProbes.opensWith(stub, ""),
+                "wallet must be unprotected after the password was removed");
         System.out.println("    set password -> reject wrong password -> remove password ok");
     }
 

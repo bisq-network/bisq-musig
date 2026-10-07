@@ -148,6 +148,8 @@ async fn wallet_lifecycle_over_grpc() -> anyhow::Result<()> {
 
     let seed = fixture.seed_words("s3cret").await?;
     assert_eq!(seed.len(), 24);
+    let err = fixture.seed_words("wrong").await.unwrap_err();
+    assert_eq!(err.code(), Code::PermissionDenied, "got: {err}");
 
     let balance = fixture
         .client
@@ -261,7 +263,20 @@ async fn addresses_travel_as_address_infos_over_grpc() -> anyhow::Result<()> {
         })
         .await
         .expect_err("a malformed address must be rejected");
-    assert_eq!(err.code(), Code::Internal, "got: {err}");
+    assert_eq!(err.code(), Code::InvalidArgument, "got: {err}");
+
+    // So is a request with no address at all.
+    let err = fixture
+        .client
+        .send_to_address(SendToAddressRequest {
+            passphrase: None,
+            address: None,
+            amount: 1_000,
+            fee_rate_per_kwu: None,
+        })
+        .await
+        .expect_err("a missing address must be rejected");
+    assert_eq!(err.code(), Code::InvalidArgument, "got: {err}");
     fixture.stop();
 
     Ok(())

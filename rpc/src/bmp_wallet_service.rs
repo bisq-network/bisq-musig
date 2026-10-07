@@ -130,7 +130,8 @@ pub trait BmpWalletService {
 
     /// The wallet's seed phrase, one word per element.
     ///
-    /// `password` is the password protecting the wallet (empty for an unprotected wallet).
+    /// `password` is the password protecting the wallet (empty for an unprotected wallet); a
+    /// wrong one fails with [`InvalidPassword`] rather than revealing anything.
     async fn seed_words(&self, password: &str) -> anyhow::Result<Vec<String>>;
 }
 
@@ -451,10 +452,15 @@ impl<S: ChainDataSource + Send + Sync + 'static> BmpWalletService for BMPWalletS
         Ok(require_open(&mut guard)?.full_balance())
     }
 
-    async fn seed_words(&self, _password: &str) -> anyhow::Result<Vec<String>> {
-        // TODO: Check `_password` against the wallet password before revealing the seed.
+    async fn seed_words(&self, password: &str) -> anyhow::Result<Vec<String>> {
         let mut guard = self.wallet.lock().await;
-        let phrase = require_open(&mut guard)?.get_seed_phrase()?;
+        let wallet = require_open(&mut guard)?;
+
+        if wallet.is_encrypted() && !wallet.check_password(password)? {
+            return Err(InvalidPassword.into());
+        }
+
+        let phrase = wallet.get_seed_phrase()?;
         Ok(phrase.split_whitespace().map(ToOwned::to_owned).collect())
     }
 }
@@ -595,9 +601,11 @@ impl wallet_server::Wallet for BmpWalletImpl {
         request: Request<SendToAddressRequest>,
     ) -> Result<Response<SendToAddressResponse>> {
         handle_request_async(request, |request| async move {
-            let address =
-                Address::<NetworkUnchecked>::try_from(request.address.unwrap_or_default())
-                    .map_err(|e| status_from(&e.into()))?;
+            let address = request
+                .address
+                .ok_or_else(|| Status::invalid_argument("address is required"))?;
+            let address = Address::<NetworkUnchecked>::try_from(address)
+                .map_err(|e| status_from(&e.into()))?;
 
             let tx_id = self
                 .wallet_service
@@ -677,6 +685,9 @@ fn status_from(error: &anyhow::Error) -> Status {
         Status::failed_precondition(error.to_string())
     } else if error.downcast_ref::<InvalidPassword>().is_some() {
         Status::permission_denied(error.to_string())
+    } else if error.downcast_ref::<ParseError>().is_some() {
+        // A malformed address, or one for another network: the client's fault, not ours.
+        Status::invalid_argument(format!("invalid address: {error}"))
     } else {
         error!("Wallet operation failed: {error:#}");
         Status::internal(error.to_string())
@@ -884,6 +895,13 @@ mod tests {
         service.open_or_create_wallet("s3cret").await.unwrap();
         let seed = service.seed_words("s3cret").await.unwrap();
 
+        // The seed is only revealed to the holder of the password.
+        let err = service.seed_words("wrong").await.unwrap_err();
+        assert!(
+            err.downcast_ref::<InvalidPassword>().is_some(),
+            "expected InvalidPassword, got: {err}"
+        );
+
         // Re-opening with the right password is a no-op; a wrong one is rejected.
         service.open_or_create_wallet("s3cret").await.unwrap();
         let err = service.open_or_create_wallet("wrong").await.unwrap_err();
@@ -940,8 +958,9 @@ mod tests {
         // Re-opening the open wallet checks the password in force, which shows which one it is.
         service.open_or_create_wallet("hunter2").await.unwrap();
         assert!(service.open_or_create_wallet("").await.is_err());
-        // The seed must still be readable through the rotated key.
+        // The seed must still be readable through the rotated key, and only with the new password.
         assert_eq!(service.seed_words("hunter2").await.unwrap().len(), 24);
+        assert!(service.seed_words("").await.is_err());
 
         let err = service.change_password("wrong", "other").await.unwrap_err();
         assert!(
@@ -1063,9 +1082,9 @@ mod tests {
         let parsed = Address::<NetworkUnchecked>::try_from(proto).unwrap();
         assert_eq!(&parsed, info.address.as_unchecked());
 
-        // A missing address reaches the conversion as the empty default, which must not parse.
-        let missing = bmp_wallet::PubAddressInfo::default();
-        assert!(Address::<NetworkUnchecked>::try_from(missing).is_err());
+        // The empty default must not parse either.
+        let empty = bmp_wallet::PubAddressInfo::default();
+        assert!(Address::<NetworkUnchecked>::try_from(empty).is_err());
         let garbage = bmp_wallet::PubAddressInfo {
             address: "not-an-address".to_owned(),
         };
