@@ -12,7 +12,7 @@ them by `build.rs` (into `src/pb`), the Java code by Maven. The server hosts the
 | `wallet.Wallet`                       | `bmp_wallet.proto`   | Bisq2-facing wallet API backed by a persistent `BMPWallet`; derived from bisq2's own `wallet.proto` (see below)                 |
 
 `musigd` serves `Musig` and `walletrpc.Wallet` always, and `wallet.Wallet` when started with `--wallet-dir`.
-`BmpProtocolService` is currently only served by the test daemon in [tests/bmp_service.rs](tests/bmp_service.rs)
+`BmpProtocolService` is currently only served by the test daemon in [tests/test_bmp_service.rs](tests/test_bmp_service.rs)
 (see [Integration tests](#integration-tests-using-testenv-crate)).
 
 #### Trade protocol mock-up (`Musig` service)
@@ -66,8 +66,10 @@ broadcast via the Bitcoin Core RPC connection above.
 (same package, service name and field numbers), but it is not a drop-in replacement yet: `EncryptWallet` /
 `DecryptWallet` are replaced by the authenticated `ChangePassword`, `GetNewAddress` and `IsWalletEncrypted` are gone,
 `GetSeedWords` takes the wallet password, and addresses travel as `PubAddressInfo` messages rather than bare strings.
-These divergences are listed at the top of the proto and are meant to be upstreamed into bisq2; until then, bisq2's
-`WalletGrpcClient` needs matching changes to talk to this service.
+Without `IsWalletEncrypted`, a client learns whether a passphrase is needed by calling `SendToAddress` without one and
+retrying on `PERMISSION_DENIED`; `OpenOrCreateWallet` is no substitute probe, as it creates an unprotected wallet when
+none exists. These divergences are listed at the top of the proto and are meant to be upstreamed into bisq2; until
+then, bisq2's `WalletGrpcClient` needs matching changes to talk to this service.
 
 ### Building and running the code
 
@@ -154,18 +156,18 @@ e.g. `TESTENV_RPC_URL`, `TESTENV_RPC_USER`, `TESTENV_RPC_PASS` and `TESTENV_P2P_
 2. **Start two test daemons:**
 
 `BmpServiceIntegrationTest` requires two server instances to represent the two parties in the trade (Alice and Bob).
-They are started from an ignored test case in [tests/bmp_service.rs](tests/bmp_service.rs), as `musigd` doesn't serve
+They are started from an ignored test case in [tests/test_bmp_service.rs](tests/test_bmp_service.rs), as `musigd` doesn't serve
 the `BmpProtocolService` yet. Run these commands from the project's root directory, replacing `RPC_URL` and
 `ELECTRUM_URL` with the values printed in step 1. It's best to run them in separate terminal windows so you can monitor
 their output.
 
 *   Server for Bob (port 50051):
     ```sh
-    ELECTRUM_URL=127.0.0.1:33575 RPC_URL=http://127.0.0.1:46111 MUSIGD_PORT=50051 cargo test -p rpc --test bmp_service -- --ignored run_musigd_server --nocapture
+    ELECTRUM_URL=127.0.0.1:33575 RPC_URL=http://127.0.0.1:46111 MUSIGD_PORT=50051 cargo test -p rpc --test test_bmp_service -- --ignored run_musigd_server --nocapture
     ```
 *   Server for Alice (port 50052):
     ```sh
-    ELECTRUM_URL=127.0.0.1:33575 RPC_URL=http://127.0.0.1:46111 MUSIGD_PORT=50052 cargo test -p rpc --test bmp_service -- --ignored run_musigd_server --nocapture
+    ELECTRUM_URL=127.0.0.1:33575 RPC_URL=http://127.0.0.1:46111 MUSIGD_PORT=50052 cargo test -p rpc --test test_bmp_service -- --ignored run_musigd_server --nocapture
     ```
 
 3. **Build `musigd`:**

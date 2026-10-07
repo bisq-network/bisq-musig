@@ -202,7 +202,7 @@ public class BmpWalletServiceTest {
     }
 
     private void changePasswordRoundTrip() {
-        assertTrue(opensWith(""),
+        assertTrue(BmpWalletProbes.opensWith(stub, ""),
                 "expected an unprotected wallet to start from; refusing to re-key one that "
                         + "already has a password");
 
@@ -210,7 +210,7 @@ public class BmpWalletServiceTest {
         stub.changePassword(ChangePasswordRequest.newBuilder()
                 .setNewPassword(TEST_PASSWORD)
                 .build());
-        assertTrue(opensWith(TEST_PASSWORD) && !opensWith(""),
+        assertTrue(BmpWalletProbes.opensWith(stub, TEST_PASSWORD) && !BmpWalletProbes.opensWith(stub, ""),
                 "wallet must be protected by the new password after ChangePassword");
 
         // The seed must still be readable through the rotated SQLCipher key.
@@ -229,32 +229,15 @@ public class BmpWalletServiceTest {
             assertTrue(e.getStatus().getCode() == Status.Code.PERMISSION_DENIED,
                     "expected PERMISSION_DENIED for a wrong password, got " + e.getStatus().getCode());
         }
-        assertTrue(opensWith(TEST_PASSWORD),
+        assertTrue(BmpWalletProbes.opensWith(stub, TEST_PASSWORD),
                 "a rejected ChangePassword must leave the password as it was");
 
         // An empty new password removes protection, restoring the original state.
         stub.changePassword(ChangePasswordRequest.newBuilder()
                 .setOldPassword(TEST_PASSWORD)
                 .build());
-        assertTrue(opensWith(""), "wallet must be unprotected after the password was removed");
+        assertTrue(BmpWalletProbes.opensWith(stub, ""), "wallet must be unprotected after the password was removed");
         System.out.println("    set password -> reject wrong password -> remove password ok");
-    }
-
-    /**
-     * Whether {@code password} is the one currently protecting the wallet, probed by re-opening
-     * the (already open) wallet with it.
-     */
-    private boolean opensWith(String password) {
-        try {
-            return stub.openOrCreateWallet(OpenOrCreateWalletRequest.newBuilder()
-                    .setPassword(password)
-                    .build()).getSuccess();
-        } catch (StatusRuntimeException e) {
-            if (e.getStatus().getCode() == Status.Code.PERMISSION_DENIED) {
-                return false;
-            }
-            throw e;
-        }
     }
 
     // --- tiny test harness -------------------------------------------------------------------

@@ -29,8 +29,9 @@ syntax = "proto3";
 // are replaced by the authenticated `ChangePassword`, and `OpenOrCreateWallet` opens (or
 // creates) the wallet database itself, so the daemon no longer needs the password on its
 // command line. `GetNewAddress` is gone (`GetUnusedAddress` is the one way to obtain a receive
-// address), as is `IsWalletEncrypted`, and `GetSeedWords` takes the wallet password. Addresses
-// are carried as `PubAddressInfo` messages rather than as bare strings.
+// address), as is `IsWalletEncrypted` (see `SendToAddress` for how a client manages without it),
+// and `GetSeedWords` takes the wallet password. Addresses are carried as `PubAddressInfo`
+// messages rather than as bare strings.
 //
 // NOTE: this is a *different* service from `walletrpc.Wallet` in `wallet.proto`. That one is the
 // low-level wallet the trade protocol drives; this one is the user-facing wallet backed by
@@ -50,6 +51,11 @@ service Wallet {
     rpc GetWalletAddresses (GetWalletAddressesRequest) returns (GetWalletAddressesResponse);
     rpc ListTransactions (ListTransactionsRequest) returns (ListTransactionsResponse);
     rpc ListUtxos (ListUtxosRequest) returns (ListUtxosResponse);
+    // Builds, signs and broadcasts a payment. `passphrase` is needed only for a
+    // password-protected wallet. There is deliberately no read-only RPC to ask whether the wallet
+    // is protected: send without a passphrase and retry with one on PERMISSION_DENIED. Note that
+    // `OpenOrCreateWallet` is no substitute for such a probe, since with no wallet on disk it
+    // creates an unprotected one.
     rpc SendToAddress (SendToAddressRequest) returns (SendToAddressResponse);
     rpc GetBalance (GetBalanceRequest) returns (GetBalanceResponse);
     rpc GetSeedWords (GetSeedWordsRequest) returns (GetSeedWordsResponse);

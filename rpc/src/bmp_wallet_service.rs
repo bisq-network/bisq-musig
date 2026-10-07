@@ -115,11 +115,13 @@ pub trait BmpWalletService {
     /// Builds, signs, persists and broadcasts a payment.
     ///
     /// `passphrase` is checked against the wallet password when one is set; it is ignored for an
-    /// unencrypted wallet. `address` must be on the wallet's network.
+    /// unencrypted wallet. There is deliberately no RPC to ask which case applies: a client sends
+    /// without a passphrase and retries with one on [`InvalidPassword`]. `address` is tied to the
+    /// wallet's network here, which is why it arrives unchecked.
     async fn send_to_address(
         &self,
         passphrase: Option<&str>,
-        address: &PubAddressInfo,
+        address: Address<NetworkUnchecked>,
         amount: Amount,
         fee_rate: Option<FeeRate>,
     ) -> anyhow::Result<Txid>;
@@ -415,7 +417,7 @@ impl<S: ChainDataSource + Send + Sync + 'static> BmpWalletService for BMPWalletS
     async fn send_to_address(
         &self,
         passphrase: Option<&str>,
-        address: &PubAddressInfo,
+        address: Address<NetworkUnchecked>,
         amount: Amount,
         fee_rate: Option<FeeRate>,
     ) -> anyhow::Result<Txid> {
@@ -430,12 +432,8 @@ impl<S: ChainDataSource + Send + Sync + 'static> BmpWalletService for BMPWalletS
             return Err(InvalidPassword.into());
         }
 
-        // The address arrives parsed, but nothing so far has tied it to this wallet's network.
-        let address = address
-            .address
-            .as_unchecked()
-            .clone()
-            .require_network(wallet.network())?;
+        // Only now is the wallet's network known, so this is where the address gets tied to it.
+        let address = address.require_network(wallet.network())?;
 
         let tx: Transaction =
             wallet.send_to_address(&address, amount, fee_rate.unwrap_or(DEFAULT_FEE_RATE))?;
@@ -597,14 +595,15 @@ impl wallet_server::Wallet for BmpWalletImpl {
         request: Request<SendToAddressRequest>,
     ) -> Result<Response<SendToAddressResponse>> {
         handle_request_async(request, |request| async move {
-            let address = PubAddressInfo::try_from(request.address.unwrap_or_default())
-                .map_err(|e| status_from(&e.into()))?;
+            let address =
+                Address::<NetworkUnchecked>::try_from(request.address.unwrap_or_default())
+                    .map_err(|e| status_from(&e.into()))?;
 
             let tx_id = self
                 .wallet_service
                 .send_to_address(
                     request.passphrase.as_deref(),
-                    &address,
+                    address,
                     Amount::from_sat(request.amount),
                     request.fee_rate_per_kwu.map(FeeRate::from_sat_per_kwu),
                 )
@@ -707,17 +706,14 @@ impl From<PubAddressInfo> for bmp_wallet::PubAddressInfo {
     }
 }
 
-impl TryFrom<bmp_wallet::PubAddressInfo> for PubAddressInfo {
+impl TryFrom<bmp_wallet::PubAddressInfo> for Address<NetworkUnchecked> {
     type Error = ParseError;
 
     /// Parses the address without checking its network: the transport layer doesn't know which
-    /// one the wallet is on, so that check is left to [`BmpWalletService::send_to_address`].
+    /// one the wallet is on, so the result stays unchecked until
+    /// [`BmpWalletService::send_to_address`] ties it to the open wallet.
     fn try_from(value: bmp_wallet::PubAddressInfo) -> std::result::Result<Self, Self::Error> {
-        let address = value
-            .address
-            .parse::<Address<NetworkUnchecked>>()?
-            .assume_checked();
-        Ok(Self { address })
+        value.address.parse()
     }
 }
 
@@ -810,11 +806,13 @@ mod tests {
     const REGTEST_ADDRESS: &str = "bcrt1qw508d6qejxtdg4y5r3zarvary0c5xw7kygt080";
     const MAINNET_ADDRESS: &str = "bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4";
 
+    /// A regtest address as the wallet itself would hand it out.
     fn address_info(address: &str) -> PubAddressInfo {
         let address = address
             .parse::<Address<NetworkUnchecked>>()
             .unwrap()
-            .assume_checked();
+            .require_network(Network::Regtest)
+            .unwrap();
         PubAddressInfo { address }
     }
 
@@ -966,7 +964,7 @@ mod tests {
         let err = service
             .send_to_address(
                 None,
-                &address_info(REGTEST_ADDRESS),
+                REGTEST_ADDRESS.parse().unwrap(),
                 Amount::from_sat(1_000),
                 None,
             )
@@ -983,7 +981,7 @@ mod tests {
         let err = service
             .send_to_address(
                 None,
-                &address_info(MAINNET_ADDRESS),
+                MAINNET_ADDRESS.parse().unwrap(),
                 Amount::from_sat(1_000),
                 None,
             )
@@ -1062,14 +1060,16 @@ mod tests {
 
         let proto: bmp_wallet::PubAddressInfo = info.clone().into();
         assert_eq!(proto.address, REGTEST_ADDRESS);
-        assert_eq!(PubAddressInfo::try_from(proto).unwrap(), info);
+        let parsed = Address::<NetworkUnchecked>::try_from(proto).unwrap();
+        assert_eq!(&parsed, info.address.as_unchecked());
 
         // A missing address reaches the conversion as the empty default, which must not parse.
-        assert!(PubAddressInfo::try_from(bmp_wallet::PubAddressInfo::default()).is_err());
+        let missing = bmp_wallet::PubAddressInfo::default();
+        assert!(Address::<NetworkUnchecked>::try_from(missing).is_err());
         let garbage = bmp_wallet::PubAddressInfo {
             address: "not-an-address".to_owned(),
         };
-        assert!(PubAddressInfo::try_from(garbage).is_err());
+        assert!(Address::<NetworkUnchecked>::try_from(garbage).is_err());
     }
 
     #[test]

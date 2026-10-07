@@ -11,7 +11,7 @@
 //!
 //!   ```sh
 //!   RPC_URL=http://127.0.0.1:18443 RPC_PASS=<pass> MUSIGD_PORT=50051 \
-//!       cargo test -p rpc --test bmp_service -- --ignored run_musigd_server --nocapture
+//!       cargo test -p rpc --test test_bmp_service -- --ignored run_musigd_server --nocapture
 //!   ```
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
