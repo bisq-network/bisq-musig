@@ -28,9 +28,14 @@ import java.util.concurrent.TimeUnit;
  * {@code BMPWalletServiceImpl}, i.e. every method bisq2's {@code bisq.wallet.WalletService}
  * calls through its {@code WalletGrpcClient}.
  * <p>
- * The generated stubs used here come from {@code src/main/proto/bmp_wallet.proto}, which is a
- * copy of bisq2's own {@code wallet.proto} — same package, service, methods and field numbers —
- * so passing this test means bisq2 can point its {@code WalletGrpcClient} at musigd unchanged.
+ * The generated stubs used here come from {@code src/main/proto/bmp_wallet.proto}, which is
+ * derived from bisq2's own {@code wallet.proto} — same package, service name and field numbers —
+ * but deliberately diverges from it in a few places: no {@code GetNewAddress},
+ * {@code IsWalletEncrypted}, {@code EncryptWallet} or {@code DecryptWallet}; {@code GetSeedWords}
+ * takes the wallet password; addresses are {@code PubAddressInfo} messages. Those divergences are
+ * listed at the top of the proto and are meant to be upstreamed, so passing this test means bisq2
+ * can point its {@code WalletGrpcClient} at musigd once its copy of the proto has been brought in
+ * line.
  * <p>
  * Run against a musigd started with a wallet directory, e.g.
  * <pre>

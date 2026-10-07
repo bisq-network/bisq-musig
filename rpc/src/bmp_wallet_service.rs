@@ -7,8 +7,8 @@
 //!   [`BmpWalletService`], the GUI-oriented operations bisq2 needs, which deliberately does not
 //!   depend on the bitcoind-oriented [`crate::wallet::WalletService`] trait.
 //! * [`BmpWalletImpl`] is the thin gRPC adapter over `BmpWalletService`, serving the
-//!   `wallet.Wallet` service defined in `bmp_wallet.proto` — the same contract bisq2's
-//!   `bisq.wallet.WalletGrpcClient` speaks.
+//!   `wallet.Wallet` service defined in `bmp_wallet.proto` — the contract derived from bisq2's own
+//!   `wallet.proto`, with the divergences from it listed at the top of that file.
 //!
 //! Unlike `WalletServiceImpl`, which drives a `bdk_bitcoind_rpc` emitter, this service syncs by
 //! periodically calling [`WalletApi::sync_all`] against a [`ChainDataSource`] (compact block

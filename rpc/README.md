@@ -9,7 +9,7 @@ them by `build.rs` (into `src/pb`), the Java code by Maven. The server hosts the
 | `musigrpc.Musig`                      | `rpc.proto`          | The original trade protocol mock-up (see below)                                                                                |
 | `bmp_protocol.BmpProtocolService`     | `bmp_protocol.proto` | Round-based (`Initialize`, `ExecuteRound1`…`5`) interface onto the `protocol` crate's `BMPProtocol`                            |
 | `walletrpc.Wallet`                    | `wallet.proto`       | Experimental wallet and chain notification API, used by `musig-cli`                                                            |
-| `wallet.Wallet`                       | `bmp_wallet.proto`   | Bisq2-facing wallet API backed by a persistent `BMPWallet`; mirrors bisq2's own `wallet.proto` so bisq2 can talk to it unchanged |
+| `wallet.Wallet`                       | `bmp_wallet.proto`   | Bisq2-facing wallet API backed by a persistent `BMPWallet`; derived from bisq2's own `wallet.proto` (see below)                 |
 
 `musigd` serves `Musig` and `walletrpc.Wallet` always, and `wallet.Wallet` when started with `--wallet-dir`.
 `BmpProtocolService` is currently only served by the test daemon in [tests/bmp_service.rs](tests/bmp_service.rs)
@@ -61,6 +61,13 @@ RPC, which carries the wallet password. It syncs over Compact Block Filters from
 <host:port>` (repeatable), re-syncing every `--wallet-poll-secs` seconds; with no peer it does not sync, but all
 non-chain operations still work. `--wallet-network` selects the network (default `regtest`). Transactions are
 broadcast via the Bitcoin Core RPC connection above.
+
+[bmp_wallet.proto](src/main/proto/bmp_wallet.proto) is derived from bisq2's own `wallet/src/main/proto/wallet.proto`
+(same package, service name and field numbers), but it is not a drop-in replacement yet: `EncryptWallet` /
+`DecryptWallet` are replaced by the authenticated `ChangePassword`, `GetNewAddress` and `IsWalletEncrypted` are gone,
+`GetSeedWords` takes the wallet password, and addresses travel as `PubAddressInfo` messages rather than bare strings.
+These divergences are listed at the top of the proto and are meant to be upstreamed into bisq2; until then, bisq2's
+`WalletGrpcClient` needs matching changes to talk to this service.
 
 ### Building and running the code
 
