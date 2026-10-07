@@ -22,10 +22,10 @@ use std::sync::{Arc, Mutex};
 // Leading `::` disambiguates the `wallet` *crate* from this crate's own `wallet` module.
 use ::wallet::bmp_wallet::{BMPWallet, WalletApi as _, WalletErrorKind};
 use ::wallet::chain_data_source::ChainDataSource;
-use ::wallet::wallet_info::{TxInfo, TxOutputInfo, UtxoInfo};
+use ::wallet::wallet_info::{PubAddressInfo, TxInfo, TxOutputInfo, UtxoInfo};
 use bdk_bitcoind_rpc::bitcoincore_rpc::{Client, RpcApi as _};
 use bdk_wallet::Balance;
-use bdk_wallet::bitcoin::address::NetworkUnchecked;
+use bdk_wallet::bitcoin::address::{NetworkUnchecked, ParseError};
 use bdk_wallet::bitcoin::{Address, Amount, FeeRate, Network, Transaction, Txid};
 use chain::ChainApi;
 use futures_util::never::Never;
@@ -41,12 +41,11 @@ use crate::observable::ObservableHashMap;
 pub use crate::pb::bmp_wallet::wallet_server::WalletServer as BmpWalletServer;
 use crate::pb::bmp_wallet::{
     self, ChangePasswordRequest, ChangePasswordResponse, GetBalanceRequest, GetBalanceResponse,
-    GetNewAddressRequest, GetNewAddressResponse, GetSeedWordsRequest, GetSeedWordsResponse,
-    GetUnusedAddressRequest, GetUnusedAddressResponse, GetWalletAddressesRequest,
-    GetWalletAddressesResponse, IsWalletEncryptedRequest, IsWalletEncryptedResponse,
-    IsWalletReadyRequest, IsWalletReadyResponse, ListTransactionsRequest, ListTransactionsResponse,
-    ListUtxosRequest, ListUtxosResponse, OpenOrCreateWalletRequest, OpenOrCreateWalletResponse,
-    SendToAddressRequest, SendToAddressResponse, wallet_server,
+    GetSeedWordsRequest, GetSeedWordsResponse, GetUnusedAddressRequest, GetUnusedAddressResponse,
+    GetWalletAddressesRequest, GetWalletAddressesResponse, IsWalletReadyRequest,
+    IsWalletReadyResponse, ListTransactionsRequest, ListTransactionsResponse, ListUtxosRequest,
+    ListUtxosResponse, OpenOrCreateWalletRequest, OpenOrCreateWalletResponse, SendToAddressRequest,
+    SendToAddressResponse, wallet_server,
 };
 use crate::server::handle_request_async;
 use crate::wallet::{Result as WalletResult, TxConfidence, tx_confidence_entries};
@@ -100,17 +99,14 @@ pub trait BmpWalletService {
     /// wallet); an empty `new_password` removes password protection.
     async fn change_password(&self, old_password: &str, new_password: &str) -> anyhow::Result<()>;
 
-    /// Reveals a fresh receive address.
+    /// Hands out an unused receive address.
     ///
-    /// Like [`Self::unused_address`], this routes through the gap-capped
-    /// [`BMPWallet::next_address`], so a click-happy client cycles through the existing unused
-    /// addresses once the gap limit is reached instead of growing it without bound. Either way a
-    /// different address is returned on every call.
-    async fn new_address(&self) -> anyhow::Result<String>;
+    /// This routes through the gap-capped [`BMPWallet::next_address`], so a click-happy client
+    /// cycles through the existing unused addresses once the gap limit is reached instead of
+    /// growing it without bound. Either way a different address is returned on every call.
+    async fn unused_address(&self) -> anyhow::Result<PubAddressInfo>;
 
-    async fn unused_address(&self) -> anyhow::Result<String>;
-
-    async fn wallet_addresses(&self) -> anyhow::Result<Vec<String>>;
+    async fn wallet_addresses(&self) -> anyhow::Result<Vec<PubAddressInfo>>;
 
     async fn transactions(&self) -> anyhow::Result<Vec<TxInfo>>;
 
@@ -119,20 +115,21 @@ pub trait BmpWalletService {
     /// Builds, signs, persists and broadcasts a payment.
     ///
     /// `passphrase` is checked against the wallet password when one is set; it is ignored for an
-    /// unencrypted wallet.
+    /// unencrypted wallet. `address` must be on the wallet's network.
     async fn send_to_address(
         &self,
         passphrase: Option<&str>,
-        address: &str,
+        address: &PubAddressInfo,
         amount: Amount,
         fee_rate: Option<FeeRate>,
     ) -> anyhow::Result<Txid>;
 
-    async fn is_encrypted(&self) -> anyhow::Result<bool>;
-
     async fn full_balance(&self) -> anyhow::Result<Balance>;
 
-    async fn seed_words(&self) -> anyhow::Result<Vec<String>>;
+    /// The wallet's seed phrase, one word per element.
+    ///
+    /// `password` is the password protecting the wallet (empty for an unprotected wallet).
+    async fn seed_words(&self, password: &str) -> anyhow::Result<Vec<String>>;
 }
 
 /// A [`BmpWalletService`] whose every operation is forwarded to [`BMPWallet`].
@@ -394,21 +391,13 @@ impl<S: ChainDataSource + Send + Sync + 'static> BmpWalletService for BMPWalletS
         Ok(wallet.change_password(old_password, new_password)?)
     }
 
-    async fn new_address(&self) -> anyhow::Result<String> {
+    async fn unused_address(&self) -> anyhow::Result<PubAddressInfo> {
         let mut guard = self.wallet.lock().await;
-        Ok(require_open(&mut guard)?
-            .get_new_address()?
-            .address
-            .to_string())
+        let address = require_open(&mut guard)?.get_new_address()?.address;
+        Ok(PubAddressInfo { address })
     }
 
-    async fn unused_address(&self) -> anyhow::Result<String> {
-        // Currently behaves like `new_address`: both hand out the next (gap-capped) unused
-        // address, matching what bisq2 expects from either RPC.
-        self.new_address().await
-    }
-
-    async fn wallet_addresses(&self) -> anyhow::Result<Vec<String>> {
+    async fn wallet_addresses(&self) -> anyhow::Result<Vec<PubAddressInfo>> {
         let mut guard = self.wallet.lock().await;
         Ok(require_open(&mut guard)?.list_wallet_addresses())
     }
@@ -426,7 +415,7 @@ impl<S: ChainDataSource + Send + Sync + 'static> BmpWalletService for BMPWalletS
     async fn send_to_address(
         &self,
         passphrase: Option<&str>,
-        address: &str,
+        address: &PubAddressInfo,
         amount: Amount,
         fee_rate: Option<FeeRate>,
     ) -> anyhow::Result<Txid> {
@@ -441,8 +430,11 @@ impl<S: ChainDataSource + Send + Sync + 'static> BmpWalletService for BMPWalletS
             return Err(InvalidPassword.into());
         }
 
+        // The address arrives parsed, but nothing so far has tied it to this wallet's network.
         let address = address
-            .parse::<Address<NetworkUnchecked>>()?
+            .address
+            .as_unchecked()
+            .clone()
             .require_network(wallet.network())?;
 
         let tx: Transaction =
@@ -456,17 +448,13 @@ impl<S: ChainDataSource + Send + Sync + 'static> BmpWalletService for BMPWalletS
         Ok(txid)
     }
 
-    async fn is_encrypted(&self) -> anyhow::Result<bool> {
-        let mut guard = self.wallet.lock().await;
-        Ok(require_open(&mut guard)?.is_encrypted())
-    }
-
     async fn full_balance(&self) -> anyhow::Result<Balance> {
         let mut guard = self.wallet.lock().await;
         Ok(require_open(&mut guard)?.full_balance())
     }
 
-    async fn seed_words(&self) -> anyhow::Result<Vec<String>> {
+    async fn seed_words(&self, _password: &str) -> anyhow::Result<Vec<String>> {
+        // TODO: Check `_password` against the wallet password before revealing the seed.
         let mut guard = self.wallet.lock().await;
         let phrase = require_open(&mut guard)?.get_seed_phrase()?;
         Ok(phrase.split_whitespace().map(ToOwned::to_owned).collect())
@@ -525,23 +513,6 @@ impl wallet_server::Wallet for BmpWalletImpl {
     }
 
     #[instrument(skip_all)]
-    async fn get_new_address(
-        &self,
-        request: Request<GetNewAddressRequest>,
-    ) -> Result<Response<GetNewAddressResponse>> {
-        handle_request_async(request, |_request| async {
-            let address = self
-                .wallet_service
-                .new_address()
-                .await
-                .map_err(|e| status_from(&e))?;
-
-            Ok(GetNewAddressResponse { address })
-        })
-        .await
-    }
-
-    #[instrument(skip_all)]
     async fn get_unused_address(
         &self,
         request: Request<GetUnusedAddressRequest>,
@@ -553,7 +524,9 @@ impl wallet_server::Wallet for BmpWalletImpl {
                 .await
                 .map_err(|e| status_from(&e))?;
 
-            Ok(GetUnusedAddressResponse { address })
+            Ok(GetUnusedAddressResponse {
+                address: Some(address.into()),
+            })
         })
         .await
     }
@@ -568,7 +541,10 @@ impl wallet_server::Wallet for BmpWalletImpl {
                 .wallet_service
                 .wallet_addresses()
                 .await
-                .map_err(|e| status_from(&e))?;
+                .map_err(|e| status_from(&e))?
+                .into_iter()
+                .map(Into::into)
+                .collect();
 
             Ok(GetWalletAddressesResponse { addresses })
         })
@@ -621,11 +597,14 @@ impl wallet_server::Wallet for BmpWalletImpl {
         request: Request<SendToAddressRequest>,
     ) -> Result<Response<SendToAddressResponse>> {
         handle_request_async(request, |request| async move {
+            let address = PubAddressInfo::try_from(request.address.unwrap_or_default())
+                .map_err(|e| status_from(&e.into()))?;
+
             let tx_id = self
                 .wallet_service
                 .send_to_address(
                     request.passphrase.as_deref(),
-                    &request.address,
+                    &address,
                     Amount::from_sat(request.amount),
                     request.fee_rate_per_kwu.map(FeeRate::from_sat_per_kwu),
                 )
@@ -635,23 +614,6 @@ impl wallet_server::Wallet for BmpWalletImpl {
             Ok(SendToAddressResponse {
                 tx_id: tx_id.to_string(),
             })
-        })
-        .await
-    }
-
-    #[instrument(skip_all)]
-    async fn is_wallet_encrypted(
-        &self,
-        request: Request<IsWalletEncryptedRequest>,
-    ) -> Result<Response<IsWalletEncryptedResponse>> {
-        handle_request_async(request, |_request| async {
-            let encrypted = self
-                .wallet_service
-                .is_encrypted()
-                .await
-                .map_err(|e| status_from(&e))?;
-
-            Ok(IsWalletEncryptedResponse { encrypted })
         })
         .await
     }
@@ -678,10 +640,10 @@ impl wallet_server::Wallet for BmpWalletImpl {
         &self,
         request: Request<GetSeedWordsRequest>,
     ) -> Result<Response<GetSeedWordsResponse>> {
-        handle_request_async(request, |_request| async {
+        handle_request_async(request, |request| async move {
             let seed_words = self
                 .wallet_service
-                .seed_words()
+                .seed_words(&request.password)
                 .await
                 .map_err(|e| status_from(&e))?;
 
@@ -737,13 +699,35 @@ impl From<Balance> for GetBalanceResponse {
     }
 }
 
+impl From<PubAddressInfo> for bmp_wallet::PubAddressInfo {
+    fn from(value: PubAddressInfo) -> Self {
+        Self {
+            address: value.address.to_string(),
+        }
+    }
+}
+
+impl TryFrom<bmp_wallet::PubAddressInfo> for PubAddressInfo {
+    type Error = ParseError;
+
+    /// Parses the address without checking its network: the transport layer doesn't know which
+    /// one the wallet is on, so that check is left to [`BmpWalletService::send_to_address`].
+    fn try_from(value: bmp_wallet::PubAddressInfo) -> std::result::Result<Self, Self::Error> {
+        let address = value
+            .address
+            .parse::<Address<NetworkUnchecked>>()?
+            .assume_checked();
+        Ok(Self { address })
+    }
+}
+
 impl From<UtxoInfo> for bmp_wallet::Utxo {
     fn from(value: UtxoInfo) -> Self {
         Self {
             tx_id: value.tx_id.to_string(),
             vout: value.vout,
             amount: value.amount.to_sat(),
-            address: value.address.unwrap_or_default(),
+            address: value.address.map(Into::into),
             num_confirmations: value.num_confirmations,
         }
     }
@@ -753,7 +737,7 @@ impl From<TxOutputInfo> for bmp_wallet::TransactionOutput {
     fn from(value: TxOutputInfo) -> Self {
         Self {
             value: value.value.to_sat(),
-            address: value.address.unwrap_or_default(),
+            address: value.address.map(Into::into),
             script_pub_key: value.script_pubkey.into_bytes(),
         }
     }
@@ -814,6 +798,26 @@ mod tests {
         }
     }
 
+    /// A broadcaster for tests that must fail before anything is broadcast.
+    struct UnreachableBroadcaster;
+
+    impl ChainApi for UnreachableBroadcaster {
+        fn transaction_broadcast(&self, _tx: &Transaction) -> anyhow::Result<Txid> {
+            anyhow::bail!("nothing should have been broadcast")
+        }
+    }
+
+    const REGTEST_ADDRESS: &str = "bcrt1qw508d6qejxtdg4y5r3zarvary0c5xw7kygt080";
+    const MAINNET_ADDRESS: &str = "bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4";
+
+    fn address_info(address: &str) -> PubAddressInfo {
+        let address = address
+            .parse::<Address<NetworkUnchecked>>()
+            .unwrap()
+            .assume_checked();
+        PubAddressInfo { address }
+    }
+
     fn service() -> (tempfile::TempDir, BMPWalletServiceImpl<NoopChainDataSource>) {
         let dir = tempdir().unwrap();
         let service = BMPWalletServiceImpl::new(dir.path(), Network::Regtest);
@@ -832,14 +836,13 @@ mod tests {
 
         assert!(!service.is_ready(), "no wallet open, so not ready");
 
-        let err = service.new_address().await.unwrap_err();
+        let err = service.unused_address().await.unwrap_err();
         assert!(
             err.downcast_ref::<WalletNotOpen>().is_some(),
             "expected WalletNotOpen, got: {err}"
         );
         assert!(service.full_balance().await.is_err());
-        assert!(service.is_encrypted().await.is_err());
-        assert!(service.seed_words().await.is_err());
+        assert!(service.seed_words("").await.is_err());
         assert!(service.transactions().await.is_err());
         assert!(service.utxos().await.is_err());
         assert!(service.wallet_addresses().await.is_err());
@@ -854,12 +857,8 @@ mod tests {
             service.is_ready(),
             "no chain data source, so the wallet is ready as soon as it is open"
         );
-        assert!(
-            !service.is_encrypted().await.unwrap(),
-            "opened with an empty password"
-        );
         assert_eq!(service.full_balance().await.unwrap().total().to_sat(), 0);
-        assert_eq!(service.seed_words().await.unwrap().len(), 24);
+        assert_eq!(service.seed_words("").await.unwrap().len(), 24);
         assert!(service.transactions().await.unwrap().is_empty());
         assert!(service.utxos().await.unwrap().is_empty());
 
@@ -868,15 +867,15 @@ mod tests {
         let address = service.unused_address().await.unwrap();
         assert!(service.wallet_addresses().await.unwrap().contains(&address));
 
-        // `new_address` reveals a fresh address, distinct from the one just handed out.
-        let new_address = service.new_address().await.unwrap();
-        assert_ne!(new_address, address);
+        // Asking again hands out a fresh address, distinct from the one just handed out.
+        let next_address = service.unused_address().await.unwrap();
+        assert_ne!(next_address, address);
         assert!(
             service
                 .wallet_addresses()
                 .await
                 .unwrap()
-                .contains(&new_address)
+                .contains(&next_address)
         );
     }
 
@@ -885,7 +884,7 @@ mod tests {
         let (dir, service) = service();
 
         service.open_or_create_wallet("s3cret").await.unwrap();
-        let seed = service.seed_words().await.unwrap();
+        let seed = service.seed_words("s3cret").await.unwrap();
 
         // Re-opening with the right password is a no-op; a wrong one is rejected.
         service.open_or_create_wallet("s3cret").await.unwrap();
@@ -905,7 +904,7 @@ mod tests {
             "a wrong password must not open (or overwrite!) the existing wallet, got: {err}"
         );
         reloaded.open_or_create_wallet("s3cret").await.unwrap();
-        assert_eq!(reloaded.seed_words().await.unwrap(), seed);
+        assert_eq!(reloaded.seed_words("s3cret").await.unwrap(), seed);
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -932,7 +931,7 @@ mod tests {
             "expected the missing seed to be the reason, got: {err:#}"
         );
         assert!(!reopened.is_ready());
-        assert!(reopened.new_address().await.is_err());
+        assert!(reopened.unused_address().await.is_err());
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -940,22 +939,24 @@ mod tests {
         let (_dir, service) = open_service().await;
 
         service.change_password("", "hunter2").await.unwrap();
-        assert!(service.is_encrypted().await.unwrap());
+        // Re-opening the open wallet checks the password in force, which shows which one it is.
+        service.open_or_create_wallet("hunter2").await.unwrap();
+        assert!(service.open_or_create_wallet("").await.is_err());
         // The seed must still be readable through the rotated key.
-        assert_eq!(service.seed_words().await.unwrap().len(), 24);
+        assert_eq!(service.seed_words("hunter2").await.unwrap().len(), 24);
 
         let err = service.change_password("wrong", "other").await.unwrap_err();
         assert!(
             err.downcast_ref::<InvalidPassword>().is_some(),
             "wrong password must be rejected, got: {err}"
         );
-        assert!(
-            service.is_encrypted().await.unwrap(),
-            "a failed change must not clear the flag"
-        );
+        service
+            .open_or_create_wallet("hunter2")
+            .await
+            .expect("a failed change must leave the password as it was");
 
         service.change_password("hunter2", "").await.unwrap();
-        assert!(!service.is_encrypted().await.unwrap());
+        service.open_or_create_wallet("").await.unwrap();
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -965,13 +966,33 @@ mod tests {
         let err = service
             .send_to_address(
                 None,
-                "bcrt1qw508d6qejxtdg4y5r3zarvary0c5xw7kygt080",
+                &address_info(REGTEST_ADDRESS),
                 Amount::from_sat(1_000),
                 None,
             )
             .await
             .unwrap_err();
         assert!(err.to_string().contains("no chain backend"), "got: {err}");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn send_to_address_refuses_an_address_on_another_network() {
+        let (_dir, service) = open_service().await;
+        let service = service.with_broadcaster(Arc::new(UnreachableBroadcaster));
+
+        let err = service
+            .send_to_address(
+                None,
+                &address_info(MAINNET_ADDRESS),
+                Amount::from_sat(1_000),
+                None,
+            )
+            .await
+            .unwrap_err();
+        assert!(
+            err.downcast_ref::<ParseError>().is_some(),
+            "expected a network mismatch, got: {err}"
+        );
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -1036,12 +1057,28 @@ mod tests {
     }
 
     #[test]
+    fn address_maps_to_proto_and_back() {
+        let info = address_info(REGTEST_ADDRESS);
+
+        let proto: bmp_wallet::PubAddressInfo = info.clone().into();
+        assert_eq!(proto.address, REGTEST_ADDRESS);
+        assert_eq!(PubAddressInfo::try_from(proto).unwrap(), info);
+
+        // A missing address reaches the conversion as the empty default, which must not parse.
+        assert!(PubAddressInfo::try_from(bmp_wallet::PubAddressInfo::default()).is_err());
+        let garbage = bmp_wallet::PubAddressInfo {
+            address: "not-an-address".to_owned(),
+        };
+        assert!(PubAddressInfo::try_from(garbage).is_err());
+    }
+
+    #[test]
     fn utxo_maps_to_proto_and_tolerates_an_undecodable_script() {
         let utxo = UtxoInfo {
             tx_id: a_txid(),
             vout: 2,
             amount: Amount::from_sat(50_000),
-            address: Some("bcrt1qtest".to_owned()),
+            address: Some(address_info(REGTEST_ADDRESS)),
             num_confirmations: 6,
             imported: true,
         };
@@ -1050,10 +1087,10 @@ mod tests {
         assert_eq!(proto.tx_id, a_txid().to_string());
         assert_eq!(proto.vout, 2);
         assert_eq!(proto.amount, 50_000);
-        assert_eq!(proto.address, "bcrt1qtest");
+        assert_eq!(proto.address.unwrap().address, REGTEST_ADDRESS);
         assert_eq!(proto.num_confirmations, 6);
 
-        // proto3 has no null: a non-standard script must degrade to an empty string, not panic.
+        // A non-standard script must come through as an absent address, not panic.
         let nameless = UtxoInfo {
             address: None,
             ..UtxoInfo {
@@ -1065,7 +1102,7 @@ mod tests {
                 imported: false,
             }
         };
-        assert_eq!(bmp_wallet::Utxo::from(nameless).address, "");
+        assert_eq!(bmp_wallet::Utxo::from(nameless).address, None);
     }
 
     #[test]
@@ -1082,7 +1119,7 @@ mod tests {
             }],
             outputs: vec![TxOutputInfo {
                 value: Amount::from_sat(100_000),
-                address: Some("bcrt1qtest".to_owned()),
+                address: Some(address_info(REGTEST_ADDRESS)),
                 script_pubkey: ScriptBuf::from_bytes(vec![0x76, 0xa9]),
             }],
             lock_time: 800_000,
@@ -1122,7 +1159,10 @@ mod tests {
 
         assert_eq!(proto.outputs.len(), 1);
         assert_eq!(proto.outputs[0].value, 100_000);
-        assert_eq!(proto.outputs[0].address, "bcrt1qtest");
+        assert_eq!(
+            proto.outputs[0].address.as_ref().unwrap().address,
+            REGTEST_ADDRESS
+        );
         assert_eq!(proto.outputs[0].script_pub_key, vec![0x76, 0xa9]);
     }
 

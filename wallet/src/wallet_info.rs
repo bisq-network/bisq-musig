@@ -5,7 +5,13 @@
 //! `rust-bitcoin` types rather than protobuf ones, so the `wallet` crate stays free of any
 //! dependency on a particular wire format; mapping to protobuf happens in the `rpc` crate.
 
-use bdk_wallet::bitcoin::{Amount, ScriptBuf, Txid};
+use bdk_wallet::bitcoin::{Address, Amount, ScriptBuf, Txid};
+
+/// A bitcoin address.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PubAddressInfo {
+    pub address: Address,
+}
 
 /// A single input of a wallet transaction.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -23,7 +29,7 @@ pub struct TxInputInfo {
 pub struct TxOutputInfo {
     pub value: Amount,
     /// `None` when the script doesn't decode to a standard address for the wallet's network.
-    pub address: Option<String>,
+    pub address: Option<PubAddressInfo>,
     pub script_pubkey: ScriptBuf,
 }
 
@@ -55,7 +61,7 @@ pub struct UtxoInfo {
     pub vout: u32,
     pub amount: Amount,
     /// `None` when the script doesn't decode to a standard address for the wallet's network.
-    pub address: Option<String>,
+    pub address: Option<PubAddressInfo>,
     pub num_confirmations: u32,
     /// `true` when the output is controlled by an imported private key rather than by the
     /// wallet's own HD keychains.

@@ -3,14 +3,13 @@ package bisq;
 import bisq.wallet.protobuf.ChangePasswordRequest;
 import bisq.wallet.protobuf.GetBalanceRequest;
 import bisq.wallet.protobuf.GetSeedWordsRequest;
-import bisq.wallet.protobuf.GetNewAddressRequest;
 import bisq.wallet.protobuf.GetUnusedAddressRequest;
 import bisq.wallet.protobuf.GetWalletAddressesRequest;
-import bisq.wallet.protobuf.IsWalletEncryptedRequest;
 import bisq.wallet.protobuf.IsWalletReadyRequest;
 import bisq.wallet.protobuf.ListTransactionsRequest;
 import bisq.wallet.protobuf.ListUtxosRequest;
 import bisq.wallet.protobuf.OpenOrCreateWalletRequest;
+import bisq.wallet.protobuf.PubAddressInfo;
 import bisq.wallet.protobuf.SendToAddressRequest;
 import bisq.wallet.protobuf.Transaction;
 import bisq.wallet.protobuf.Utxo;
@@ -85,12 +84,12 @@ public class BmpWalletServiceTest {
         check("IsWalletReady", this::isWalletReady);
         check("GetBalance", this::getBalance);
         check("GetSeedWords", this::getSeedWords);
-        check("GetNewAddress + GetUnusedAddress + GetWalletAddresses", this::addresses);
+        check("GetUnusedAddress + GetWalletAddresses", this::addresses);
         check("ListTransactions", this::listTransactions);
         check("ListUtxos", this::listUtxos);
         check("SendToAddress", this::sendToAddress);
         // Mutating, and restores the original state on the way out.
-        check("IsWalletEncrypted + ChangePassword", this::changePasswordRoundTrip);
+        check("ChangePassword", this::changePasswordRoundTrip);
     }
 
     // --- individual checks -------------------------------------------------------------------
@@ -133,21 +132,24 @@ public class BmpWalletServiceTest {
     }
 
     private void addresses() {
-        String address =
+        PubAddressInfo address =
                 stub.getUnusedAddress(GetUnusedAddressRequest.newBuilder().build()).getAddress();
-        assertTrue(!address.isBlank(), "address must not be blank");
+        assertTrue(!address.getAddress().isBlank(), "address must not be blank");
 
-        String fresh = stub.getNewAddress(GetNewAddressRequest.newBuilder().build()).getAddress();
-        assertTrue(!fresh.isBlank(), "new address must not be blank");
-        assertTrue(!fresh.equals(address), "GetNewAddress must not repeat the last address");
+        PubAddressInfo next =
+                stub.getUnusedAddress(GetUnusedAddressRequest.newBuilder().build()).getAddress();
+        assertTrue(!next.getAddress().isBlank(), "next address must not be blank");
+        assertTrue(!next.equals(address), "GetUnusedAddress must not repeat the last address");
 
-        List<String> all = stub.getWalletAddresses(GetWalletAddressesRequest.newBuilder().build())
-                .getAddressesList();
-        assertTrue(all.contains(address),
-                "a revealed address (" + address + ") must appear among the wallet's addresses");
-        assertTrue(all.contains(fresh),
-                "a new address (" + fresh + ") must appear among the wallet's addresses");
-        System.out.printf("    unused=%s, new=%s, %d address(es) revealed%n", address, fresh, all.size());
+        List<PubAddressInfo> all =
+                stub.getWalletAddresses(GetWalletAddressesRequest.newBuilder().build())
+                        .getAddressesList();
+        assertTrue(all.contains(address), "a revealed address (" + address.getAddress()
+                + ") must appear among the wallet's addresses");
+        assertTrue(all.contains(next), "the next address (" + next.getAddress()
+                + ") must appear among the wallet's addresses");
+        System.out.printf("    unused=%s, next=%s, %d address(es) revealed%n",
+                address.getAddress(), next.getAddress(), all.size());
     }
 
     private void listTransactions() {
@@ -176,7 +178,7 @@ public class BmpWalletServiceTest {
 
     private void sendToAddress() {
         var request = SendToAddressRequest.newBuilder()
-                .setAddress(REGTEST_ADDRESS)
+                .setAddress(PubAddressInfo.newBuilder().setAddress(REGTEST_ADDRESS))
                 .setAmount(10_000)
                 .build();
         try {
@@ -195,19 +197,21 @@ public class BmpWalletServiceTest {
     }
 
     private void changePasswordRoundTrip() {
-        boolean encryptedBefore = isEncrypted();
-        assertTrue(!encryptedBefore,
-                "expected an unencrypted wallet to start from; refusing to re-key one that "
+        assertTrue(opensWith(""),
+                "expected an unprotected wallet to start from; refusing to re-key one that "
                         + "already has a password");
 
         // Setting a password is a change from the empty password.
         stub.changePassword(ChangePasswordRequest.newBuilder()
                 .setNewPassword(TEST_PASSWORD)
                 .build());
-        assertTrue(isEncrypted(), "wallet must report itself encrypted after ChangePassword");
+        assertTrue(opensWith(TEST_PASSWORD) && !opensWith(""),
+                "wallet must be protected by the new password after ChangePassword");
 
         // The seed must still be readable through the rotated SQLCipher key.
-        assertTrue(!stub.getSeedWords(GetSeedWordsRequest.newBuilder().build())
+        assertTrue(!stub.getSeedWords(GetSeedWordsRequest.newBuilder()
+                        .setPassword(TEST_PASSWORD)
+                        .build())
                 .getSeedWordsList().isEmpty(), "seed unreadable after re-keying");
 
         try {
@@ -220,19 +224,32 @@ public class BmpWalletServiceTest {
             assertTrue(e.getStatus().getCode() == Status.Code.PERMISSION_DENIED,
                     "expected PERMISSION_DENIED for a wrong password, got " + e.getStatus().getCode());
         }
-        assertTrue(isEncrypted(), "a rejected ChangePassword must leave the wallet encrypted");
+        assertTrue(opensWith(TEST_PASSWORD),
+                "a rejected ChangePassword must leave the password as it was");
 
         // An empty new password removes protection, restoring the original state.
         stub.changePassword(ChangePasswordRequest.newBuilder()
                 .setOldPassword(TEST_PASSWORD)
                 .build());
-        assertTrue(!isEncrypted(), "wallet must report itself unencrypted after the password "
-                + "was removed");
+        assertTrue(opensWith(""), "wallet must be unprotected after the password was removed");
         System.out.println("    set password -> reject wrong password -> remove password ok");
     }
 
-    private boolean isEncrypted() {
-        return stub.isWalletEncrypted(IsWalletEncryptedRequest.newBuilder().build()).getEncrypted();
+    /**
+     * Whether {@code password} is the one currently protecting the wallet, probed by re-opening
+     * the (already open) wallet with it.
+     */
+    private boolean opensWith(String password) {
+        try {
+            return stub.openOrCreateWallet(OpenOrCreateWalletRequest.newBuilder()
+                    .setPassword(password)
+                    .build()).getSuccess();
+        } catch (StatusRuntimeException e) {
+            if (e.getStatus().getCode() == Status.Code.PERMISSION_DENIED) {
+                return false;
+            }
+            throw e;
+        }
     }
 
     // --- tiny test harness -------------------------------------------------------------------
