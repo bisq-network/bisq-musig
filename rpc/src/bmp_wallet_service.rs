@@ -22,7 +22,7 @@ use std::sync::{Arc, Mutex};
 // Leading `::` disambiguates the `wallet` *crate* from this crate's own `wallet` module.
 use ::wallet::bmp_wallet::{BMPWallet, WalletApi as _, WalletErrorKind};
 use ::wallet::chain_data_source::ChainDataSource;
-use ::wallet::password::{Password, WeakPassword};
+use ::wallet::password::{InvalidPassword, Password, WeakPassword};
 use ::wallet::wallet_info::{PubAddressInfo, TxInfo, TxOutputInfo, UtxoInfo};
 use bdk_bitcoind_rpc::bitcoincore_rpc::{Client, RpcApi as _};
 use bdk_wallet::Balance;
@@ -66,12 +66,6 @@ const DEFAULT_FEE_RATE: FeeRate = FeeRate::from_sat_per_kwu(500);
 #[derive(Debug, Error)]
 #[error("wallet is not open; call OpenOrCreateWallet first")]
 pub struct WalletNotOpen;
-
-/// The caller failed to present the password currently protecting the wallet. Reported to gRPC
-/// clients as `PERMISSION_DENIED`.
-#[derive(Debug, Error)]
-#[error("invalid wallet password")]
-pub struct InvalidPassword;
 
 /// The GUI-facing wallet operations.
 ///
@@ -169,15 +163,6 @@ fn require_open(guard: &mut Option<BMPWallet>) -> anyhow::Result<&mut BMPWallet>
     guard
         .as_mut()
         .ok_or_else(|| anyhow::Error::new(WalletNotOpen))
-}
-
-/// The caller's attempt at the password in force, as the [`Password`] the wallet expects.
-///
-/// Every password in force passed the password rules, so an attempt that breaks them cannot be
-/// right. It is reported as [`InvalidPassword`] rather than [`WeakPassword`]: the caller is
-/// proving they know the password, not choosing one.
-fn attempt(password: &str) -> anyhow::Result<Password> {
-    Password::new(password.to_owned()).map_err(|_: WeakPassword| InvalidPassword.into())
 }
 
 impl<S> BMPWalletServiceImpl<S> {
@@ -328,7 +313,7 @@ impl<S: ChainDataSource + Send + Sync + 'static> BmpWalletService for BMPWalletS
         if let Some(wallet) = guard.as_ref() {
             // Idempotent for a client that reconnects: re-opening an open wallet succeeds, but
             // only for a caller who can present the password currently in force.
-            if wallet.check_password(&attempt(password)?)? {
+            if wallet.check_password(&Password::check(password)?)? {
                 return Ok(());
             }
             return Err(InvalidPassword.into());
@@ -344,7 +329,7 @@ impl<S: ChainDataSource + Send + Sync + 'static> BmpWalletService for BMPWalletS
             let wallet = match BMPWallet::load_wallet(
                 self.wallet_dir.as_path().into(),
                 self.network,
-                &attempt(password)?,
+                &Password::check(password)?,
             ) {
                 Ok(wallet) => wallet,
                 Err(err) => match err {
@@ -378,9 +363,9 @@ impl<S: ChainDataSource + Send + Sync + 'static> BmpWalletService for BMPWalletS
             wallet
         } else {
             // Only now does the password become *the* wallet password, so only now does breaking
-            // the password rules make it a bad argument rather than a wrong password (see
-            // `attempt`).
-            let password = Password::new(password.to_owned())?;
+            // the password rules make it a bad argument rather than a wrong password (compare
+            // `Password::check`).
+            let password = Password::new(password)?;
             info!(dir = %self.wallet_dir.display(), "No BMP wallet found; creating a new one.");
             BMPWallet::new(self.wallet_dir.as_path().into(), &password, self.network)?
         };
@@ -402,11 +387,11 @@ impl<S: ChainDataSource + Send + Sync + 'static> BmpWalletService for BMPWalletS
     async fn change_password(&self, old_password: &str, new_password: &str) -> anyhow::Result<()> {
         let mut guard = self.wallet.lock().await;
         let wallet = require_open(&mut guard)?;
-        let old_password = attempt(old_password)?;
+        let old_password = Password::check(old_password)?;
         if !wallet.check_password(&old_password)? {
             return Err(InvalidPassword.into());
         }
-        let new_password = Password::new(new_password.to_owned())?;
+        let new_password = Password::new(new_password)?;
         Ok(wallet.change_password(&old_password, &new_password)?)
     }
 
@@ -445,7 +430,7 @@ impl<S: ChainDataSource + Send + Sync + 'static> BmpWalletService for BMPWalletS
         let mut guard = self.wallet.lock().await;
         let wallet = require_open(&mut guard)?;
 
-        if !wallet.check_password(&attempt(password)?)? {
+        if !wallet.check_password(&Password::check(password)?)? {
             return Err(InvalidPassword.into());
         }
 
@@ -472,7 +457,7 @@ impl<S: ChainDataSource + Send + Sync + 'static> BmpWalletService for BMPWalletS
         let mut guard = self.wallet.lock().await;
         let wallet = require_open(&mut guard)?;
 
-        if !wallet.check_password(&attempt(password)?)? {
+        if !wallet.check_password(&Password::check(password)?)? {
             return Err(InvalidPassword.into());
         }
 
