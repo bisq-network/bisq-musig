@@ -15,6 +15,7 @@ use secp::Scalar;
 use tempfile::{TempDir, tempdir};
 use testenv::TestEnv;
 use wallet::bmp_wallet::*;
+use wallet::error::WalletErrorKind;
 use wallet::persisted::DBStorage;
 use wallet::utils::derive_key_from_password;
 
@@ -429,10 +430,10 @@ async fn test_drain_wallet_no_balance() {
 
     let res = wallet.drain_imported_balance(FeeRate::from_sat_per_vb(10).unwrap());
 
-    assert!(matches!(
-        res,
-        Err(WalletErrorKind::CreateTx(OutputBelowDustLimit(_)))
-    ));
+    assert!(
+        matches!(res, Err(WalletErrorKind::CreateTx(OutputBelowDustLimit(_)))),
+        "unexpected error: {res:?}"
+    );
 }
 
 fn get_dir() -> TempDir {
@@ -622,5 +623,11 @@ fn encrypted_wallet() {
 
     // Try loading the wallet with wrong decryption key should panic
     let lw = BMPWallet::load_wallet(dir.into(), Network::Regtest, "secret123");
-    assert!(matches!(lw, Err(WalletErrorKind::InvalidPassword)));
+    let Err(err) = lw else {
+        panic!("opening with a wrong password must fail");
+    };
+    assert!(
+        matches!(err, WalletErrorKind::InvalidPassword),
+        "unexpected error: {err:?}"
+    );
 }

@@ -3,6 +3,7 @@ pub mod utils;
 
 pub mod bmp_wallet;
 pub mod chain_data_source;
+pub mod error;
 pub mod persisted;
 pub mod protocol_wallet_api;
 #[cfg(test)]
@@ -32,7 +33,8 @@ mod tests {
     use rand::RngCore as _;
     use secp::Scalar;
 
-    use crate::bmp_wallet::{BMPWallet, ImportedKey, STOP_GAP, WalletApi as _, WalletErrorKind};
+    use crate::bmp_wallet::{BMPWallet, ImportedKey, STOP_GAP, WalletApi as _};
+    use crate::error::WalletErrorKind;
     use crate::persisted::DBStorage;
     use crate::test_utils::{MemDbHandle, MockedBDKElectrum, derive_public_key};
 
@@ -1071,7 +1073,10 @@ mod tests {
         let Err(err) = wallet.change_password("attacker", "attacker") else {
             panic!("re-keying without the current password must fail");
         };
-        assert!(matches!(err, WalletErrorKind::InvalidPassword));
+        assert!(
+            matches!(err, WalletErrorKind::InvalidPassword),
+            "unexpected error: {err:?}"
+        );
 
         assert!(wallet.is_encrypted());
         assert!(

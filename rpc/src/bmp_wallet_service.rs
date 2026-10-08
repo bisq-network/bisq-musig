@@ -20,8 +20,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 // Leading `::` disambiguates the `wallet` *crate* from this crate's own `wallet` module.
-use ::wallet::bmp_wallet::{BMPWallet, WalletApi as _, WalletErrorKind};
+use ::wallet::bmp_wallet::{BMPWallet, WalletApi as _};
 use ::wallet::chain_data_source::ChainDataSource;
+use ::wallet::error::WalletErrorKind;
 use ::wallet::wallet_info::{TxInfo, TxOutputInfo, UtxoInfo};
 use bdk_bitcoind_rpc::bitcoincore_rpc::{Client, RpcApi as _};
 use bdk_wallet::Balance;
@@ -344,21 +345,9 @@ impl<S: ChainDataSource + Send + Sync + 'static> BmpWalletService for BMPWalletS
                             db_path.display()
                         )));
                     }
-                    WalletErrorKind::Persistence(err) => {
-                        return Err(anyhow::Error::msg(format!(
-                            "failed to open the existing wallet at {}: persistence error: {err}",
-                            db_path.display()
-                        )));
-                    }
-                    WalletErrorKind::Generic(message) => {
-                        return Err(anyhow::Error::msg(format!(
-                            "failed to open the existing wallet at {}: {message}",
-                            db_path.display()
-                        )));
-                    }
                     other => {
-                        return Err(anyhow::Error::msg(format!(
-                            "failed to open the existing wallet at {}: {other}",
+                        return Err(anyhow::Error::new(other).context(format!(
+                            "failed to open the existing wallet at {}",
                             db_path.display()
                         )));
                     }
@@ -388,10 +377,12 @@ impl<S: ChainDataSource + Send + Sync + 'static> BmpWalletService for BMPWalletS
     async fn change_password(&self, old_password: &str, new_password: &str) -> anyhow::Result<()> {
         let mut guard = self.wallet.lock().await;
         let wallet = require_open(&mut guard)?;
-        if !wallet.check_password(old_password)? {
-            return Err(InvalidPassword.into());
-        }
-        Ok(wallet.change_password(old_password, new_password)?)
+        wallet
+            .change_password(old_password, new_password)
+            .map_err(|err| match err {
+                WalletErrorKind::InvalidPassword => InvalidPassword.into(),
+                other => anyhow::Error::new(other),
+            })
     }
 
     async fn new_address(&self) -> anyhow::Result<String> {

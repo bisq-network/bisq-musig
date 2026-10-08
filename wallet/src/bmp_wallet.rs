@@ -5,7 +5,6 @@ use std::vec;
 use bdk_electrum::bdk_core::bitcoin::{Address, FeeRate, OutPoint};
 use bdk_wallet::bitcoin::bip32::Xpriv;
 use bdk_wallet::bitcoin::hex::DisplayHex as _;
-use bdk_wallet::bitcoin::psbt::ExtractTxError;
 use bdk_wallet::bitcoin::{
     Amount, Network, PrivateKey, Psbt, ScriptBuf, Sequence, TapNodeHash, Transaction, Weight,
     XOnlyPublicKey, consensus, psbt,
@@ -23,10 +22,10 @@ use bdk_wallet::{
 };
 use rand::RngCore as _;
 use secp::Scalar;
-use thiserror::Error;
 
 use crate::chain_data_source::ChainDataSource;
 use crate::coin_selection::{AlwaysSpendImportedFirst, SpendImportedOnly};
+use crate::error::{Result, WalletErrorKind};
 use crate::persisted::{BMPDatabase, BMPWalletPersister as _, DBStorage, PersistenceError};
 use crate::protocol_wallet_api::{
     ProtocolWalletApi, WalletExt, finish_standard_psbt, internal_key_at_index,
@@ -34,6 +33,7 @@ use crate::protocol_wallet_api::{
 };
 use crate::utils::{derive_key_from_password, key_verifier};
 use crate::wallet_info::{TxInfo, TxInputInfo, TxOutputInfo, UtxoInfo};
+
 /// An external (non-HD) private key imported into the wallet, together with the Taproot output
 /// template it controls: `tr(P, tap_tree)` where `P` is the (untweaked) internal key derived from
 /// `secret`. A missing tap tree means a key-path-only output (`tr(P)`, as in BIP86).
@@ -50,8 +50,7 @@ pub struct ImportedKey {
 
 impl ImportedKey {
     pub fn new(secret: Scalar, tap_tree: Option<TapTree<XOnlyPublicKey>>) -> Result<Self> {
-        let descriptor = Tr::new(Self::internal_key_of(&secret), tap_tree)
-            .map_err(WalletErrorKind::generic)?;
+        let descriptor = Tr::new(Self::internal_key_of(&secret), tap_tree)?;
         Ok(Self { secret, descriptor })
     }
 
@@ -113,61 +112,6 @@ pub struct BMPWallet {
     /// Whether the user actually set a password. The database is always encrypted — an empty
     /// password still yields a valid Argon2 key — so this records intent, not mechanism.
     encrypted: bool,
-}
-
-pub type Result<T, E = WalletErrorKind> = std::result::Result<T, E>;
-
-#[derive(Error, Debug)]
-#[error(transparent)]
-#[non_exhaustive]
-pub enum WalletErrorKind {
-    MiniscriptError(#[from] bdk_wallet::miniscript::Error),
-    Persistence(#[from] PersistenceError),
-    #[error("failed to derive database key: {0}")]
-    KeyDerivation(String),
-    #[error("Invalid Password provided")]
-    InvalidPassword,
-    SignerError(#[from] SignerError),
-    #[error("not a Taproot address")]
-    NotTaprootAddress,
-    #[error("malformed PSBT")]
-    MalformedPsbt,
-    ConversionError(#[from] bdk_wallet::miniscript::descriptor::ConversionError),
-    CreateTx(#[from] bdk_wallet::error::CreateTxError),
-    #[error("imported key descriptor does not match its secret key")]
-    MismatchedDescriptor,
-    #[error("no wallet loaded")]
-    NoWallet,
-    #[error("Wallet has no stored seed phrase")]
-    MissingSeedPhrase,
-    ExtractTxError(#[from] Box<ExtractTxError>),
-    #[error("{0}")]
-    Generic(#[source] Box<dyn std::error::Error + Sync + Send + 'static>),
-}
-
-impl WalletErrorKind {
-    fn generic<E>(err: E) -> Self
-    where
-        E: std::error::Error + Send + Sync + 'static,
-    {
-        Self::Generic(Box::new(err))
-    }
-
-    fn message(message: impl Into<String>) -> Self {
-        Self::Generic(Box::new(std::io::Error::other(message.into())))
-    }
-}
-
-impl From<ExtractTxError> for WalletErrorKind {
-    fn from(value: ExtractTxError) -> Self {
-        Self::ExtractTxError(Box::new(value))
-    }
-}
-
-impl From<argon2::Error> for WalletErrorKind {
-    fn from(value: argon2::Error) -> Self {
-        Self::KeyDerivation(value.to_string())
-    }
 }
 
 impl BMPWallet {
@@ -462,7 +406,7 @@ impl BMPWallet {
             let old_key = derive_key_from_password(old_password, &self.salt)?;
             self.db
                 .pragma_update(None, "rekey", old_key.as_str())
-                .map_err(|e| WalletErrorKind::from(PersistenceError::Database(e)))?;
+                .map_err(PersistenceError::Database)?;
             self.db.storage().remove_staged_salt(Self::DB_NAME);
             return Err(e.into());
         }
@@ -549,16 +493,14 @@ impl BMPWallet {
                 .descriptor(KeychainKind::External, Some(descriptor.clone()))
                 .check_network(network)
                 .extract_keys()
-                .load_wallet(&mut db)
-                .map_err(WalletErrorKind::generic)?;
+                .load_wallet(&mut db)?;
 
             let imported_wallet = if let Some(wallet) = imported_wallet_opt {
                 wallet
             } else {
                 Wallet::create_single(descriptor)
                     .network(network)
-                    .create_wallet(&mut db)
-                    .map_err(WalletErrorKind::generic)?
+                    .create_wallet(&mut db)?
             };
             res.push((imported_wallet, db));
         }
@@ -577,22 +519,27 @@ impl BMPWallet {
     ) -> Result<Self> {
         let mut db = storage
             .open(Self::DB_NAME)
-            .map_err(|e| WalletErrorKind::from(PersistenceError::Database(e)))?;
+            .map_err(PersistenceError::Database)?;
         let key = derive_key_from_password(password, &salt)?;
         db.pragma_update(None, "key", key.as_str())
-            .map_err(|e| WalletErrorKind::from(PersistenceError::Database(e)))?;
+            .map_err(PersistenceError::Database)?;
 
         let wallet_opt = Wallet::load()
             .check_network(network)
             .load_wallet(&mut db)
             .map_err(|e| match e {
-                bdk_wallet::LoadWithPersistError::Persist(rusqlite::Error::SqliteFailure(sqlite_err, _)) => {
-                    match sqlite_err.code {
-                        rusqlite::ErrorCode::NotADatabase | rusqlite::ErrorCode::PermissionDenied => WalletErrorKind::InvalidPassword,
-                        _ => WalletErrorKind::message(sqlite_err.to_string()),
-                    }
+                bdk_wallet::LoadWithPersistError::Persist(rusqlite::Error::SqliteFailure(
+                    sqlite_err,
+                    _,
+                )) if sqlite_err.code == rusqlite::ErrorCode::NotADatabase => {
+                    WalletErrorKind::InvalidPassword
                 }
-                _ => WalletErrorKind::message(e.to_string()),
+                bdk_wallet::LoadWithPersistError::Persist(e) => {
+                    PersistenceError::Database(e).into()
+                }
+                bdk_wallet::LoadWithPersistError::InvalidChangeSet(e) => {
+                    WalletErrorKind::generic(e)
+                }
             })?;
 
         if let Some(wallet) = wallet_opt {
@@ -659,7 +606,8 @@ impl ProtocolWalletApi for BMPWallet {
     ) -> Result<(), WalletErrorKind> {
         // TODO unify signing
         sign_selected_inputs_with(self, psbt, is_selected, |w, p, opts| {
-            <Self as WalletApi>::sign(w, p, opts)})
+            <Self as WalletApi>::sign(w, p, opts)
+        })
     }
 
     fn import_private_key(
@@ -722,7 +670,7 @@ impl WalletApi for BMPWallet {
 
         s.sync(vec)
             .await
-            .map_err(|e| WalletErrorKind::message(e.to_string()))?;
+            .map_err(|e| WalletErrorKind::Generic(e.into_boxed_dyn_error()))?;
 
         let mut final_imported_balance = Balance::default();
 
@@ -740,8 +688,7 @@ impl WalletApi for BMPWallet {
 
         // Persist changes from imported keys
         for (w, db) in &mut imported {
-            w.persist(db)
-                .map_err(|e| WalletErrorKind::from(PersistenceError::Database(e)))?;
+            w.persist(db).map_err(PersistenceError::Database)?;
         }
 
         self.persist()?;
@@ -756,15 +703,12 @@ impl WalletApi for BMPWallet {
         let mut seed = [0u8; 32];
         rand::rng().fill_bytes(&mut seed);
 
-        let xprv = Xpriv::new_master(network, &seed)
-            .map_err(WalletErrorKind::generic)?;
+        let xprv = Xpriv::new_master(network, &seed)?;
 
-        let (descriptor, external_map, _) = Bip86(xprv, KeychainKind::External)
-            .build(network.into())
-            .map_err(WalletErrorKind::generic)?;
-        let (change_descriptor, internal_map, _) = Bip86(xprv, KeychainKind::Internal)
-            .build(network.into())
-            .map_err(WalletErrorKind::generic)?;
+        let (descriptor, external_map, _) =
+            Bip86(xprv, KeychainKind::External).build(network.into())?;
+        let (change_descriptor, internal_map, _) =
+            Bip86(xprv, KeychainKind::Internal).build(network.into())?;
 
         // Never create over an existing wallet.
         if storage.db_exists(Self::DB_NAME) {
@@ -775,19 +719,18 @@ impl WalletApi for BMPWallet {
 
         let mut db = storage
             .open(Self::DB_NAME)
-            .map_err(|e| WalletErrorKind::from(PersistenceError::Database(e)))?;
+            .map_err(PersistenceError::Database)?;
         let salt = storage.persist_salt(Self::DB_NAME)?;
 
         let key = derive_key_from_password(password, &salt)?;
         db.pragma_update(None, "key", key.as_str())
-            .map_err(|e| WalletErrorKind::from(PersistenceError::Database(e)))?;
+            .map_err(PersistenceError::Database)?;
 
         let wallet = Wallet::create(descriptor, change_descriptor)
             .network(network)
             .keymap(KeychainKind::External, external_map)
             .keymap(KeychainKind::Internal, internal_map)
-            .create_wallet(&mut db)
-            .map_err(WalletErrorKind::generic)?;
+            .create_wallet(&mut db)?;
 
         Connection::init(
             &mut db,
@@ -795,7 +738,7 @@ impl WalletApi for BMPWallet {
             Some(Self::SEEDS_TABLE_NAME),
         )?;
 
-        let mnemonic = Mnemonic::from_entropy(&seed).map_err(WalletErrorKind::generic)?;
+        let mnemonic = Mnemonic::from_entropy(&seed)?;
         let words = mnemonic.to_string();
         Connection::persist_seed_phrase(&mut db, Self::SEEDS_TABLE_NAME, &words)?;
 
