@@ -10,11 +10,55 @@ use bdk_wallet::Wallet;
 use bdk_wallet::bitcoin::{Transaction, Txid};
 use bdk_wallet::chain::DescriptorId;
 use bdk_wallet::chain::spk_client::{FullScanRequest, FullScanResponse};
+use thiserror::Error;
 use tokio::select;
+
+#[derive(Debug, Error)]
+#[non_exhaustive]
+pub enum SyncError {
+    #[error("failed to build compact-filter client: {0}")]
+    Build(#[from] bdk_kyoto::builder::BuilderError),
+    #[error("compact-filter client stopped before producing updates: {0}")]
+    Updates(#[from] bdk_kyoto::UpdateError),
+    #[error("failed to shut down compact-filter client: {0}")]
+    Shutdown(#[from] bdk_kyoto::ClientError),
+}
+
+#[derive(Debug, Error)]
+#[error(transparent)]
+#[non_exhaustive]
+pub enum ChainApiError {
+    Backend(Box<dyn std::error::Error + Send + Sync + 'static>),
+}
+
+impl ChainApiError {
+    pub fn backend<E>(error: E) -> Self
+    where
+        E: std::error::Error + Send + Sync + 'static,
+    {
+        Self::Backend(Box::new(error))
+    }
+}
+
+#[derive(Debug, Error)]
+#[error(transparent)]
+#[non_exhaustive]
+pub enum FullScanError {
+    Backend(Box<dyn std::error::Error + Send + Sync + 'static>),
+}
+
+impl FullScanError {
+    pub fn backend<E>(error: E) -> Self
+    where
+        E: std::error::Error + Send + Sync + 'static,
+    {
+        Self::Backend(Box::new(error))
+    }
+}
 
 /// Minimal abstraction over blockchain interaction for broadcasting transactions.
 pub trait ChainApi: Send + Sync {
-    fn transaction_broadcast(&self, tx: &Transaction) -> anyhow::Result<Txid>;
+    fn transaction_broadcast(&self, tx: &Transaction) -> Result<Txid, ChainApiError>;
 }
 
 /// Abstraction over the read-side of a chain backend: pre-populating a transaction cache and
@@ -33,7 +77,7 @@ pub trait ChainScanner {
         stop_gap: usize,
         batch_size: usize,
         fetch_prev_txouts: bool,
-    ) -> anyhow::Result<FullScanResponse<K>>;
+    ) -> Result<FullScanResponse<K>, FullScanError>;
 }
 
 pub struct CBFScanner {
@@ -97,7 +141,7 @@ impl CBFScanner {
         &self,
         network: Network,
         wallets: Vec<(&Wallet, ScanType)>,
-    ) -> anyhow::Result<BTreeMap<DescriptorId, Update>> {
+    ) -> Result<BTreeMap<DescriptorId, Update>, SyncError> {
         let client = Builder::new(network)
             .add_peers(self.peers.iter().cloned())
             .build_with_wallets(wallets)?;

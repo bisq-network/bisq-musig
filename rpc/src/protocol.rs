@@ -18,7 +18,7 @@ use protocol::transaction::{
 use protocol::{mocks, script_paths};
 use thiserror::Error;
 use tracing::{info, instrument};
-use wallet::bmp_wallet::WalletErrorKind;
+use wallet::error::WalletErrorKind;
 use wallet::protocol_wallet_api::ProtocolWalletApi;
 
 use crate::storage::{ByRef, ByVal, Storage};

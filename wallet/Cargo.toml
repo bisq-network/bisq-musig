@@ -4,8 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-anyhow = { workspace = true }
-argon2 = { workspace = true, features = ["zeroize"] }
+argon2 = { workspace = true, features = ["std", "zeroize"] }
 base64 = { workspace = true }
 bdk_electrum = { workspace = true }
 bdk_kyoto = { workspace = true }
@@ -25,6 +24,7 @@ trait-variant = { workspace = true }
 test-utils = []
 
 [dev-dependencies]
+anyhow = { workspace = true }
 bdk_wallet = { workspace = true, features = ["test-utils"] }
 bmp_tracing = { workspace = true }
 tempfile = { workspace = true }

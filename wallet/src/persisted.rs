@@ -9,7 +9,6 @@ use bdk_wallet::bitcoin::hex::DisplayHex as _;
 use bdk_wallet::{ChangeSet, WalletPersister};
 use rand::RngCore as _;
 use rusqlite::{Connection, named_params};
-use secp::Scalar;
 use thiserror::Error;
 
 use crate::bmp_wallet::ImportedKey;
@@ -41,8 +40,12 @@ pub enum PersistenceError {
     Io(#[from] std::io::Error),
     #[error("salt decode error: {0}")]
     SaltDecode(#[from] base64::DecodeError),
-    #[error("wallet persistence error: {0}")]
-    Generic(String),
+    #[error("no committed salt path for database {database}")]
+    MissingSaltPath { database: String },
+    #[error("no salt registered for in-memory database {name}")]
+    MissingMemorySalt { name: String },
+    #[error("no staged salt is available to commit")]
+    MissingStagedSalt,
 }
 
 impl DBStorage {
@@ -130,9 +133,11 @@ impl DBStorage {
     pub fn load_salt(&self, db_name: &str) -> Result<Vec<u8>> {
         match self {
             Self::File(_) => {
-                let salt_path = self
-                    .committed_salt_path(db_name)
-                    .ok_or_else(|| PersistenceError::Generic(format!("no committed salt path for {db_name}")))?;
+                let salt_path = self.committed_salt_path(db_name).ok_or_else(|| {
+                    PersistenceError::MissingSaltPath {
+                        database: db_name.to_owned(),
+                    }
+                })?;
                 let salt_str = fs::read_to_string(&salt_path)?;
                 Ok(general_purpose::STANDARD.decode(salt_str.as_bytes())?)
             }
@@ -142,7 +147,7 @@ impl DBStorage {
                 .unwrap()
                 .get(name)
                 .cloned()
-                .ok_or_else(|| PersistenceError::Generic(format!("no salt registered for {name}"))),
+                .ok_or_else(|| PersistenceError::MissingMemorySalt { name: name.clone() }),
         }
     }
 
@@ -231,7 +236,7 @@ impl DBStorage {
                     map.insert(name.clone(), s);
                     Ok(())
                 } else {
-                    Err(PersistenceError::Generic("no staged salt to commit".to_owned()))
+                    Err(PersistenceError::MissingStagedSalt)
                 }
             }
         }
@@ -289,7 +294,10 @@ pub trait BMPWalletPersister: WalletPersister {
         seed_phrase: &str,
     ) -> Result<()>;
 
-    fn load_imported_keys(db: &mut Self::DB, keys_table_name: &str) -> Result<Vec<ImportedKey>>;
+    fn load_imported_key_rows(
+        db: &mut Self::DB,
+        keys_table_name: &str,
+    ) -> Result<Vec<(String, String)>>;
 
     fn persist_imported_keys(
         db: &mut Self::DB,
@@ -301,10 +309,7 @@ pub trait BMPWalletPersister: WalletPersister {
 
     fn has_seed_phrase(db: &Self::DB, seeds_table_name: &str) -> Result<bool>;
 
-    fn persist_staged_changes(
-        db: &mut Self::DB,
-        cs: &ChangeSet,
-    ) -> Result<()>;
+    fn persist_staged_changes(db: &mut Self::DB, cs: &ChangeSet) -> Result<()>;
 }
 
 impl BMPWalletPersister for Connection {
@@ -367,8 +372,11 @@ impl BMPWalletPersister for Connection {
         Ok(())
     }
 
-    fn load_imported_keys(db: &mut Self::DB, keys_table_name: &str) -> Result<Vec<ImportedKey>> {
-        let mut imported_keys = vec![];
+    fn load_imported_key_rows(
+        db: &mut Self::DB,
+        keys_table_name: &str,
+    ) -> Result<Vec<(String, String)>> {
+        let mut imported_key_rows = vec![];
 
         let mut statement =
             db.prepare(&format!("SELECT key, descriptor FROM {keys_table_name}"))?;
@@ -381,16 +389,10 @@ impl BMPWalletPersister for Connection {
         })?;
 
         for row in row_iter {
-            let (key_hex, descriptor) = row?;
-            let secret = Scalar::from_hex(&key_hex)
-                .map_err(|e| PersistenceError::Generic(e.to_string()))?;
-            imported_keys.push(
-                ImportedKey::from_descriptor_str(secret, &descriptor)
-                    .map_err(|e| PersistenceError::Generic(e.to_string()))?,
-            );
+            imported_key_rows.push(row?);
         }
 
-        Ok(imported_keys)
+        Ok(imported_key_rows)
     }
 
     fn persist_imported_keys(
