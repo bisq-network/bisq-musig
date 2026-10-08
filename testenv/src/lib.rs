@@ -18,7 +18,7 @@ use bdk_wallet::bitcoin::{Address, Amount, BlockHash, Network, Transaction, Txid
 use bdk_wallet::chain::spk_client::{FullScanRequest, FullScanResponse};
 use bdk_wallet::{PersistedWallet, serde_json};
 use bmp_tracing::tracing;
-use chain::{ChainApi, ChainScanner};
+use chain::{ChainApi, ChainApiError, ChainScanner, FullScanError};
 use electrsd::corepc_node::Node;
 use electrsd::electrum_client::{Client, ElectrumApi};
 use electrsd::{ElectrsD, corepc_node};
@@ -30,6 +30,7 @@ use tempfile::TempDir;
 use tokio::net::TcpListener;
 use typed_arena::Arena;
 use wallet::chain_data_source::ChainDataSource;
+use wallet::error::ChainDataSourceError;
 use wallet::persisted::BMPWalletPersister;
 
 /// Bitcoin regtest environment manager
@@ -654,10 +655,10 @@ impl ChainScanner for TestEnv {
         stop_gap: usize,
         batch_size: usize,
         fetch_prev_txouts: bool,
-    ) -> Result<FullScanResponse<K>> {
+    ) -> std::result::Result<FullScanResponse<K>, FullScanError> {
         self.bdk_electrum_client
             .full_scan(request, stop_gap, batch_size, fetch_prev_txouts)
-            .map_err(Into::into)
+            .map_err(FullScanError::backend)
     }
 }
 
@@ -677,7 +678,7 @@ impl Testchain {
 }
 
 impl ChainApi for Testchain {
-    fn transaction_broadcast(&self, tx: &Transaction) -> Result<Txid> {
+    fn transaction_broadcast(&self, tx: &Transaction) -> std::result::Result<Txid, ChainApiError> {
         broadcast_via(&self.client, tx)
     }
 }
@@ -693,10 +694,10 @@ impl ChainScanner for Testchain {
         stop_gap: usize,
         batch_size: usize,
         fetch_prev_txouts: bool,
-    ) -> Result<FullScanResponse<K>> {
+    ) -> std::result::Result<FullScanResponse<K>, FullScanError> {
         self.client
             .full_scan(request, stop_gap, batch_size, fetch_prev_txouts)
-            .map_err(Into::into)
+            .map_err(FullScanError::backend)
     }
 }
 
@@ -713,7 +714,7 @@ impl ChainDataSource for Testchain {
     async fn sync(
         &self,
         persister: Vec<&mut PersistedWallet<impl BMPWalletPersister>>,
-    ) -> Result<()> {
+    ) -> std::result::Result<(), ChainDataSourceError> {
         for wallet in persister {
             let tx_nodes = wallet.tx_graph().full_txs().map(|tx_node| tx_node.tx);
             self.populate_tx_cache(tx_nodes);
@@ -730,14 +731,17 @@ impl ChainDataSource for Testchain {
 /// Shared `ChainApi::transaction_broadcast` body — swallows the idempotent
 /// "Transaction outputs already in utxo set" Electrum error (forwarded bitcoin RPC error -27) and
 /// returns the computed txid.
-fn broadcast_via(client: &BdkElectrumClient<Client>, tx: &Transaction) -> Result<Txid> {
+fn broadcast_via(
+    client: &BdkElectrumClient<Client>,
+    tx: &Transaction,
+) -> std::result::Result<Txid, ChainApiError> {
     match client.transaction_broadcast(tx) {
         Ok(txid) => Ok(txid),
         Err(Error::Protocol(serde_json::Value::String(e))) if e.starts_with(
             "sendrawtransaction RPC error: {\"code\":-27,") => {
             Ok(tx.compute_txid())
         }
-        Err(e) => Err(e.into()),
+        Err(e) => Err(ChainApiError::backend(e)),
     }
 }
 

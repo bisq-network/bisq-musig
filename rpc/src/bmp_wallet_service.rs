@@ -25,12 +25,11 @@ use ::wallet::chain_data_source::ChainDataSource;
 use ::wallet::password::{InvalidPassword, Password, WeakPassword};
 use ::wallet::error::WalletErrorKind;
 use ::wallet::wallet_info::{PubAddressInfo, TxInfo, TxOutputInfo, UtxoInfo};
-use anyhow::Context as _;
 use bdk_bitcoind_rpc::bitcoincore_rpc::{Client, RpcApi as _};
 use bdk_wallet::Balance;
 use bdk_wallet::bitcoin::address::{NetworkUnchecked, ParseError};
 use bdk_wallet::bitcoin::{Address, Amount, FeeRate, Network, Transaction, Txid};
-use chain::ChainApi;
+use chain::{ChainApi, ChainApiError};
 use futures_util::never::Never;
 use futures_util::stream::{BoxStream, StreamExt as _};
 use thiserror::Error;
@@ -329,12 +328,10 @@ impl<S: ChainDataSource + Send + Sync + 'static> BmpWalletService for BMPWalletS
         fs::create_dir_all(&self.wallet_dir)?;
         let db_path = self.wallet_dir.join(BMPWallet::DB_NAME);
         let wallet = if db_path.exists() {
-            // The error keeps its type under the context, so a wrong password still surfaces
-            // as such (see `status_from`).
-            let wallet = BMPWallet::load_wallet(
+            let wallet = match BMPWallet::load_wallet(
                 self.wallet_dir.as_path().into(),
                 self.network,
-                &Password::check(password)?
+                &Password::check(password)?,
             ) {
                 Ok(wallet) => wallet,
                 Err(err) => match err {
@@ -384,10 +381,14 @@ impl<S: ChainDataSource + Send + Sync + 'static> BmpWalletService for BMPWalletS
         // checking it here too would only double that cost.
         let old_password = Password::check(old_password)?;
         let new_password = Password::new(new_password)?;
-        wallet.change_password(&old_password, &new_password).map_err(|err| match err {
-            WalletErrorKind::InvalidPassword => InvalidPassword.into(),
-            other => anyhow::Error::new(other),
-         })
+
+        wallet
+        
+            .change_password(&old_password, &new_password)
+            .map_err(|err| match err {
+                WalletErrorKind::InvalidPassword => InvalidPassword.into(),
+                other => anyhow::Error::new(other),
+            })
     }
 
     async fn unused_address(&self) -> anyhow::Result<PubAddressInfo> {
@@ -471,8 +472,10 @@ impl BitcoinCoreChainApi {
 }
 
 impl ChainApi for BitcoinCoreChainApi {
-    fn transaction_broadcast(&self, tx: &Transaction) -> anyhow::Result<Txid> {
-        Ok(self.0.send_raw_transaction(tx)?)
+    fn transaction_broadcast(&self, tx: &Transaction) -> std::result::Result<Txid, ChainApiError> {
+        self.0
+            .send_raw_transaction(tx)
+            .map_err(ChainApiError::backend)
     }
 }
 
@@ -700,12 +703,16 @@ fn status_from(error: &anyhow::Error) -> Status {
     } else if error.downcast_ref::<ParseError>().is_some() {
         // A malformed address, or one for another network: the client's fault, not ours.
         Status::invalid_argument(format!("invalid address: {message}"))
+    } else if matches!(
+        error.downcast_ref::<WalletErrorKind>(),
+        Some(WalletErrorKind::WalletAlreadyExists)
+    ) {
+        Status::already_exists(message)
     } else {
         error!("Wallet operation failed: {message}");
         Status::internal(message)
     }
 }
-
 /// Whether `error` is a wrong wallet password, whichever layer caught it: the service, checking
 /// a password itself ([`InvalidPassword`]), or the wallet, when a load or re-key was refused
 /// ([`WalletErrorKind::InvalidPassword`], which wraps the same error).
@@ -713,7 +720,7 @@ fn is_invalid_password(error: &anyhow::Error) -> bool {
     error.downcast_ref::<InvalidPassword>().is_some()
         || matches!(
             error.downcast_ref::<WalletErrorKind>(),
-            Some(WalletErrorKind::InvalidPassword(_))
+            Some(WalletErrorKind::InvalidPassword)
         )
 }
 
@@ -804,6 +811,7 @@ impl From<TxInfo> for bmp_wallet::Transaction {
 
 #[cfg(test)]
 mod tests {
+    use ::wallet::error::ChainDataSourceError;
     use ::wallet::persisted::DBStorage;
     use ::wallet::utils::derive_key_from_password;
     use bdk_wallet::PersistedWallet;
@@ -823,7 +831,7 @@ mod tests {
         async fn sync(
             &self,
             _persister: Vec<&mut PersistedWallet<impl wallet::persisted::BMPWalletPersister>>,
-        ) -> anyhow::Result<()> {
+        ) -> Result<(), ChainDataSourceError> {
             Ok(())
         }
     }
@@ -886,7 +894,7 @@ mod tests {
                 .change_password(PASSWORD, NEW_PASSWORD)
                 .await
                 .is_err()
-        );
+        );    
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -982,10 +990,15 @@ mod tests {
             format!("{err:#}").contains("seed phrase"),
             "expected the missing seed to be the reason, got: {err:#}"
         );
+        let status = status_from(&err);
+        assert!(
+            status.message().contains("seed phrase"),
+            "expected the gRPC status to retain the missing-seed reason, got: {status}"
+        );
         assert!(!reopened.is_ready());
         assert!(reopened.unused_address().await.is_err());
     }
-
+    
     #[tokio::test(flavor = "multi_thread")]
     async fn creating_a_wallet_requires_an_acceptable_password() {
         let (dir, service) = service();
@@ -1064,7 +1077,7 @@ mod tests {
             .unwrap();
         service.open_or_create_wallet(PASSWORD).await.unwrap();
     }
-
+    
     #[tokio::test(flavor = "multi_thread")]
     async fn send_to_address_requires_the_wallet_password() {
         let (_dir, service) = open_service().await;
