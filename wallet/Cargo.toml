@@ -11,6 +11,7 @@ bdk_electrum = { workspace = true }
 bdk_kyoto = { workspace = true }
 bdk_wallet = { workspace = true }
 chain = { workspace = true }
+fancy-regex = { workspace = true }
 hex = { workspace = true }
 rand = { workspace = true }
 rusqlite = { workspace = true }

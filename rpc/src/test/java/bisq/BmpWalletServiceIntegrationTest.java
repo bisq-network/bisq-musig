@@ -59,6 +59,8 @@ public class BmpWalletServiceIntegrationTest {
     private static final long FUNDING_SATS = 50_000_000; // 0.5 BTC
     private static final double FUNDING_BTC = 0.5;
     private static final long PAYMENT_SATS = 100_000;
+    /** Follows the wallet\'s password rules; the wallet is a throwaway. */
+    private static final String PASSWORD = "Test-Passw0rd";
 
     private TestEnvClient testenv;
     private MusigdProcess musigd;
@@ -89,8 +91,10 @@ public class BmpWalletServiceIntegrationTest {
         stub = WalletGrpc.newBlockingStub(channel);
 
         // musigd no longer creates the wallet at startup: the client opens (or creates) it over
-        // gRPC, supplying the wallet password — empty here, for a throwaway test wallet.
-        assertTrue(stub.openOrCreateWallet(OpenOrCreateWalletRequest.newBuilder().build())
+        // gRPC, supplying the wallet password.
+        assertTrue(stub.openOrCreateWallet(OpenOrCreateWalletRequest.newBuilder()
+                        .setPassword(PASSWORD)
+                        .build())
                         .getSuccess(),
                 "OpenOrCreateWallet must succeed against a fresh wallet directory");
     }
@@ -178,6 +182,7 @@ public class BmpWalletServiceIntegrationTest {
         String target = testenv.getNewAddress();
 
         String txId = stub.sendToAddress(SendToAddressRequest.newBuilder()
+                .setPassphrase(PASSWORD)
                 .setAddress(PubAddressInfo.newBuilder().setAddress(target))
                 .setAmount(PAYMENT_SATS)
                 .build()).getTxId();

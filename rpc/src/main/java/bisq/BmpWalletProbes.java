@@ -15,7 +15,7 @@ final class BmpWalletProbes {
      * the (already open) wallet with it.
      * <p>
      * Only meaningful once the wallet is open: with no wallet on disk, {@code OpenOrCreateWallet}
-     * would create an unprotected one instead of answering the question.
+     * would create one protected by {@code password} instead of answering the question.
      */
     static boolean opensWith(WalletGrpc.WalletBlockingStub stub, String password) {
         try {

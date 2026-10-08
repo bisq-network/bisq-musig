@@ -135,7 +135,7 @@ fn configure_bmp_wallet_serde(builder: tonic_prost_build::Builder) -> tonic_pros
         ])
         .serde_serialized_type(
             ".wallet.SendToAddressRequest",
-            &[redacted_opt_string("passphrase")],
+            &[redacted_string("passphrase")],
         )
         .serde_serialized_type(
             ".wallet.GetSeedWordsRequest",
@@ -185,13 +185,6 @@ const fn redacted_string(field: &str) -> CustomField<'_> {
     (
         field,
         Cow::Borrowed("#[serde(serialize_with = \"crate::pb::convert::redact::string\")]"),
-    )
-}
-
-const fn redacted_opt_string(field: &str) -> CustomField<'_> {
-    (
-        field,
-        Cow::Borrowed("#[serde(serialize_with = \"crate::pb::convert::redact::opt_string\")]"),
     )
 }
 

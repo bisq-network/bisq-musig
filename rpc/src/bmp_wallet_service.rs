@@ -22,6 +22,7 @@ use std::sync::{Arc, Mutex};
 // Leading `::` disambiguates the `wallet` *crate* from this crate's own `wallet` module.
 use ::wallet::bmp_wallet::{BMPWallet, WalletApi as _, WalletErrorKind};
 use ::wallet::chain_data_source::ChainDataSource;
+use ::wallet::password::{Password, WeakPassword};
 use ::wallet::wallet_info::{PubAddressInfo, TxInfo, TxOutputInfo, UtxoInfo};
 use bdk_bitcoind_rpc::bitcoincore_rpc::{Client, RpcApi as _};
 use bdk_wallet::Balance;
@@ -87,16 +88,18 @@ pub trait BmpWalletService {
 
     /// Opens the wallet database, creating a fresh wallet only if none exists yet.
     ///
-    /// `password` is the password protecting the database (empty for an unprotected wallet).
-    /// Re-opening an already-open wallet succeeds as long as the password matches; a wrong
-    /// password fails with [`InvalidPassword`]. Every other wallet operation requires this to
-    /// have been called first.
+    /// `password` protects the database. When a wallet is created it becomes the wallet's
+    /// password and so must follow the password rules (see [`Password`]), failing with
+    /// [`WeakPassword`] otherwise. When an existing wallet is opened, or an already-open one is
+    /// re-opened, a wrong password fails with [`InvalidPassword`]. Every other wallet operation
+    /// requires this to have been called first.
     async fn open_or_create_wallet(&self, password: &str) -> anyhow::Result<()>;
 
     /// Re-keys the wallet from `old_password` to `new_password`.
     ///
-    /// `old_password` must be the password currently in force (empty for an unprotected
-    /// wallet); an empty `new_password` removes password protection.
+    /// `old_password` must be the password currently in force ([`InvalidPassword`] otherwise),
+    /// and `new_password` must follow the password rules ([`WeakPassword`] otherwise). The
+    /// wallet is always password-protected, so a password can only be replaced, never removed.
     async fn change_password(&self, old_password: &str, new_password: &str) -> anyhow::Result<()>;
 
     /// Hands out an unused receive address.
@@ -114,13 +117,11 @@ pub trait BmpWalletService {
 
     /// Builds, signs, persists and broadcasts a payment.
     ///
-    /// `passphrase` is checked against the wallet password when one is set; it is ignored for an
-    /// unencrypted wallet. There is deliberately no RPC to ask which case applies: a client sends
-    /// without a passphrase and retries with one on [`InvalidPassword`]. `address` is tied to the
-    /// wallet's network here, which is why it arrives unchecked.
+    /// `passphrase` must be the wallet password; a wrong one fails with [`InvalidPassword`].
+    /// `address` is tied to the wallet's network here, which is why it arrives unchecked.
     async fn send_to_address(
         &self,
-        passphrase: Option<&str>,
+        passphrase: &str,
         address: Address<NetworkUnchecked>,
         amount: Amount,
         fee_rate: Option<FeeRate>,
@@ -130,8 +131,8 @@ pub trait BmpWalletService {
 
     /// The wallet's seed phrase, one word per element.
     ///
-    /// `password` is the password protecting the wallet (empty for an unprotected wallet); a
-    /// wrong one fails with [`InvalidPassword`] rather than revealing anything.
+    /// `password` must be the wallet password; a wrong one fails with [`InvalidPassword`] rather
+    /// than revealing anything.
     async fn seed_words(&self, password: &str) -> anyhow::Result<Vec<String>>;
 }
 
@@ -168,6 +169,15 @@ fn require_open(guard: &mut Option<BMPWallet>) -> anyhow::Result<&mut BMPWallet>
     guard
         .as_mut()
         .ok_or_else(|| anyhow::Error::new(WalletNotOpen))
+}
+
+/// The caller's attempt at the password in force, as the [`Password`] the wallet expects.
+///
+/// Every password in force passed the password rules, so an attempt that breaks them cannot be
+/// right. It is reported as [`InvalidPassword`] rather than [`WeakPassword`]: the caller is
+/// proving they know the password, not choosing one.
+fn attempt(password: &str) -> anyhow::Result<Password> {
+    Password::new(password.to_owned()).map_err(|_: WeakPassword| InvalidPassword.into())
 }
 
 impl<S> BMPWalletServiceImpl<S> {
@@ -318,7 +328,7 @@ impl<S: ChainDataSource + Send + Sync + 'static> BmpWalletService for BMPWalletS
         if let Some(wallet) = guard.as_ref() {
             // Idempotent for a client that reconnects: re-opening an open wallet succeeds, but
             // only for a caller who can present the password currently in force.
-            if wallet.check_password(password)? {
+            if wallet.check_password(&attempt(password)?)? {
                 return Ok(());
             }
             return Err(InvalidPassword.into());
@@ -334,7 +344,7 @@ impl<S: ChainDataSource + Send + Sync + 'static> BmpWalletService for BMPWalletS
             let wallet = match BMPWallet::load_wallet(
                 self.wallet_dir.as_path().into(),
                 self.network,
-                password,
+                &attempt(password)?,
             ) {
                 Ok(wallet) => wallet,
                 Err(err) => match err {
@@ -367,8 +377,12 @@ impl<S: ChainDataSource + Send + Sync + 'static> BmpWalletService for BMPWalletS
             info!(dir = %self.wallet_dir.display(), "Loaded the existing BMP wallet.");
             wallet
         } else {
+            // Only now does the password become *the* wallet password, so only now does breaking
+            // the password rules make it a bad argument rather than a wrong password (see
+            // `attempt`).
+            let password = Password::new(password.to_owned())?;
             info!(dir = %self.wallet_dir.display(), "No BMP wallet found; creating a new one.");
-            BMPWallet::new(self.wallet_dir.as_path().into(), password, self.network)?
+            BMPWallet::new(self.wallet_dir.as_path().into(), &password, self.network)?
         };
 
         self.tx_confidence_map
@@ -388,10 +402,12 @@ impl<S: ChainDataSource + Send + Sync + 'static> BmpWalletService for BMPWalletS
     async fn change_password(&self, old_password: &str, new_password: &str) -> anyhow::Result<()> {
         let mut guard = self.wallet.lock().await;
         let wallet = require_open(&mut guard)?;
-        if !wallet.check_password(old_password)? {
+        let old_password = attempt(old_password)?;
+        if !wallet.check_password(&old_password)? {
             return Err(InvalidPassword.into());
         }
-        Ok(wallet.change_password(old_password, new_password)?)
+        let new_password = Password::new(new_password.to_owned())?;
+        Ok(wallet.change_password(&old_password, &new_password)?)
     }
 
     async fn unused_address(&self) -> anyhow::Result<PubAddressInfo> {
@@ -417,7 +433,7 @@ impl<S: ChainDataSource + Send + Sync + 'static> BmpWalletService for BMPWalletS
 
     async fn send_to_address(
         &self,
-        passphrase: Option<&str>,
+        passphrase: &str,
         address: Address<NetworkUnchecked>,
         amount: Amount,
         fee_rate: Option<FeeRate>,
@@ -429,7 +445,7 @@ impl<S: ChainDataSource + Send + Sync + 'static> BmpWalletService for BMPWalletS
         let mut guard = self.wallet.lock().await;
         let wallet = require_open(&mut guard)?;
 
-        if wallet.is_encrypted() && !wallet.check_password(passphrase.unwrap_or_default())? {
+        if !wallet.check_password(&attempt(passphrase)?)? {
             return Err(InvalidPassword.into());
         }
 
@@ -456,7 +472,7 @@ impl<S: ChainDataSource + Send + Sync + 'static> BmpWalletService for BMPWalletS
         let mut guard = self.wallet.lock().await;
         let wallet = require_open(&mut guard)?;
 
-        if wallet.is_encrypted() && !wallet.check_password(password)? {
+        if !wallet.check_password(&attempt(password)?)? {
             return Err(InvalidPassword.into());
         }
 
@@ -610,7 +626,7 @@ impl wallet_server::Wallet for BmpWalletImpl {
             let tx_id = self
                 .wallet_service
                 .send_to_address(
-                    request.passphrase.as_deref(),
+                    &request.passphrase,
                     address,
                     Amount::from_sat(request.amount),
                     request.fee_rate_per_kwu.map(FeeRate::from_sat_per_kwu),
@@ -678,13 +694,17 @@ impl wallet_server::Wallet for BmpWalletImpl {
 
 /// Maps a wallet-layer error onto the gRPC status codes a client can distinguish: using the
 /// wallet before opening it is a state error the caller can fix (`FAILED_PRECONDITION`), a
-/// wrong password is the caller's mistake (`PERMISSION_DENIED`), and everything else is a
-/// server fault (`INTERNAL`).
+/// wrong password is the caller's mistake (`PERMISSION_DENIED`), a new password breaking the
+/// password rules is a bad argument whose message tells the user how to fix it
+/// (`INVALID_ARGUMENT`), and everything else is a server fault (`INTERNAL`).
 fn status_from(error: &anyhow::Error) -> Status {
     if error.downcast_ref::<WalletNotOpen>().is_some() {
         Status::failed_precondition(error.to_string())
     } else if error.downcast_ref::<InvalidPassword>().is_some() {
         Status::permission_denied(error.to_string())
+    } else if error.downcast_ref::<WeakPassword>().is_some() {
+        // The message is the password rules in plain English, meant for the user's eyes.
+        Status::invalid_argument(error.to_string())
     } else if error.downcast_ref::<ParseError>().is_some() {
         // A malformed address, or one for another network: the client's fault, not ours.
         Status::invalid_argument(format!("invalid address: {error}"))
@@ -816,6 +836,9 @@ mod tests {
 
     const REGTEST_ADDRESS: &str = "bcrt1qw508d6qejxtdg4y5r3zarvary0c5xw7kygt080";
     const MAINNET_ADDRESS: &str = "bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4";
+    /// Passwords following the wallet's password rules.
+    const PASSWORD: &str = "S3cret!!";
+    const NEW_PASSWORD: &str = "Hunter#2";
 
     /// A regtest address as the wallet itself would hand it out.
     fn address_info(address: &str) -> PubAddressInfo {
@@ -835,7 +858,7 @@ mod tests {
 
     async fn open_service() -> (tempfile::TempDir, BMPWalletServiceImpl<NoopChainDataSource>) {
         let (dir, service) = service();
-        service.open_or_create_wallet("").await.unwrap();
+        service.open_or_create_wallet(PASSWORD).await.unwrap();
         (dir, service)
     }
 
@@ -851,11 +874,16 @@ mod tests {
             "expected WalletNotOpen, got: {err}"
         );
         assert!(service.full_balance().await.is_err());
-        assert!(service.seed_words("").await.is_err());
+        assert!(service.seed_words(PASSWORD).await.is_err());
         assert!(service.transactions().await.is_err());
         assert!(service.utxos().await.is_err());
         assert!(service.wallet_addresses().await.is_err());
-        assert!(service.change_password("", "pw").await.is_err());
+        assert!(
+            service
+                .change_password(PASSWORD, NEW_PASSWORD)
+                .await
+                .is_err()
+        );
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -867,7 +895,7 @@ mod tests {
             "no chain data source, so the wallet is ready as soon as it is open"
         );
         assert_eq!(service.full_balance().await.unwrap().total().to_sat(), 0);
-        assert_eq!(service.seed_words("").await.unwrap().len(), 24);
+        assert_eq!(service.seed_words(PASSWORD).await.unwrap().len(), 24);
         assert!(service.transactions().await.unwrap().is_empty());
         assert!(service.utxos().await.unwrap().is_empty());
 
@@ -892,8 +920,8 @@ mod tests {
     async fn open_is_idempotent_but_checks_the_password() {
         let (dir, service) = service();
 
-        service.open_or_create_wallet("s3cret").await.unwrap();
-        let seed = service.seed_words("s3cret").await.unwrap();
+        service.open_or_create_wallet(PASSWORD).await.unwrap();
+        let seed = service.seed_words(PASSWORD).await.unwrap();
 
         // The seed is only revealed to the holder of the password.
         let err = service.seed_words("wrong").await.unwrap_err();
@@ -903,7 +931,7 @@ mod tests {
         );
 
         // Re-opening with the right password is a no-op; a wrong one is rejected.
-        service.open_or_create_wallet("s3cret").await.unwrap();
+        service.open_or_create_wallet(PASSWORD).await.unwrap();
         let err = service.open_or_create_wallet("wrong").await.unwrap_err();
         assert!(
             err.downcast_ref::<InvalidPassword>().is_some(),
@@ -919,8 +947,8 @@ mod tests {
             err.downcast_ref::<InvalidPassword>().is_some(),
             "a wrong password must not open (or overwrite!) the existing wallet, got: {err}"
         );
-        reloaded.open_or_create_wallet("s3cret").await.unwrap();
-        assert_eq!(reloaded.seed_words("s3cret").await.unwrap(), seed);
+        reloaded.open_or_create_wallet(PASSWORD).await.unwrap();
+        assert_eq!(reloaded.seed_words(PASSWORD).await.unwrap(), seed);
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -933,7 +961,7 @@ mod tests {
         let storage = DBStorage::File(dir.path().to_path_buf());
         let salt = storage.load_salt(BMPWallet::DB_NAME).unwrap();
         let db = storage.open(BMPWallet::DB_NAME).unwrap();
-        let key = derive_key_from_password("", &salt).unwrap();
+        let key = derive_key_from_password(&PASSWORD.parse().unwrap(), &salt).unwrap();
         db.pragma_update(None, "key", key.as_str()).unwrap();
         db.execute(&format!("DELETE FROM {}", BMPWallet::SEEDS_TABLE_NAME), [])
             .unwrap();
@@ -941,7 +969,7 @@ mod tests {
 
         let reopened =
             BMPWalletServiceImpl::<NoopChainDataSource>::new(dir.path(), Network::Regtest);
-        let err = reopened.open_or_create_wallet("").await.unwrap_err();
+        let err = reopened.open_or_create_wallet(PASSWORD).await.unwrap_err();
         assert!(
             format!("{err:#}").contains("seed phrase"),
             "expected the missing seed to be the reason, got: {err:#}"
@@ -951,29 +979,99 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread")]
+    async fn creating_a_wallet_requires_an_acceptable_password() {
+        let (dir, service) = service();
+
+        for weak in ["", "short", "no digits or symbols"] {
+            let err = service.open_or_create_wallet(weak).await.unwrap_err();
+            assert!(
+                err.downcast_ref::<WeakPassword>().is_some(),
+                "{weak:?} must be rejected as a weak password, got: {err}"
+            );
+            assert_eq!(
+                err.to_string(),
+                Password::REQUIREMENTS,
+                "the user must be told how to make an acceptable password"
+            );
+        }
+        assert!(
+            !dir.path().join(BMPWallet::DB_NAME).exists(),
+            "a rejected password must not leave a wallet behind"
+        );
+        assert!(service.unused_address().await.is_err(), "still not open");
+
+        service.open_or_create_wallet(PASSWORD).await.unwrap();
+        assert_eq!(service.seed_words(PASSWORD).await.unwrap().len(), 24);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
     async fn change_password_round_trips() {
         let (_dir, service) = open_service().await;
 
-        service.change_password("", "hunter2").await.unwrap();
+        service
+            .change_password(PASSWORD, NEW_PASSWORD)
+            .await
+            .unwrap();
         // Re-opening the open wallet checks the password in force, which shows which one it is.
-        service.open_or_create_wallet("hunter2").await.unwrap();
-        assert!(service.open_or_create_wallet("").await.is_err());
+        service.open_or_create_wallet(NEW_PASSWORD).await.unwrap();
+        assert!(service.open_or_create_wallet(PASSWORD).await.is_err());
         // The seed must still be readable through the rotated key, and only with the new password.
-        assert_eq!(service.seed_words("hunter2").await.unwrap().len(), 24);
-        assert!(service.seed_words("").await.is_err());
+        assert_eq!(service.seed_words(NEW_PASSWORD).await.unwrap().len(), 24);
+        assert!(service.seed_words(PASSWORD).await.is_err());
 
-        let err = service.change_password("wrong", "other").await.unwrap_err();
+        let err = service
+            .change_password("wrong", "Other#Pw1")
+            .await
+            .unwrap_err();
         assert!(
             err.downcast_ref::<InvalidPassword>().is_some(),
             "wrong password must be rejected, got: {err}"
         );
         service
-            .open_or_create_wallet("hunter2")
+            .open_or_create_wallet(NEW_PASSWORD)
             .await
             .expect("a failed change must leave the password as it was");
 
-        service.change_password("hunter2", "").await.unwrap();
-        service.open_or_create_wallet("").await.unwrap();
+        // The wallet is always password-protected: a new password breaking the rules, the empty
+        // one included, is refused and the current one stays in force.
+        for weak in ["", "short", "all lowercase 1!"] {
+            let err = service
+                .change_password(NEW_PASSWORD, weak)
+                .await
+                .unwrap_err();
+            assert!(
+                err.downcast_ref::<WeakPassword>().is_some(),
+                "{weak:?} must be rejected as a weak password, got: {err}"
+            );
+        }
+        service.open_or_create_wallet(NEW_PASSWORD).await.unwrap();
+
+        // Changing back is a change like any other.
+        service
+            .change_password(NEW_PASSWORD, PASSWORD)
+            .await
+            .unwrap();
+        service.open_or_create_wallet(PASSWORD).await.unwrap();
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn send_to_address_requires_the_wallet_password() {
+        let (_dir, service) = open_service().await;
+        let service = service.with_broadcaster(Arc::new(UnreachableBroadcaster));
+
+        let err = service
+            .send_to_address(
+                "wrong",
+                REGTEST_ADDRESS.parse().unwrap(),
+                Amount::from_sat(1_000),
+                None,
+            )
+            .await
+            .unwrap_err();
+        assert!(
+            err.downcast_ref::<InvalidPassword>().is_some(),
+            "expected InvalidPassword, got: {err}"
+        );
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -982,7 +1080,7 @@ mod tests {
 
         let err = service
             .send_to_address(
-                None,
+                PASSWORD,
                 REGTEST_ADDRESS.parse().unwrap(),
                 Amount::from_sat(1_000),
                 None,
@@ -999,7 +1097,7 @@ mod tests {
 
         let err = service
             .send_to_address(
-                None,
+                PASSWORD,
                 MAINNET_ADDRESS.parse().unwrap(),
                 Amount::from_sat(1_000),
                 None,
@@ -1022,7 +1120,7 @@ mod tests {
             "nothing to sync before the wallet is opened"
         );
 
-        service.open_or_create_wallet("").await.unwrap();
+        service.open_or_create_wallet(PASSWORD).await.unwrap();
         assert!(
             !service.is_ready(),
             "with a chain data source, only a completed sync makes the wallet ready"

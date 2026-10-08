@@ -63,13 +63,14 @@ non-chain operations still work. `--wallet-network` selects the network (default
 broadcast via the Bitcoin Core RPC connection above.
 
 [bmp_wallet.proto](src/main/proto/bmp_wallet.proto) is derived from bisq2's own `wallet/src/main/proto/wallet.proto`
-(same package, service name and field numbers), but it is not a drop-in replacement yet: `EncryptWallet` /
-`DecryptWallet` are replaced by the authenticated `ChangePassword`, `GetNewAddress` and `IsWalletEncrypted` are gone,
-`GetSeedWords` takes the wallet password, and addresses travel as `PubAddressInfo` messages rather than bare strings.
-Without `IsWalletEncrypted`, a client learns whether a passphrase is needed by calling `SendToAddress` without one and
-retrying on `PERMISSION_DENIED`; `OpenOrCreateWallet` is no substitute probe, as it creates an unprotected wallet when
-none exists. These divergences are listed at the top of the proto and are meant to be upstreamed into bisq2; until
-then, bisq2's `WalletGrpcClient` needs matching changes to talk to this service.
+(same package, service name and field numbers), but it is not a drop-in replacement yet. The wallet is always
+password-protected, so `EncryptWallet` / `DecryptWallet` / `IsWalletEncrypted` are gone, replaced by the authenticated
+`ChangePassword`, and `SendToAddress` requires the passphrase; `GetNewAddress` is gone, `GetSeedWords` takes the wallet
+password, and addresses travel as `PubAddressInfo` messages rather than bare strings. A password set through
+`OpenOrCreateWallet` (when it creates the wallet) or `ChangePassword` must follow the password rules documented on
+`OpenOrCreateWalletRequest` in the proto; one that doesn't is refused with `INVALID_ARGUMENT`, whose message states the
+rules in plain English for the user. These divergences are listed at the top of the proto and are meant to be upstreamed
+into bisq2; until then, bisq2's `WalletGrpcClient` needs matching changes to talk to this service.
 
 ### Building and running the code
 
