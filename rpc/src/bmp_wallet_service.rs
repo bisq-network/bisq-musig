@@ -117,11 +117,11 @@ pub trait BmpWalletService {
 
     /// Builds, signs, persists and broadcasts a payment.
     ///
-    /// `passphrase` must be the wallet password; a wrong one fails with [`InvalidPassword`].
+    /// `password` must be the wallet password; a wrong one fails with [`InvalidPassword`].
     /// `address` is tied to the wallet's network here, which is why it arrives unchecked.
     async fn send_to_address(
         &self,
-        passphrase: &str,
+        password: &str,
         address: Address<NetworkUnchecked>,
         amount: Amount,
         fee_rate: Option<FeeRate>,
@@ -433,7 +433,7 @@ impl<S: ChainDataSource + Send + Sync + 'static> BmpWalletService for BMPWalletS
 
     async fn send_to_address(
         &self,
-        passphrase: &str,
+        password: &str,
         address: Address<NetworkUnchecked>,
         amount: Amount,
         fee_rate: Option<FeeRate>,
@@ -445,7 +445,7 @@ impl<S: ChainDataSource + Send + Sync + 'static> BmpWalletService for BMPWalletS
         let mut guard = self.wallet.lock().await;
         let wallet = require_open(&mut guard)?;
 
-        if !wallet.check_password(&attempt(passphrase)?)? {
+        if !wallet.check_password(&attempt(password)?)? {
             return Err(InvalidPassword.into());
         }
 
