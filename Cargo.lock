@@ -103,6 +103,7 @@ dependencies = [
  "base64ct",
  "blake2",
  "cpufeatures",
+ "password-hash",
  "zeroize",
 ]
 
@@ -647,9 +648,9 @@ checksum = "4b4b0fc281743d80256607bd65e8beedc42cb0787ea119c85b81b4c0eab85e5f"
 name = "chain"
 version = "0.1.0"
 dependencies = [
- "anyhow",
  "bdk_kyoto",
  "bdk_wallet",
+ "thiserror 2.0.19",
  "tokio",
  "tracing",
 ]
@@ -1816,6 +1817,17 @@ dependencies = [
  "redox_syscall",
  "smallvec",
  "windows-link",
+]
+
+[[package]]
+name = "password-hash"
+version = "0.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "346f04948ba92c43e8469c1ee6736c7563d71012b17d40745260fe106aac2166"
+dependencies = [
+ "base64ct",
+ "rand_core 0.6.4",
+ "subtle",
 ]
 
 [[package]]

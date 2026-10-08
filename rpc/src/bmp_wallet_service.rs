@@ -28,7 +28,7 @@ use bdk_bitcoind_rpc::bitcoincore_rpc::{Client, RpcApi as _};
 use bdk_wallet::Balance;
 use bdk_wallet::bitcoin::address::NetworkUnchecked;
 use bdk_wallet::bitcoin::{Address, Amount, FeeRate, Network, Transaction, Txid};
-use chain::ChainApi;
+use chain::{ChainApi, ChainApiError};
 use futures_util::never::Never;
 use futures_util::stream::{BoxStream, StreamExt as _};
 use thiserror::Error;
@@ -474,8 +474,10 @@ impl BitcoinCoreChainApi {
 }
 
 impl ChainApi for BitcoinCoreChainApi {
-    fn transaction_broadcast(&self, tx: &Transaction) -> anyhow::Result<Txid> {
-        Ok(self.0.send_raw_transaction(tx)?)
+    fn transaction_broadcast(&self, tx: &Transaction) -> std::result::Result<Txid, ChainApiError> {
+        self.0
+            .send_raw_transaction(tx)
+            .map_err(ChainApiError::backend)
     }
 }
 
@@ -700,16 +702,22 @@ impl wallet_server::Wallet for BmpWalletImpl {
 
 /// Maps a wallet-layer error onto the gRPC status codes a client can distinguish: using the
 /// wallet before opening it is a state error the caller can fix (`FAILED_PRECONDITION`), a
-/// wrong password is the caller's mistake (`PERMISSION_DENIED`), and everything else is a
-/// server fault (`INTERNAL`).
+/// wrong password is the caller's mistake (`PERMISSION_DENIED`), an attempt to overwrite a
+/// wallet is rejected (`ALREADY_EXISTS`), and everything else is a server fault (`INTERNAL`).
 fn status_from(error: &anyhow::Error) -> Status {
+    let message = format!("{error:#}");
     if error.downcast_ref::<WalletNotOpen>().is_some() {
-        Status::failed_precondition(error.to_string())
+        Status::failed_precondition(message)
     } else if error.downcast_ref::<InvalidPassword>().is_some() {
-        Status::permission_denied(error.to_string())
+        Status::permission_denied(message)
+    } else if matches!(
+        error.downcast_ref::<WalletErrorKind>(),
+        Some(WalletErrorKind::WalletAlreadyExists)
+    ) {
+        Status::already_exists(message)
     } else {
-        error!("Wallet operation failed: {error:#}");
-        Status::internal(error.to_string())
+        error!("Wallet operation failed: {message}");
+        Status::internal(message)
     }
 }
 
@@ -781,6 +789,7 @@ impl From<TxInfo> for bmp_wallet::Transaction {
 
 #[cfg(test)]
 mod tests {
+    use ::wallet::error::ChainDataSourceError;
     use ::wallet::persisted::DBStorage;
     use ::wallet::utils::derive_key_from_password;
     use bdk_wallet::PersistedWallet;
@@ -788,7 +797,6 @@ mod tests {
     use tempfile::tempdir;
 
     use super::*;
-
     /// A `ChainDataSource` that does nothing, so tests can exercise the service without a chain.
     struct NoopChainDataSource;
 
@@ -800,7 +808,7 @@ mod tests {
         async fn sync(
             &self,
             _persister: Vec<&mut PersistedWallet<impl wallet::persisted::BMPWalletPersister>>,
-        ) -> anyhow::Result<()> {
+        ) -> Result<(), ChainDataSourceError> {
             Ok(())
         }
     }
@@ -921,6 +929,11 @@ mod tests {
         assert!(
             format!("{err:#}").contains("seed phrase"),
             "expected the missing seed to be the reason, got: {err:#}"
+        );
+        let status = status_from(&err);
+        assert!(
+            status.message().contains("seed phrase"),
+            "expected the gRPC status to retain the missing-seed reason, got: {status}"
         );
         assert!(!reopened.is_ready());
         assert!(reopened.new_address().await.is_err());

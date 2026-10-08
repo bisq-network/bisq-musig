@@ -364,11 +364,8 @@ mod tests {
         let mut tx_builder = bmp_wallet.build_tx();
         tx_builder.add_recipient(to_address, to_spend);
 
-        let imported_wallets = BMPWallet::load_imported_wallets(
-            &keys,
-            &mem_storage.store,
-            Network::Regtest,
-        )?;
+        let imported_wallets =
+            BMPWallet::load_imported_wallets(&keys, &mem_storage.store, Network::Regtest)?;
         let first_key_unspents = imported_wallets[0].0.list_unspent().collect::<Vec<_>>();
         let second_key_unspents = imported_wallets[1].0.list_unspent().collect::<Vec<_>>();
 
@@ -559,7 +556,6 @@ mod tests {
         assert_eq!(lw.get_seed_phrase().unwrap(), seed);
         Ok(())
     }
-
 
     #[tokio::test]
     async fn drain_wallet() -> anyhow::Result<()> {
@@ -1059,7 +1055,6 @@ mod tests {
 
         Ok(())
     }
-
 
     /// Re-keying requires proof of the current password, so a caller who cannot present it must
     /// not be able to rotate the key and lock the owner out.

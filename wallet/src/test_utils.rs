@@ -6,8 +6,8 @@ use bdk_wallet::bitcoin::key::{Keypair, Secp256k1, TapTweak as _};
 use bdk_wallet::bitcoin::secp256k1::{Message, schnorr};
 use bdk_wallet::bitcoin::sighash::{Prevouts, SighashCache};
 use bdk_wallet::bitcoin::{
-    Amount, BlockHash, OutPoint, PrivateKey, ScriptBuf, Sequence, TapSighashType,
-    Transaction, TxOut, Weight, Witness, XOnlyPublicKey, psbt,
+    Amount, BlockHash, OutPoint, PrivateKey, ScriptBuf, Sequence, TapSighashType, Transaction,
+    TxOut, Weight, Witness, XOnlyPublicKey, psbt,
 };
 use bdk_wallet::chain::{BlockId, ChainPosition, ConfirmationBlockTime};
 use bdk_wallet::rusqlite::Connection;
@@ -18,6 +18,7 @@ use secp::Scalar;
 
 use crate::bmp_wallet::ImportedKey;
 use crate::chain_data_source::ChainDataSource;
+use crate::error::ChainDataSourceError;
 use crate::persisted::{BMPWalletPersister, DBStorage};
 
 pub struct MockedBDKElectrum;
@@ -30,7 +31,7 @@ impl ChainDataSource for MockedBDKElectrum {
     async fn sync(
         &self,
         persister: Vec<&mut PersistedWallet<impl BMPWalletPersister>>,
-    ) -> anyhow::Result<()> {
+    ) -> Result<(), ChainDataSourceError> {
         for w in persister {
             insert_checkpoint(
                 w,
@@ -88,7 +89,6 @@ pub fn verify_signature(
     assert!(verify_res.is_ok(), "The wrong internal key was used");
     Ok(())
 }
-
 
 pub fn derive_public_key(key: &Scalar) -> XOnlyPublicKey {
     let xonly_pubkey = key.base_point_mul().serialize_xonly();
@@ -178,15 +178,18 @@ impl MemDbHandle {
         let name = format!("bmp_test_{}", seed.to_lower_hex_string());
         let store = DBStorage::Memory(name.clone());
         let anchor = store.open(&name)?;
-        Ok(Self { store, anchors: vec![anchor] })
+        Ok(Self {
+            store,
+            anchors: vec![anchor],
+        })
     }
-    
+
     /// Pin the shared-cache DB for an imported key's sub-wallet so it
     /// survives connections opening/closing around it.
     pub fn anchor_imported_key(&mut self, key: &ImportedKey) -> anyhow::Result<()> {
         let db_file = match key.merkle_root() {
-                None => format!("bmp_{}.db3", key.internal_key()),
-                Some(root) => format!("bmp_{}_{}.db3", key.internal_key(), root),
+            None => format!("bmp_{}.db3", key.internal_key()),
+            Some(root) => format!("bmp_{}_{}.db3", key.internal_key(), root),
         };
 
         let sibling_location = self.store.sibling(&db_file);
@@ -194,4 +197,3 @@ impl MemDbHandle {
         Ok(())
     }
 }
-
