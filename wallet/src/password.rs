@@ -10,7 +10,7 @@ use std::sync::LazyLock;
 
 use fancy_regex::Regex;
 use thiserror::Error;
-use zeroize::Zeroize as _;
+use zeroize::Zeroizing;
 
 /// A password that satisfies the wallet's password rules.
 ///
@@ -24,7 +24,7 @@ use zeroize::Zeroize as _;
 /// a weak one.
 ///
 /// The plaintext is wiped from memory on drop and never shows up in `Debug` output.
-pub struct Password(String);
+pub struct Password(Zeroizing<String>);
 
 /// A candidate password that breaks the wallet's password rules.
 ///
@@ -60,7 +60,7 @@ impl Password {
     /// Takes the string by value so that a rejected candidate is wiped from memory just like an
     /// accepted one is when dropped.
     pub fn new(password: String) -> Result<Self, WeakPassword> {
-        let password = Self(password);
+        let password = Self(Zeroizing::new(password));
         if Self::meets_rules(&password.0) {
             Ok(password)
         } else {
@@ -92,12 +92,6 @@ impl FromStr for Password {
 impl fmt::Debug for Password {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str("Password(<redacted>)")
-    }
-}
-
-impl Drop for Password {
-    fn drop(&mut self) {
-        self.0.zeroize();
     }
 }
 
