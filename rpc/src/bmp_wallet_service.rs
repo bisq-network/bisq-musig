@@ -20,9 +20,10 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 // Leading `::` disambiguates the `wallet` *crate* from this crate's own `wallet` module.
-use ::wallet::bmp_wallet::{BMPWallet, WalletApi as _, WalletErrorKind};
+use ::wallet::bmp_wallet::{BMPWallet, WalletApi as _};
 use ::wallet::chain_data_source::ChainDataSource;
 use ::wallet::password::{InvalidPassword, Password, WeakPassword};
+use ::wallet::error::WalletErrorKind;
 use ::wallet::wallet_info::{PubAddressInfo, TxInfo, TxOutputInfo, UtxoInfo};
 use anyhow::Context as _;
 use bdk_bitcoind_rpc::bitcoincore_rpc::{Client, RpcApi as _};
@@ -333,14 +334,24 @@ impl<S: ChainDataSource + Send + Sync + 'static> BmpWalletService for BMPWalletS
             let wallet = BMPWallet::load_wallet(
                 self.wallet_dir.as_path().into(),
                 self.network,
-                &Password::check(password)?,
-            )
-            .with_context(|| {
-                format!(
-                    "failed to open the existing wallet at {}",
-                    db_path.display()
-                )
-            })?;
+                &Password::check(password)?
+            ) {
+                Ok(wallet) => wallet,
+                Err(err) => match err {
+                    WalletErrorKind::InvalidPassword => {
+                        return Err(anyhow::Error::new(InvalidPassword).context(format!(
+                            "failed to open the existing wallet at {} (wrong password)",
+                            db_path.display()
+                        )));
+                    }
+                    other => {
+                        return Err(anyhow::Error::new(other).context(format!(
+                            "failed to open the existing wallet at {}",
+                            db_path.display()
+                        )));
+                    }
+                },
+            };
             info!(dir = %self.wallet_dir.display(), "Loaded the existing BMP wallet.");
             wallet
         } else {
@@ -373,7 +384,10 @@ impl<S: ChainDataSource + Send + Sync + 'static> BmpWalletService for BMPWalletS
         // checking it here too would only double that cost.
         let old_password = Password::check(old_password)?;
         let new_password = Password::new(new_password)?;
-        Ok(wallet.change_password(&old_password, &new_password)?)
+        wallet.change_password(&old_password, &new_password).map_err(|err| match err {
+            WalletErrorKind::InvalidPassword => InvalidPassword.into(),
+            other => anyhow::Error::new(other),
+         })
     }
 
     async fn unused_address(&self) -> anyhow::Result<PubAddressInfo> {

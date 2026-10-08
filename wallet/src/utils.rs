@@ -4,6 +4,7 @@ use zeroize::{Zeroize as _, Zeroizing};
 
 use crate::bmp_wallet::{Result, WalletErrorKind};
 use crate::password::Password;
+use crate::error::Result;
 
 /// Derives a 256-bit key from a password and salt using Argon2.
 ///

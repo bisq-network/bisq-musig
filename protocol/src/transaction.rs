@@ -16,7 +16,7 @@ use paste::paste;
 use rand::RngCore;
 use relative::LockTime;
 use thiserror::Error;
-use wallet::bmp_wallet::WalletErrorKind;
+use wallet::error::WalletErrorKind;
 use wallet::protocol_wallet_api::ProtocolWalletApi;
 
 use crate::psbt;

@@ -13,6 +13,7 @@ use secp::Scalar;
 use thiserror::Error;
 
 use crate::bmp_wallet::ImportedKey;
+use crate::error::WalletErrorKind;
 
 #[cfg(any(test, feature = "test-utils"))]
 static MEMORY_SALT_STORE: std::sync::LazyLock<
@@ -130,9 +131,9 @@ impl DBStorage {
     pub fn load_salt(&self, db_name: &str) -> Result<Vec<u8>> {
         match self {
             Self::File(_) => {
-                let salt_path = self
-                    .committed_salt_path(db_name)
-                    .ok_or_else(|| PersistenceError::Generic(format!("no committed salt path for {db_name}")))?;
+                let salt_path = self.committed_salt_path(db_name).ok_or_else(|| {
+                    PersistenceError::Generic(format!("no committed salt path for {db_name}"))
+                })?;
                 let salt_str = fs::read_to_string(&salt_path)?;
                 Ok(general_purpose::STANDARD.decode(salt_str.as_bytes())?)
             }
@@ -289,7 +290,10 @@ pub trait BMPWalletPersister: WalletPersister {
         seed_phrase: &str,
     ) -> Result<()>;
 
-    fn load_imported_keys(db: &mut Self::DB, keys_table_name: &str) -> Result<Vec<ImportedKey>>;
+    fn load_imported_keys(
+        db: &mut Self::DB,
+        keys_table_name: &str,
+    ) -> Result<Vec<ImportedKey>, WalletErrorKind>;
 
     fn persist_imported_keys(
         db: &mut Self::DB,
@@ -301,10 +305,7 @@ pub trait BMPWalletPersister: WalletPersister {
 
     fn has_seed_phrase(db: &Self::DB, seeds_table_name: &str) -> Result<bool>;
 
-    fn persist_staged_changes(
-        db: &mut Self::DB,
-        cs: &ChangeSet,
-    ) -> Result<()>;
+    fn persist_staged_changes(db: &mut Self::DB, cs: &ChangeSet) -> Result<()>;
 }
 
 impl BMPWalletPersister for Connection {
@@ -367,7 +368,10 @@ impl BMPWalletPersister for Connection {
         Ok(())
     }
 
-    fn load_imported_keys(db: &mut Self::DB, keys_table_name: &str) -> Result<Vec<ImportedKey>> {
+    fn load_imported_keys(
+        db: &mut Self::DB,
+        keys_table_name: &str,
+    ) -> Result<Vec<ImportedKey>, WalletErrorKind> {
         let mut imported_keys = vec![];
 
         let mut statement =
@@ -382,12 +386,8 @@ impl BMPWalletPersister for Connection {
 
         for row in row_iter {
             let (key_hex, descriptor) = row?;
-            let secret = Scalar::from_hex(&key_hex)
-                .map_err(|e| PersistenceError::Generic(e.to_string()))?;
-            imported_keys.push(
-                ImportedKey::from_descriptor_str(secret, &descriptor)
-                    .map_err(|e| PersistenceError::Generic(e.to_string()))?,
-            );
+            let secret = Scalar::from_hex(&key_hex).map_err(WalletErrorKind::generic)?;
+            imported_keys.push(ImportedKey::from_descriptor_str(secret, &descriptor)?);
         }
 
         Ok(imported_keys)

@@ -19,8 +19,8 @@ use bdk_wallet::{AddressInfo, KeychainKind, SignOptions, TxBuilder, TxOrdering, 
 use rand::RngCore as _;
 use secp::Scalar;
 
-use crate::bmp_wallet::WalletErrorKind::MalformedPsbt;
-use crate::bmp_wallet::{Result, WalletErrorKind};
+use crate::error::WalletErrorKind::MalformedPsbt;
+use crate::error::{Result, WalletErrorKind};
 
 /// The Protocol Wallet API is used by the protocol to create and sign transactions.
 /// It's the part of functionality being exposed only to the protocol.
