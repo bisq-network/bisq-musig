@@ -38,6 +38,7 @@ use tokio::task::{self, JoinHandle};
 use tokio::time::{self, Duration, MissedTickBehavior};
 use tonic::{Request, Response, Result, Status};
 use tracing::{debug, error, info, instrument};
+use zeroize::Zeroizing;
 
 use crate::observable::ObservableHashMap;
 pub use crate::pb::bmp_wallet::wallet_server::WalletServer as BmpWalletServer;
@@ -462,6 +463,10 @@ impl ChainApi for BitcoinCoreChainApi {
 }
 
 /// gRPC adapter serving `wallet.Wallet`, the contract bisq2's `WalletGrpcClient` speaks.
+///
+/// A password arrives as a plain `String` in the decoded request. Each adapter moves it into a
+/// [`Zeroizing`] buffer before lending it to the service, so that copy is wiped on drop just
+/// like the [`Password`] the service builds from it, instead of lingering in freed heap memory.
 pub struct BmpWalletImpl {
     pub wallet_service: Arc<dyn BmpWalletService + Send + Sync>,
 }
@@ -474,8 +479,9 @@ impl wallet_server::Wallet for BmpWalletImpl {
         request: Request<OpenOrCreateWalletRequest>,
     ) -> Result<Response<OpenOrCreateWalletResponse>> {
         handle_request_async(request, |request| async move {
+            let password = Zeroizing::new(request.password);
             self.wallet_service
-                .open_or_create_wallet(&request.password)
+                .open_or_create_wallet(&password)
                 .await
                 .map_err(|e| status_from(&e))?;
 
@@ -588,10 +594,11 @@ impl wallet_server::Wallet for BmpWalletImpl {
             let address = Address::<NetworkUnchecked>::try_from(address)
                 .map_err(|e| status_from(&e.into()))?;
 
+            let passphrase = Zeroizing::new(request.passphrase);
             let tx_id = self
                 .wallet_service
                 .send_to_address(
-                    &request.passphrase,
+                    &passphrase,
                     address,
                     Amount::from_sat(request.amount),
                     request.fee_rate_per_kwu.map(FeeRate::from_sat_per_kwu),
@@ -629,9 +636,10 @@ impl wallet_server::Wallet for BmpWalletImpl {
         request: Request<GetSeedWordsRequest>,
     ) -> Result<Response<GetSeedWordsResponse>> {
         handle_request_async(request, |request| async move {
+            let password = Zeroizing::new(request.password);
             let seed_words = self
                 .wallet_service
-                .seed_words(&request.password)
+                .seed_words(&password)
                 .await
                 .map_err(|e| status_from(&e))?;
 
@@ -646,8 +654,10 @@ impl wallet_server::Wallet for BmpWalletImpl {
         request: Request<ChangePasswordRequest>,
     ) -> Result<Response<ChangePasswordResponse>> {
         handle_request_async(request, |request| async move {
+            let old_password = Zeroizing::new(request.old_password);
+            let new_password = Zeroizing::new(request.new_password);
             self.wallet_service
-                .change_password(&request.old_password, &request.new_password)
+                .change_password(&old_password, &new_password)
                 .await
                 .map_err(|e| status_from(&e))?;
 
