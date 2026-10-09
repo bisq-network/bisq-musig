@@ -368,10 +368,9 @@ impl<S: ChainDataSource + Send + Sync + 'static> BmpWalletService for BMPWalletS
     async fn change_password(&self, old_password: &str, new_password: &str) -> anyhow::Result<()> {
         let mut guard = self.wallet.lock().await;
         let wallet = require_open(&mut guard)?;
+        // The wallet verifies the old password itself, one Argon2 derivation under the lock, so
+        // checking it here too would only double that cost.
         let old_password = Password::check(old_password)?;
-        if !wallet.check_password(&old_password)? {
-            return Err(InvalidPassword.into());
-        }
         let new_password = Password::new(new_password)?;
         Ok(wallet.change_password(&old_password, &new_password)?)
     }
@@ -1004,14 +1003,17 @@ mod tests {
         assert_eq!(service.seed_words(NEW_PASSWORD).await.unwrap().len(), 24);
         assert!(service.seed_words(PASSWORD).await.is_err());
 
+        // The old password follows the rules but is no longer in force, so it gets as far as the
+        // wallet, whose own refusal must come out as a wrong password too.
         let err = service
-            .change_password("wrong", "Other#Pw1")
+            .change_password(PASSWORD, "Other#Pw1")
             .await
             .unwrap_err();
         assert!(
             is_invalid_password(&err),
             "wrong password must be rejected, got: {err}"
         );
+        assert_eq!(status_from(&err).code(), tonic::Code::PermissionDenied);
         service
             .open_or_create_wallet(NEW_PASSWORD)
             .await
