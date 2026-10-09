@@ -993,11 +993,11 @@ mod tests {
 
         let addresses = wallet.list_wallet_addresses();
         assert!(
-            addresses.contains(&external.address.to_string()),
+            addresses.iter().any(|info| info.address == external.address),
             "missing external address"
         );
         assert!(
-            addresses.contains(&internal.address.to_string()),
+            addresses.iter().any(|info| info.address == internal.address),
             "missing change address"
         );
         assert_eq!(addresses.len(), 2, "one per keychain so far: {addresses:?}");
@@ -1006,7 +1006,7 @@ mod tests {
         let another = wallet.get_new_address()?;
         let addresses = wallet.list_wallet_addresses();
         assert_eq!(addresses.len(), 3);
-        assert!(addresses.contains(&another.address.to_string()));
+        assert!(addresses.iter().any(|info| info.address == another.address));
 
         Ok(())
     }

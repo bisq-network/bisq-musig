@@ -33,7 +33,7 @@ use crate::protocol_wallet_api::{
     sign_selected_inputs_with,
 };
 use crate::utils::{derive_key_from_password, key_verifier};
-use crate::wallet_info::{TxInfo, TxInputInfo, TxOutputInfo, UtxoInfo};
+use crate::wallet_info::{PubAddressInfo, TxInfo, TxInputInfo, TxOutputInfo, UtxoInfo};
 /// An external (non-HD) private key imported into the wallet, together with the Taproot output
 /// template it controls: `tr(P, tap_tree)` where `P` is the (untweaked) internal key derived from
 /// `secret`. A missing tap tree means a key-path-only output (`tr(P)`, as in BIP86).
@@ -280,7 +280,7 @@ impl BMPWallet {
     }
 
     /// Every address revealed so far on either keychain, external first.
-    pub fn list_wallet_addresses(&self) -> Vec<String> {
+    pub fn list_wallet_addresses(&self) -> Vec<PubAddressInfo> {
         [KeychainKind::External, KeychainKind::Internal]
             .into_iter()
             .flat_map(|kind| {
@@ -290,8 +290,8 @@ impl BMPWallet {
                     .derivation_index(kind)
                     .into_iter()
                     .flat_map(move |last_revealed| {
-                        (0..=last_revealed).map(move |index| {
-                            self.wallet.peek_address(kind, index).address.to_string()
+                        (0..=last_revealed).map(move |index| PubAddressInfo {
+                            address: self.wallet.peek_address(kind, index).address,
                         })
                     })
             })
@@ -306,10 +306,10 @@ impl BMPWallet {
     }
 
     /// Renders `script_pubkey` as an address, or `None` if it isn't a standard one.
-    fn address_for_script(&self, script_pubkey: &ScriptBuf) -> Option<String> {
+    fn address_for_script(&self, script_pubkey: &ScriptBuf) -> Option<PubAddressInfo> {
         Address::from_script(script_pubkey, self.wallet.network())
             .ok()
-            .map(|address| address.to_string())
+            .map(|address| PubAddressInfo { address })
     }
 
     /// Confirmation count for a chain position: `0` while unconfirmed.

@@ -14,8 +14,9 @@ use chain::CBFScanner;
 use rpc::bmp_wallet_service::{BMPWalletServiceImpl, BmpWalletImpl, BmpWalletServer};
 use rpc::pb::bmp_wallet::wallet_client::WalletClient;
 use rpc::pb::bmp_wallet::{
-    ChangePasswordRequest, GetBalanceRequest, GetNewAddressRequest, GetSeedWordsRequest,
-    IsWalletEncryptedRequest, IsWalletReadyRequest, OpenOrCreateWalletRequest,
+    ChangePasswordRequest, GetBalanceRequest, GetSeedWordsRequest, GetUnusedAddressRequest,
+    GetWalletAddressesRequest, IsWalletReadyRequest, OpenOrCreateWalletRequest, PubAddressInfo,
+    SendToAddressRequest,
 };
 use tokio::net::TcpListener;
 use tokio::task::JoinHandle;
@@ -77,19 +78,22 @@ impl WalletServiceFixture {
             .await
     }
 
-    async fn is_encrypted(&mut self) -> Result<bool, tonic::Status> {
-        Ok(self
-            .client
-            .is_wallet_encrypted(IsWalletEncryptedRequest {})
-            .await?
-            .into_inner()
-            .encrypted)
+    /// Whether `password` is the one currently protecting the wallet, probed by re-opening the
+    /// (already open) wallet with it.
+    async fn opens_with(&mut self, password: &str) -> Result<bool, tonic::Status> {
+        match self.open(password).await {
+            Ok(response) => Ok(response.into_inner().success),
+            Err(status) if status.code() == Code::PermissionDenied => Ok(false),
+            Err(status) => Err(status),
+        }
     }
 
-    async fn seed_words(&mut self) -> Result<Vec<String>, tonic::Status> {
+    async fn seed_words(&mut self, password: &str) -> Result<Vec<String>, tonic::Status> {
         Ok(self
             .client
-            .get_seed_words(GetSeedWordsRequest {})
+            .get_seed_words(GetSeedWordsRequest {
+                password: password.to_owned(),
+            })
             .await?
             .into_inner()
             .seed_words)
@@ -115,7 +119,7 @@ async fn wallet_lifecycle_over_grpc() -> anyhow::Result<()> {
 
     let err = fixture
         .client
-        .get_new_address(GetNewAddressRequest {})
+        .get_unused_address(GetUnusedAddressRequest {})
         .await
         .expect_err("no addresses before the wallet is opened");
     assert_eq!(err.code(), Code::FailedPrecondition, "got: {err}");
@@ -140,10 +144,12 @@ async fn wallet_lifecycle_over_grpc() -> anyhow::Result<()> {
         ready,
         "with no chain data source the wallet is ready as soon as it is open"
     );
-    assert!(fixture.is_encrypted().await?, "created with a password");
+    assert!(!fixture.opens_with("").await?, "created with a password");
 
-    let seed = fixture.seed_words().await?;
+    let seed = fixture.seed_words("s3cret").await?;
     assert_eq!(seed.len(), 24);
+    let err = fixture.seed_words("wrong").await.unwrap_err();
+    assert_eq!(err.code(), Code::PermissionDenied, "got: {err}");
 
     let balance = fixture
         .client
@@ -167,7 +173,7 @@ async fn wallet_lifecycle_over_grpc() -> anyhow::Result<()> {
         .expect_err("a wrong old password must be rejected");
     assert_eq!(err.code(), Code::PermissionDenied, "got: {err}");
     assert!(
-        fixture.is_encrypted().await?,
+        fixture.opens_with("s3cret").await?,
         "a rejected change must leave the wallet as it was"
     );
 
@@ -179,9 +185,9 @@ async fn wallet_lifecycle_over_grpc() -> anyhow::Result<()> {
             .into_inner()
             .success
     );
-    assert!(fixture.is_encrypted().await?);
+    assert!(fixture.opens_with("n3w").await?);
     assert_eq!(
-        fixture.seed_words().await?,
+        fixture.seed_words("n3w").await?,
         seed,
         "the seed must survive the re-key"
     );
@@ -194,7 +200,7 @@ async fn wallet_lifecycle_over_grpc() -> anyhow::Result<()> {
             .into_inner()
             .success
     );
-    assert!(!fixture.is_encrypted().await?);
+    assert!(fixture.opens_with("").await?);
 
     // --- The wallet (and its final password state) persists across a server restart ---
     fixture.stop();
@@ -208,10 +214,69 @@ async fn wallet_lifecycle_over_grpc() -> anyhow::Result<()> {
 
     assert!(fixture.open("").await?.into_inner().success);
     assert_eq!(
-        fixture.seed_words().await?,
+        fixture.seed_words("").await?,
         seed,
         "reloading must yield the same wallet, not a fresh one"
     );
+    fixture.stop();
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn addresses_travel_as_address_infos_over_grpc() -> anyhow::Result<()> {
+    let dir = tempfile::tempdir()?;
+    let mut fixture = WalletServiceFixture::start(dir.path()).await?;
+    assert!(fixture.open("").await?.into_inner().success);
+
+    let address = fixture
+        .client
+        .get_unused_address(GetUnusedAddressRequest {})
+        .await?
+        .into_inner()
+        .address
+        .expect("GetUnusedAddress must return an address");
+    assert!(
+        address.address.starts_with("bcrt1"),
+        "got: {}",
+        address.address
+    );
+
+    let addresses = fixture
+        .client
+        .get_wallet_addresses(GetWalletAddressesRequest {})
+        .await?
+        .into_inner()
+        .addresses;
+    assert_eq!(addresses, [address], "the one address revealed so far");
+
+    // An address that doesn't parse is refused before it reaches the wallet.
+    let err = fixture
+        .client
+        .send_to_address(SendToAddressRequest {
+            passphrase: None,
+            address: Some(PubAddressInfo {
+                address: "not-an-address".to_owned(),
+            }),
+            amount: 1_000,
+            fee_rate_per_kwu: None,
+        })
+        .await
+        .expect_err("a malformed address must be rejected");
+    assert_eq!(err.code(), Code::InvalidArgument, "got: {err}");
+
+    // So is a request with no address at all.
+    let err = fixture
+        .client
+        .send_to_address(SendToAddressRequest {
+            passphrase: None,
+            address: None,
+            amount: 1_000,
+            fee_rate_per_kwu: None,
+        })
+        .await
+        .expect_err("a missing address must be rejected");
+    assert_eq!(err.code(), Code::InvalidArgument, "got: {err}");
     fixture.stop();
 
     Ok(())

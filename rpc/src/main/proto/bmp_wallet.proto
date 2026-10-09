@@ -17,8 +17,9 @@
 
 syntax = "proto3";
 
-// Deliberately mirrors bisq2's `wallet/src/main/proto/wallet.proto`, package and all, so that
-// bisq2's `bisq.wallet.WalletGrpcClient` can talk to this server without any change on its side.
+// Derived from bisq2's `wallet/src/main/proto/wallet.proto`, package and all, so that bisq2's
+// `bisq.wallet.WalletGrpcClient` can talk to this server once the divergences below have been
+// upstreamed; until then its copy of the proto needs the same changes.
 // Keep the package, service name, method names and field numbers in sync with bisq2; additions
 // here must stay backwards compatible (new optional fields only). Upstream messages that are only
 // used for bisq2's client-side persistence (`ReceiveAddressEntry`, `ReceiveAddressStore` — local
@@ -27,7 +28,10 @@ syntax = "proto3";
 // Deliberate divergences from bisq2's copy (to be upstreamed): `EncryptWallet`/`DecryptWallet`
 // are replaced by the authenticated `ChangePassword`, and `OpenOrCreateWallet` opens (or
 // creates) the wallet database itself, so the daemon no longer needs the password on its
-// command line.
+// command line. `GetNewAddress` is gone (`GetUnusedAddress` is the one way to obtain a receive
+// address), as is `IsWalletEncrypted` (see `SendToAddress` for how a client manages without it),
+// and `GetSeedWords` takes the wallet password. Addresses are carried as `PubAddressInfo`
+// messages rather than as bare strings.
 //
 // NOTE: this is a *different* service from `walletrpc.Wallet` in `wallet.proto`. That one is the
 // low-level wallet the trade protocol drives; this one is the user-facing wallet backed by
@@ -43,13 +47,16 @@ service Wallet {
     // none exists there yet. Must be called before any other wallet operation.
     rpc OpenOrCreateWallet (OpenOrCreateWalletRequest) returns (OpenOrCreateWalletResponse);
     rpc IsWalletReady (IsWalletReadyRequest) returns (IsWalletReadyResponse);
-    rpc GetNewAddress (GetNewAddressRequest) returns (GetNewAddressResponse);
     rpc GetUnusedAddress (GetUnusedAddressRequest) returns (GetUnusedAddressResponse);
     rpc GetWalletAddresses (GetWalletAddressesRequest) returns (GetWalletAddressesResponse);
     rpc ListTransactions (ListTransactionsRequest) returns (ListTransactionsResponse);
     rpc ListUtxos (ListUtxosRequest) returns (ListUtxosResponse);
+    // Builds, signs and broadcasts a payment. `passphrase` is needed only for a
+    // password-protected wallet. There is deliberately no read-only RPC to ask whether the wallet
+    // is protected: send without a passphrase and retry with one on PERMISSION_DENIED. Note that
+    // `OpenOrCreateWallet` is no substitute for such a probe, since with no wallet on disk it
+    // creates an unprotected one.
     rpc SendToAddress (SendToAddressRequest) returns (SendToAddressResponse);
-    rpc IsWalletEncrypted (IsWalletEncryptedRequest) returns (IsWalletEncryptedResponse);
     rpc GetBalance (GetBalanceRequest) returns (GetBalanceResponse);
     rpc GetSeedWords (GetSeedWordsRequest) returns (GetSeedWordsResponse);
     // Re-keys the wallet database from oldPassword to newPassword. Requires the password
@@ -66,22 +73,16 @@ message IsWalletReadyResponse {
     bool ready = 1;
 }
 
-message GetNewAddressRequest {}
-
-message GetNewAddressResponse {
-    string address = 1;
-}
-
 message GetUnusedAddressRequest {}
 
 message GetUnusedAddressResponse {
-    string address = 1;
+    PubAddressInfo address = 1;
 }
 
 message GetWalletAddressesRequest {}
 
 message GetWalletAddressesResponse {
-    repeated string addresses = 1;
+    repeated PubAddressInfo addresses = 1;
 }
 
 message ListTransactionsRequest {}
@@ -98,7 +99,7 @@ message ListUtxosResponse {
 
 message SendToAddressRequest {
     optional string passphrase = 1;
-    string address = 2;
+    PubAddressInfo address = 2;
     uint64 amount = 3;
     // Addition over bisq2's copy: fee rate in satoshis per 1000 weight units. Clients that
     // don't set it (including bisq2 today) get the server's default rate.
@@ -107,12 +108,6 @@ message SendToAddressRequest {
 
 message SendToAddressResponse {
     string txId = 1;
-}
-
-message IsWalletEncryptedRequest {}
-
-message IsWalletEncryptedResponse {
-    bool encrypted = 1;
 }
 
 message GetBalanceRequest {}
@@ -129,7 +124,10 @@ message GetBalanceResponse {
     uint64 immature = 5;
 }
 
-message GetSeedWordsRequest {}
+message GetSeedWordsRequest {
+    // The password protecting the wallet database; empty for an unprotected wallet.
+    string password = 1;
+}
 
 message GetSeedWordsResponse {
     repeated string seedWords = 1;
@@ -155,6 +153,11 @@ message ChangePasswordResponse {
     bool success = 1;
 }
 
+// A bitcoin address.
+message PubAddressInfo {
+    string address = 1;
+}
+
 message TransactionInput {
     string prevOutTxId = 1;
     int32 prevOutIndex = 2;
@@ -165,7 +168,8 @@ message TransactionInput {
 
 message TransactionOutput {
     uint64 value = 1;
-    string address = 2;
+    // Absent when the script doesn't decode to a standard address.
+    PubAddressInfo address = 2;
     bytes scriptPubKey = 3;
 }
 
@@ -185,6 +189,7 @@ message Utxo {
     string txId = 1;
     uint32 vout = 2;
     uint64 amount = 3;
-    string address = 4;
+    // Absent when the script doesn't decode to a standard address.
+    PubAddressInfo address = 4;
     uint32 numConfirmations = 5;
 }

@@ -3,14 +3,13 @@ package bisq;
 import bisq.wallet.protobuf.ChangePasswordRequest;
 import bisq.wallet.protobuf.GetBalanceRequest;
 import bisq.wallet.protobuf.GetSeedWordsRequest;
-import bisq.wallet.protobuf.GetNewAddressRequest;
 import bisq.wallet.protobuf.GetUnusedAddressRequest;
 import bisq.wallet.protobuf.GetWalletAddressesRequest;
-import bisq.wallet.protobuf.IsWalletEncryptedRequest;
 import bisq.wallet.protobuf.IsWalletReadyRequest;
 import bisq.wallet.protobuf.ListTransactionsRequest;
 import bisq.wallet.protobuf.ListUtxosRequest;
 import bisq.wallet.protobuf.OpenOrCreateWalletRequest;
+import bisq.wallet.protobuf.PubAddressInfo;
 import bisq.wallet.protobuf.SendToAddressRequest;
 import bisq.wallet.protobuf.Transaction;
 import bisq.wallet.protobuf.Utxo;
@@ -29,9 +28,14 @@ import java.util.concurrent.TimeUnit;
  * {@code BMPWalletServiceImpl}, i.e. every method bisq2's {@code bisq.wallet.WalletService}
  * calls through its {@code WalletGrpcClient}.
  * <p>
- * The generated stubs used here come from {@code src/main/proto/bmp_wallet.proto}, which is a
- * copy of bisq2's own {@code wallet.proto} — same package, service, methods and field numbers —
- * so passing this test means bisq2 can point its {@code WalletGrpcClient} at musigd unchanged.
+ * The generated stubs used here come from {@code src/main/proto/bmp_wallet.proto}, which is
+ * derived from bisq2's own {@code wallet.proto} — same package, service name and field numbers —
+ * but deliberately diverges from it in a few places: no {@code GetNewAddress},
+ * {@code IsWalletEncrypted}, {@code EncryptWallet} or {@code DecryptWallet}; {@code GetSeedWords}
+ * takes the wallet password; addresses are {@code PubAddressInfo} messages. Those divergences are
+ * listed at the top of the proto and are meant to be upstreamed, so passing this test means bisq2
+ * can point its {@code WalletGrpcClient} at musigd once its copy of the proto has been brought in
+ * line.
  * <p>
  * Run against a musigd started with a wallet directory, e.g.
  * <pre>
@@ -85,12 +89,12 @@ public class BmpWalletServiceTest {
         check("IsWalletReady", this::isWalletReady);
         check("GetBalance", this::getBalance);
         check("GetSeedWords", this::getSeedWords);
-        check("GetNewAddress + GetUnusedAddress + GetWalletAddresses", this::addresses);
+        check("GetUnusedAddress + GetWalletAddresses", this::addresses);
         check("ListTransactions", this::listTransactions);
         check("ListUtxos", this::listUtxos);
         check("SendToAddress", this::sendToAddress);
         // Mutating, and restores the original state on the way out.
-        check("IsWalletEncrypted + ChangePassword", this::changePasswordRoundTrip);
+        check("ChangePassword", this::changePasswordRoundTrip);
     }
 
     // --- individual checks -------------------------------------------------------------------
@@ -133,21 +137,24 @@ public class BmpWalletServiceTest {
     }
 
     private void addresses() {
-        String address =
+        PubAddressInfo address =
                 stub.getUnusedAddress(GetUnusedAddressRequest.newBuilder().build()).getAddress();
-        assertTrue(!address.isBlank(), "address must not be blank");
+        assertTrue(!address.getAddress().isBlank(), "address must not be blank");
 
-        String fresh = stub.getNewAddress(GetNewAddressRequest.newBuilder().build()).getAddress();
-        assertTrue(!fresh.isBlank(), "new address must not be blank");
-        assertTrue(!fresh.equals(address), "GetNewAddress must not repeat the last address");
+        PubAddressInfo next =
+                stub.getUnusedAddress(GetUnusedAddressRequest.newBuilder().build()).getAddress();
+        assertTrue(!next.getAddress().isBlank(), "next address must not be blank");
+        assertTrue(!next.equals(address), "GetUnusedAddress must not repeat the last address");
 
-        List<String> all = stub.getWalletAddresses(GetWalletAddressesRequest.newBuilder().build())
-                .getAddressesList();
-        assertTrue(all.contains(address),
-                "a revealed address (" + address + ") must appear among the wallet's addresses");
-        assertTrue(all.contains(fresh),
-                "a new address (" + fresh + ") must appear among the wallet's addresses");
-        System.out.printf("    unused=%s, new=%s, %d address(es) revealed%n", address, fresh, all.size());
+        List<PubAddressInfo> all =
+                stub.getWalletAddresses(GetWalletAddressesRequest.newBuilder().build())
+                        .getAddressesList();
+        assertTrue(all.contains(address), "a revealed address (" + address.getAddress()
+                + ") must appear among the wallet's addresses");
+        assertTrue(all.contains(next), "the next address (" + next.getAddress()
+                + ") must appear among the wallet's addresses");
+        System.out.printf("    unused=%s, next=%s, %d address(es) revealed%n",
+                address.getAddress(), next.getAddress(), all.size());
     }
 
     private void listTransactions() {
@@ -176,7 +183,7 @@ public class BmpWalletServiceTest {
 
     private void sendToAddress() {
         var request = SendToAddressRequest.newBuilder()
-                .setAddress(REGTEST_ADDRESS)
+                .setAddress(PubAddressInfo.newBuilder().setAddress(REGTEST_ADDRESS))
                 .setAmount(10_000)
                 .build();
         try {
@@ -195,19 +202,22 @@ public class BmpWalletServiceTest {
     }
 
     private void changePasswordRoundTrip() {
-        boolean encryptedBefore = isEncrypted();
-        assertTrue(!encryptedBefore,
-                "expected an unencrypted wallet to start from; refusing to re-key one that "
+        assertTrue(BmpWalletProbes.opensWith(stub, ""),
+                "expected an unprotected wallet to start from; refusing to re-key one that "
                         + "already has a password");
 
         // Setting a password is a change from the empty password.
         stub.changePassword(ChangePasswordRequest.newBuilder()
                 .setNewPassword(TEST_PASSWORD)
                 .build());
-        assertTrue(isEncrypted(), "wallet must report itself encrypted after ChangePassword");
+        assertTrue(BmpWalletProbes.opensWith(stub, TEST_PASSWORD) &&
+                !BmpWalletProbes.opensWith(stub, ""),
+                "wallet must be protected by the new password after ChangePassword");
 
         // The seed must still be readable through the rotated SQLCipher key.
-        assertTrue(!stub.getSeedWords(GetSeedWordsRequest.newBuilder().build())
+        assertTrue(!stub.getSeedWords(GetSeedWordsRequest.newBuilder()
+                        .setPassword(TEST_PASSWORD)
+                        .build())
                 .getSeedWordsList().isEmpty(), "seed unreadable after re-keying");
 
         try {
@@ -220,19 +230,16 @@ public class BmpWalletServiceTest {
             assertTrue(e.getStatus().getCode() == Status.Code.PERMISSION_DENIED,
                     "expected PERMISSION_DENIED for a wrong password, got " + e.getStatus().getCode());
         }
-        assertTrue(isEncrypted(), "a rejected ChangePassword must leave the wallet encrypted");
+        assertTrue(BmpWalletProbes.opensWith(stub, TEST_PASSWORD),
+                "a rejected ChangePassword must leave the password as it was");
 
         // An empty new password removes protection, restoring the original state.
         stub.changePassword(ChangePasswordRequest.newBuilder()
                 .setOldPassword(TEST_PASSWORD)
                 .build());
-        assertTrue(!isEncrypted(), "wallet must report itself unencrypted after the password "
-                + "was removed");
+        assertTrue(BmpWalletProbes.opensWith(stub, ""),
+                "wallet must be unprotected after the password was removed");
         System.out.println("    set password -> reject wrong password -> remove password ok");
-    }
-
-    private boolean isEncrypted() {
-        return stub.isWalletEncrypted(IsWalletEncryptedRequest.newBuilder().build()).getEncrypted();
     }
 
     // --- tiny test harness -------------------------------------------------------------------
