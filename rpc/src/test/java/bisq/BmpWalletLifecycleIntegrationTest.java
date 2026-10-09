@@ -2,9 +2,8 @@ package bisq;
 
 import bisq.wallet.protobuf.ChangePasswordRequest;
 import bisq.wallet.protobuf.GetBalanceRequest;
-import bisq.wallet.protobuf.GetNewAddressRequest;
 import bisq.wallet.protobuf.GetSeedWordsRequest;
-import bisq.wallet.protobuf.IsWalletEncryptedRequest;
+import bisq.wallet.protobuf.GetUnusedAddressRequest;
 import bisq.wallet.protobuf.IsWalletReadyRequest;
 import bisq.wallet.protobuf.OpenOrCreateWalletRequest;
 import bisq.wallet.protobuf.WalletGrpc;
@@ -52,8 +51,9 @@ public class BmpWalletLifecycleIntegrationTest {
     /** Nothing listens here: the daemon must work without a reachable Bitcoin Core. */
     private static final String DUMMY_RPC_URL = "http://127.0.0.1:1";
 
-    private static final String PASSWORD = "s3cret";
-    private static final String NEW_PASSWORD = "n3w-pass";
+    /** Both follow the wallet's password rules. */
+    private static final String PASSWORD = "S3cret!!";
+    private static final String NEW_PASSWORD = "N3w-Pass!";
 
     private Path walletDir;
     private MusigdProcess musigd;
@@ -89,13 +89,29 @@ public class BmpWalletLifecycleIntegrationTest {
                 "wallet operations before OpenOrCreateWallet must fail as a precondition error");
 
         e = assertThrows(StatusRuntimeException.class,
-                () -> stub.getNewAddress(GetNewAddressRequest.newBuilder().build()));
+                () -> stub.getUnusedAddress(GetUnusedAddressRequest.newBuilder().build()));
         assertEquals(Status.Code.FAILED_PRECONDITION, e.getStatus().getCode());
     }
 
     @Test
     @Order(2)
     void openOrCreateWalletCreatesAFreshProtectedWallet() {
+        // A password breaking the rules, the empty one included, must not create a wallet, and
+        // the user must be told the rules.
+        for (String weak : List.of("", "short")) {
+            StatusRuntimeException weakErr = assertThrows(StatusRuntimeException.class,
+                    () -> stub.openOrCreateWallet(OpenOrCreateWalletRequest.newBuilder()
+                            .setPassword(weak)
+                            .build()));
+            assertEquals(Status.Code.INVALID_ARGUMENT, weakErr.getStatus().getCode(),
+                    "a password breaking the rules must be INVALID_ARGUMENT, got: " + weakErr);
+            String description = String.valueOf(weakErr.getStatus().getDescription());
+            assertTrue(description.contains("at least 8 characters"),
+                    "the rules must be spelled out, got: " + description);
+        }
+        assertFalse(stub.isWalletReady(IsWalletReadyRequest.newBuilder().build()).getReady(),
+                "no wallet must have been created");
+
         assertTrue(stub.openOrCreateWallet(OpenOrCreateWalletRequest.newBuilder()
                         .setPassword(PASSWORD)
                         .build())
@@ -103,12 +119,16 @@ public class BmpWalletLifecycleIntegrationTest {
 
         assertTrue(stub.isWalletReady(IsWalletReadyRequest.newBuilder().build()).getReady(),
                 "with no chain source configured, an open wallet is a ready wallet");
-        assertTrue(isEncrypted(), "created with a password, so it must report itself encrypted");
         assertEquals(0, stub.getBalance(GetBalanceRequest.newBuilder().build()).getBalance(),
                 "a fresh wallet starts empty");
 
-        seedWords = seedWords();
+        seedWords = seedWords(PASSWORD);
         assertEquals(24, seedWords.size(), "expected a 24-word mnemonic");
+
+        StatusRuntimeException e = assertThrows(StatusRuntimeException.class,
+                () -> seedWords("wrong"));
+        assertEquals(Status.Code.PERMISSION_DENIED, e.getStatus().getCode(),
+                "the seed must only be revealed to the holder of the password");
     }
 
     @Test
@@ -126,7 +146,7 @@ public class BmpWalletLifecycleIntegrationTest {
                         .setPassword("wrong")
                         .build()));
         assertEquals(Status.Code.PERMISSION_DENIED, e.getStatus().getCode());
-        assertEquals(seedWords, seedWords(), "the open wallet must be unaffected");
+        assertEquals(seedWords, seedWords(PASSWORD), "the open wallet must be unaffected");
     }
 
     @Test
@@ -139,8 +159,9 @@ public class BmpWalletLifecycleIntegrationTest {
                         .build()));
         assertEquals(Status.Code.PERMISSION_DENIED, e.getStatus().getCode(),
                 "a wrong old password must be rejected as PERMISSION_DENIED");
-        assertTrue(isEncrypted(), "a rejected change must leave the wallet as it was");
-        assertEquals(seedWords, seedWords(), "...and the key must not have rotated");
+        assertTrue(BmpWalletProbes.opensWith(stub, PASSWORD),
+                "a rejected change must leave the wallet as it was");
+        assertEquals(seedWords, seedWords(PASSWORD), "...and the key must not have rotated");
     }
 
     @Test
@@ -151,15 +172,23 @@ public class BmpWalletLifecycleIntegrationTest {
                         .setNewPassword(NEW_PASSWORD)
                         .build())
                 .getSuccess());
-        assertTrue(isEncrypted(), "still password-protected, just with a new password");
-        assertEquals(seedWords, seedWords(), "the seed must survive the re-key");
+        assertTrue(BmpWalletProbes.opensWith(stub, NEW_PASSWORD),
+                "the new password must now be the one in force");
+        assertFalse(BmpWalletProbes.opensWith(stub, PASSWORD),
+                "the old password must no longer open the wallet");
+        assertEquals(seedWords, seedWords(NEW_PASSWORD), "the seed must survive the re-key");
 
-        // An empty new password removes protection (the former DecryptWallet).
-        assertTrue(stub.changePassword(ChangePasswordRequest.newBuilder()
+        // The wallet is always password-protected: an empty new password (the former
+        // DecryptWallet) is refused like any other password breaking the rules, and the current
+        // one stays in force.
+        StatusRuntimeException e = assertThrows(StatusRuntimeException.class,
+                () -> stub.changePassword(ChangePasswordRequest.newBuilder()
                         .setOldPassword(NEW_PASSWORD)
-                        .build())
-                .getSuccess());
-        assertFalse(isEncrypted(), "an empty new password must remove protection");
+                        .build()));
+        assertEquals(Status.Code.INVALID_ARGUMENT, e.getStatus().getCode(),
+                "an empty new password must be rejected as INVALID_ARGUMENT");
+        assertTrue(BmpWalletProbes.opensWith(stub, NEW_PASSWORD),
+                "a rejected change must leave the password as it was");
     }
 
     @Test
@@ -169,7 +198,7 @@ public class BmpWalletLifecycleIntegrationTest {
         startMusigd();
 
         // The daemon restarted, so the wallet must be re-opened — and the password in force is
-        // the (empty) one the previous test left behind, not the one the wallet was created with.
+        // the one the previous test changed to, not the one the wallet was created with.
         StatusRuntimeException e = assertThrows(StatusRuntimeException.class,
                 () -> stub.openOrCreateWallet(OpenOrCreateWalletRequest.newBuilder()
                         .setPassword(PASSWORD)
@@ -177,11 +206,12 @@ public class BmpWalletLifecycleIntegrationTest {
         assertEquals(Status.Code.PERMISSION_DENIED, e.getStatus().getCode(),
                 "a stale password must not open the wallet — and must not overwrite it");
 
-        assertTrue(stub.openOrCreateWallet(OpenOrCreateWalletRequest.newBuilder().build())
+        assertTrue(stub.openOrCreateWallet(OpenOrCreateWalletRequest.newBuilder()
+                        .setPassword(NEW_PASSWORD)
+                        .build())
                 .getSuccess());
-        assertEquals(seedWords, seedWords(),
+        assertEquals(seedWords, seedWords(NEW_PASSWORD),
                 "reloading must yield the same wallet, not a fresh one");
-        assertFalse(isEncrypted());
     }
 
     // --- plumbing ----------------------------------------------------------------------------
@@ -206,11 +236,8 @@ public class BmpWalletLifecycleIntegrationTest {
         }
     }
 
-    private boolean isEncrypted() {
-        return stub.isWalletEncrypted(IsWalletEncryptedRequest.newBuilder().build()).getEncrypted();
-    }
-
-    private List<String> seedWords() {
-        return stub.getSeedWords(GetSeedWordsRequest.newBuilder().build()).getSeedWordsList();
+    private List<String> seedWords(String password) {
+        return stub.getSeedWords(GetSeedWordsRequest.newBuilder().setPassword(password).build())
+                .getSeedWordsList();
     }
 }

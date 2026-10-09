@@ -7,6 +7,7 @@ import bisq.wallet.protobuf.IsWalletReadyRequest;
 import bisq.wallet.protobuf.ListTransactionsRequest;
 import bisq.wallet.protobuf.ListUtxosRequest;
 import bisq.wallet.protobuf.OpenOrCreateWalletRequest;
+import bisq.wallet.protobuf.PubAddressInfo;
 import bisq.wallet.protobuf.SendToAddressRequest;
 import bisq.wallet.protobuf.Transaction;
 import bisq.wallet.protobuf.Utxo;
@@ -58,6 +59,8 @@ public class BmpWalletServiceIntegrationTest {
     private static final long FUNDING_SATS = 50_000_000; // 0.5 BTC
     private static final double FUNDING_BTC = 0.5;
     private static final long PAYMENT_SATS = 100_000;
+    /** Follows the wallet\'s password rules; the wallet is a throwaway. */
+    private static final String PASSWORD = "Test-Passw0rd";
 
     private TestEnvClient testenv;
     private MusigdProcess musigd;
@@ -88,8 +91,10 @@ public class BmpWalletServiceIntegrationTest {
         stub = WalletGrpc.newBlockingStub(channel);
 
         // musigd no longer creates the wallet at startup: the client opens (or creates) it over
-        // gRPC, supplying the wallet password — empty here, for a throwaway test wallet.
-        assertTrue(stub.openOrCreateWallet(OpenOrCreateWalletRequest.newBuilder().build())
+        // gRPC, supplying the wallet password.
+        assertTrue(stub.openOrCreateWallet(OpenOrCreateWalletRequest.newBuilder()
+                        .setPassword(PASSWORD)
+                        .build())
                         .getSuccess(),
                 "OpenOrCreateWallet must succeed against a fresh wallet directory");
     }
@@ -120,7 +125,7 @@ public class BmpWalletServiceIntegrationTest {
     @Order(2)
     void fundingIsDiscoveredAndReportedConsistently() {
         fundedAddress = stub.getUnusedAddress(GetUnusedAddressRequest.newBuilder().build())
-                .getAddress();
+                .getAddress().getAddress();
         assertFalse(fundedAddress.isBlank());
 
         System.out.println("Funding " + fundedAddress + " with " + FUNDING_BTC + " BTC...");
@@ -143,7 +148,7 @@ public class BmpWalletServiceIntegrationTest {
         Utxo utxo = utxos.get(0);
         assertEquals(fundingTxId, utxo.getTxId(), "the UTXO must point at the funding tx");
         assertEquals(FUNDING_SATS, utxo.getAmount());
-        assertEquals(fundedAddress, utxo.getAddress(),
+        assertEquals(fundedAddress, utxo.getAddress().getAddress(),
                 "the script must decode back to the address we handed out");
         assertTrue(utxo.getNumConfirmations() >= 1,
                 "a mined output must have at least one confirmation, got "
@@ -177,7 +182,8 @@ public class BmpWalletServiceIntegrationTest {
         String target = testenv.getNewAddress();
 
         String txId = stub.sendToAddress(SendToAddressRequest.newBuilder()
-                .setAddress(target)
+                .setPassphrase(PASSWORD)
+                .setAddress(PubAddressInfo.newBuilder().setAddress(target))
                 .setAmount(PAYMENT_SATS)
                 .build()).getTxId();
         assertFalse(txId.isBlank(), "a successful send must return a txid");

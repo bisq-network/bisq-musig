@@ -3,6 +3,7 @@ pub mod utils;
 
 pub mod bmp_wallet;
 pub mod chain_data_source;
+pub mod password;
 pub mod persisted;
 pub mod protocol_wallet_api;
 #[cfg(test)]
@@ -33,8 +34,9 @@ mod tests {
     use secp::Scalar;
 
     use crate::bmp_wallet::{BMPWallet, ImportedKey, STOP_GAP, WalletApi as _, WalletErrorKind};
+    use crate::password::Password;
     use crate::persisted::DBStorage;
-    use crate::test_utils::{MemDbHandle, MockedBDKElectrum, derive_public_key};
+    use crate::test_utils::{MemDbHandle, MockedBDKElectrum, derive_public_key, test_password};
 
     fn new_private_key() -> Scalar {
         let mut seed: [u8; 32] = [0u8; 32];
@@ -57,7 +59,7 @@ mod tests {
     fn test_create_wallet() -> anyhow::Result<()> {
         let mem_storage = DBStorage::Memory("bmp_wallet".to_owned());
 
-        let mut bmp_wallet = BMPWallet::new(mem_storage, "", Network::Regtest)?;
+        let mut bmp_wallet = BMPWallet::new(mem_storage, &test_password(), Network::Regtest)?;
         assert_eq!(bmp_wallet.imported_keys().len(), 0);
         assert_eq!(bmp_wallet.balance(), Amount::from_sat(0));
 
@@ -94,7 +96,11 @@ mod tests {
         let mem_storage = MemDbHandle::new()?;
 
         {
-            let mut wallet = BMPWallet::new(mem_storage.store.clone(), "", Network::Regtest)?;
+            let mut wallet = BMPWallet::new(
+                mem_storage.store.clone(),
+                &test_password(),
+                Network::Regtest,
+            )?;
             assert_eq!(wallet.imported_keys().len(), 0);
             stored_balance = wallet.balance();
             stored_seed = wallet.get_seed_phrase().unwrap();
@@ -116,7 +122,8 @@ mod tests {
             wallet.persist()?;
         }
 
-        let mut wallet = BMPWallet::load_wallet(mem_storage.store, Network::Regtest, "")?;
+        let mut wallet =
+            BMPWallet::load_wallet(mem_storage.store, Network::Regtest, &test_password())?;
         let loaded_seed = wallet.get_seed_phrase()?;
 
         let new_receiving_addr = wallet.get_new_address()?;
@@ -134,7 +141,11 @@ mod tests {
     #[test]
     fn load_refuses_wallet_without_seed_phrase() -> anyhow::Result<()> {
         let mem_storage = MemDbHandle::new()?;
-        BMPWallet::new(mem_storage.store.clone(), "", Network::Regtest)?;
+        BMPWallet::new(
+            mem_storage.store.clone(),
+            &test_password(),
+            Network::Regtest,
+        )?;
 
         // Put the database in the state creation leaves it in if it stops after committing the
         // BDK wallet, but before storing the seed phrase.
@@ -142,7 +153,9 @@ mod tests {
         db.execute(&format!("DELETE FROM {}", BMPWallet::SEEDS_TABLE_NAME), [])?;
         drop(db);
 
-        let Err(err) = BMPWallet::load_wallet(mem_storage.store, Network::Regtest, "") else {
+        let Err(err) =
+            BMPWallet::load_wallet(mem_storage.store, Network::Regtest, &test_password())
+        else {
             panic!("a wallet without its seed phrase must not load");
         };
         assert!(
@@ -155,7 +168,11 @@ mod tests {
     #[test]
     fn test_imported_keys() -> anyhow::Result<()> {
         let mem_storage = MemDbHandle::new()?;
-        let mut bmp_wallet = BMPWallet::new(mem_storage.store.clone(), "", Network::Regtest)?;
+        let mut bmp_wallet = BMPWallet::new(
+            mem_storage.store.clone(),
+            &test_password(),
+            Network::Regtest,
+        )?;
         let pk1 = new_private_key();
         let pk2 = new_private_key();
 
@@ -166,7 +183,8 @@ mod tests {
 
         // Persist
         bmp_wallet.persist()?;
-        let loaded_wallet = BMPWallet::load_wallet(mem_storage.store, Network::Regtest, "")?;
+        let loaded_wallet =
+            BMPWallet::load_wallet(mem_storage.store, Network::Regtest, &test_password())?;
         assert_eq!(loaded_wallet.imported_keys(), bmp_wallet.imported_keys());
         Ok(())
     }
@@ -175,7 +193,11 @@ mod tests {
     fn test_imported_keys_with_tap_tree() -> anyhow::Result<()> {
         let mem_storage = MemDbHandle::new()?;
 
-        let mut bmp_wallet = BMPWallet::new(mem_storage.store.clone(), "", Network::Regtest)?;
+        let mut bmp_wallet = BMPWallet::new(
+            mem_storage.store.clone(),
+            &test_password(),
+            Network::Regtest,
+        )?;
         let pk = new_private_key();
 
         // A tap tree like the protocol's deposit payout: and_v(v:pk(A),pk(B))
@@ -194,8 +216,11 @@ mod tests {
 
         // Persist
         bmp_wallet.persist()?;
-        let loaded_wallet =
-            BMPWallet::load_wallet(mem_storage.store.clone(), Network::Regtest, "")?;
+        let loaded_wallet = BMPWallet::load_wallet(
+            mem_storage.store.clone(),
+            Network::Regtest,
+            &test_password(),
+        )?;
 
         assert_eq!(loaded_wallet.imported_keys().len(), 1);
 
@@ -212,7 +237,11 @@ mod tests {
     #[test]
     fn persist_reports_a_failed_imported_key_write() -> anyhow::Result<()> {
         let mem_storage = MemDbHandle::new()?;
-        let mut wallet = BMPWallet::new(mem_storage.store.clone(), "", Network::Regtest)?;
+        let mut wallet = BMPWallet::new(
+            mem_storage.store.clone(),
+            &test_password(),
+            Network::Regtest,
+        )?;
         wallet.import_private_key(new_private_key(), None)?;
         let address = wallet.reveal_next_address(KeychainKind::External);
 
@@ -235,7 +264,8 @@ mod tests {
         assert!(wallet.persist()?);
         drop(wallet);
 
-        let reloaded = BMPWallet::load_wallet(mem_storage.store, Network::Regtest, "")?;
+        let reloaded =
+            BMPWallet::load_wallet(mem_storage.store, Network::Regtest, &test_password())?;
         assert_eq!(reloaded.imported_keys().len(), 1);
         assert_eq!(
             reloaded.derivation_index(KeychainKind::External),
@@ -248,7 +278,7 @@ mod tests {
     async fn test_sync() -> anyhow::Result<()> {
         let mem_storage = MemDbHandle::new()?;
 
-        let mut bmp_wallet = BMPWallet::new(mem_storage.store, "", Network::Regtest)?;
+        let mut bmp_wallet = BMPWallet::new(mem_storage.store, &test_password(), Network::Regtest)?;
         let client = MockedBDKElectrum {};
 
         tracing::info!("Wallet balance before syncing {}", bmp_wallet.balance());
@@ -271,7 +301,7 @@ mod tests {
 
         let mem_storage = MemDbHandle::new()?;
 
-        let mut bmp_wallet = BMPWallet::new(mem_storage.store, "", Network::Regtest)?;
+        let mut bmp_wallet = BMPWallet::new(mem_storage.store, &test_password(), Network::Regtest)?;
 
         bmp_wallet.import_private_key(pk1, None)?;
         bmp_wallet.import_private_key(pk2, None)?;
@@ -296,7 +326,7 @@ mod tests {
         let client = MockedBDKElectrum {};
         let mem_storage = MemDbHandle::new()?;
 
-        let mut bmp_wallet = BMPWallet::new(mem_storage.store, "", Network::Regtest)?;
+        let mut bmp_wallet = BMPWallet::new(mem_storage.store, &test_password(), Network::Regtest)?;
 
         tracing::info!("Wallet balance before syncing {}", bmp_wallet.balance());
         assert_eq!(bmp_wallet.balance(), Amount::from_int_btc(0));
@@ -331,7 +361,11 @@ mod tests {
         let client = MockedBDKElectrum {};
         let mut mem_storage = MemDbHandle::new()?;
 
-        let mut bmp_wallet = BMPWallet::new(mem_storage.store.clone(), "", Network::Regtest)?;
+        let mut bmp_wallet = BMPWallet::new(
+            mem_storage.store.clone(),
+            &test_password(),
+            Network::Regtest,
+        )?;
 
         let keys_to_import = [new_private_key(), new_private_key()];
 
@@ -413,7 +447,7 @@ mod tests {
     async fn sign_with_imported_key_tap_tree() -> anyhow::Result<()> {
         let mem_storage = MemDbHandle::new()?;
 
-        let mut bmp_wallet = BMPWallet::new(mem_storage.store, "", Network::Regtest)?;
+        let mut bmp_wallet = BMPWallet::new(mem_storage.store, &test_password(), Network::Regtest)?;
 
         let pk = new_private_key();
         let (a, b) = (
@@ -501,7 +535,7 @@ mod tests {
         let client = MockedBDKElectrum {};
         let mem_storage = MemDbHandle::new()?;
 
-        let mut bmp_wallet = BMPWallet::new(mem_storage.store, "", Network::Regtest)?;
+        let mut bmp_wallet = BMPWallet::new(mem_storage.store, &test_password(), Network::Regtest)?;
 
         let pk1: [u8; 32] = [
             180, 143, 139, 78, 9, 248, 73, 139, 169, 173, 99, 191, 248, 54, 50, 207, 137, 222, 85,
@@ -541,19 +575,20 @@ mod tests {
     }
 
     #[test]
-    fn encrypted_wallet_with_decryption() -> anyhow::Result<()> {
+    fn load_wallet_with_the_right_password() -> anyhow::Result<()> {
         let mem_storage = MemDbHandle::new()?;
-        let bmp_wallet = BMPWallet::new(mem_storage.store.clone(), "secret123", Network::Regtest)?;
+        let bmp_wallet = BMPWallet::new(
+            mem_storage.store.clone(),
+            &test_password(),
+            Network::Regtest,
+        )?;
         let seed = bmp_wallet.get_seed_phrase().unwrap();
 
         assert!(!seed.is_empty());
         assert_eq!(seed.split_whitespace().count(), 24);
 
-        assert!(!seed.is_empty());
-        assert_eq!(seed.split_whitespace().count(), 24);
-
-        // Load the wallet with right decryption key
-        let lw = BMPWallet::load_wallet(mem_storage.store, Network::Regtest, "secret123").unwrap();
+        let lw =
+            BMPWallet::load_wallet(mem_storage.store, Network::Regtest, &test_password()).unwrap();
         assert_eq!(lw.get_seed_phrase().unwrap(), seed);
         Ok(())
     }
@@ -565,7 +600,7 @@ mod tests {
         let pk2 = new_private_key();
 
         let mem_storage = MemDbHandle::new()?;
-        let mut bmp_wallet = BMPWallet::new(mem_storage.store, "", Network::Regtest)?;
+        let mut bmp_wallet = BMPWallet::new(mem_storage.store, &test_password(), Network::Regtest)?;
 
         bmp_wallet.import_private_key(pk1, None)?;
         bmp_wallet.import_private_key(pk2, None)?;
@@ -603,8 +638,8 @@ mod tests {
 
         let client = MockedBDKElectrum {};
 
-        let mut w1 = BMPWallet::new(mem_storage_one.store, "", Network::Regtest)?;
-        let w2 = BMPWallet::new(mem_storage_two.store, "", Network::Regtest)?;
+        let mut w1 = BMPWallet::new(mem_storage_one.store, &test_password(), Network::Regtest)?;
+        let w2 = BMPWallet::new(mem_storage_two.store, &test_password(), Network::Regtest)?;
 
         tracing::debug!("Wallet one balance before syncing {}", w1.balance());
         assert_eq!(w1.balance(), Amount::from_int_btc(0));
@@ -618,7 +653,7 @@ mod tests {
     #[test]
     fn test_address_generation() -> anyhow::Result<()> {
         let mem_storage = MemDbHandle::new()?;
-        let mut wallet = BMPWallet::new(mem_storage.store, "", Network::Regtest)?;
+        let mut wallet = BMPWallet::new(mem_storage.store, &test_password(), Network::Regtest)?;
 
         let mut add_vec: Vec<AddressInfo> = vec![];
 
@@ -643,7 +678,7 @@ mod tests {
     #[test]
     fn test_list_unused_addresses_since_last_used() -> anyhow::Result<()> {
         let mem_storage = MemDbHandle::new()?;
-        let mut wallet = BMPWallet::new(mem_storage.store, "", Network::Regtest)?;
+        let mut wallet = BMPWallet::new(mem_storage.store, &test_password(), Network::Regtest)?;
 
         // Reveal a handful of addresses (indices 0..=4).
         let revealed: Vec<AddressInfo> = (0..5)
@@ -748,7 +783,7 @@ mod tests {
     #[tokio::test]
     async fn list_transactions_describes_an_incoming_payment() -> anyhow::Result<()> {
         let mem_storage = MemDbHandle::new()?;
-        let mut wallet = BMPWallet::new(mem_storage.store, "", Network::Regtest)?;
+        let mut wallet = BMPWallet::new(mem_storage.store, &test_password(), Network::Regtest)?;
         assert!(
             wallet.list_transactions().is_empty(),
             "nothing before syncing"
@@ -795,7 +830,7 @@ mod tests {
     #[tokio::test]
     async fn list_transactions_reports_an_outgoing_payment() -> anyhow::Result<()> {
         let mem_storage = MemDbHandle::new()?;
-        let mut wallet = BMPWallet::new(mem_storage.store, "", Network::Regtest)?;
+        let mut wallet = BMPWallet::new(mem_storage.store, &test_password(), Network::Regtest)?;
         wallet.sync_all(&MockedBDKElectrum {}).await?;
 
         let to_address = "tb1pyfv094rr0vk28lf8v9yx3veaacdzg26ztqk4ga84zucqqhafnn5q9my9rz"
@@ -844,7 +879,11 @@ mod tests {
     #[tokio::test]
     async fn send_to_address_marks_its_inputs_spent() -> anyhow::Result<()> {
         let mem_storage = MemDbHandle::new()?;
-        let mut wallet = BMPWallet::new(mem_storage.store.clone(), "", Network::Regtest)?;
+        let mut wallet = BMPWallet::new(
+            mem_storage.store.clone(),
+            &test_password(),
+            Network::Regtest,
+        )?;
         wallet.sync_all(&MockedBDKElectrum {}).await?;
         assert_eq!(wallet.balance(), Amount::ONE_BTC, "one coin to spend from");
 
@@ -879,7 +918,8 @@ mod tests {
 
         // The spend is persisted, not merely staged: it survives a reload.
         drop(wallet);
-        let reloaded = BMPWallet::load_wallet(mem_storage.store, Network::Regtest, "")?;
+        let reloaded =
+            BMPWallet::load_wallet(mem_storage.store, Network::Regtest, &test_password())?;
         assert!(
             reloaded
                 .list_unspent()
@@ -895,7 +935,7 @@ mod tests {
     async fn list_utxos_covers_own_and_imported_outputs() -> anyhow::Result<()> {
         let mem_storage = MemDbHandle::new()?;
 
-        let mut wallet = BMPWallet::new(mem_storage.store, "", Network::Regtest)?;
+        let mut wallet = BMPWallet::new(mem_storage.store, &test_password(), Network::Regtest)?;
         assert!(wallet.list_utxos().is_empty(), "nothing before syncing");
 
         wallet.import_private_key(new_private_key(), None)?;
@@ -933,7 +973,7 @@ mod tests {
     async fn list_utxos_drops_spent_imported_outputs() -> anyhow::Result<()> {
         let mem_storage = MemDbHandle::new()?;
 
-        let mut wallet = BMPWallet::new(mem_storage.store, "", Network::Regtest)?;
+        let mut wallet = BMPWallet::new(mem_storage.store, &test_password(), Network::Regtest)?;
         wallet.import_private_key(new_private_key(), None)?;
         wallet.sync_all(&MockedBDKElectrum {}).await?;
 
@@ -959,7 +999,7 @@ mod tests {
     #[tokio::test]
     async fn full_balance_includes_imported_keys() -> anyhow::Result<()> {
         let mem_storage = MemDbHandle::new()?;
-        let mut wallet = BMPWallet::new(mem_storage.store, "", Network::Regtest)?;
+        let mut wallet = BMPWallet::new(mem_storage.store, &test_password(), Network::Regtest)?;
         assert_eq!(wallet.full_balance().total(), Amount::ZERO);
 
         wallet.import_private_key(new_private_key(), None)?;
@@ -982,7 +1022,7 @@ mod tests {
     #[test]
     fn list_wallet_addresses_covers_both_keychains() -> anyhow::Result<()> {
         let mem_storage = MemDbHandle::new()?;
-        let mut wallet = BMPWallet::new(mem_storage.store, "", Network::Regtest)?;
+        let mut wallet = BMPWallet::new(mem_storage.store, &test_password(), Network::Regtest)?;
         assert!(
             wallet.list_wallet_addresses().is_empty(),
             "nothing revealed yet"
@@ -993,11 +1033,11 @@ mod tests {
 
         let addresses = wallet.list_wallet_addresses();
         assert!(
-            addresses.contains(&external.address.to_string()),
+            addresses.iter().any(|info| info.address == external.address),
             "missing external address"
         );
         assert!(
-            addresses.contains(&internal.address.to_string()),
+            addresses.iter().any(|info| info.address == internal.address),
             "missing change address"
         );
         assert_eq!(addresses.len(), 2, "one per keychain so far: {addresses:?}");
@@ -1006,7 +1046,7 @@ mod tests {
         let another = wallet.get_new_address()?;
         let addresses = wallet.list_wallet_addresses();
         assert_eq!(addresses.len(), 3);
-        assert!(addresses.contains(&another.address.to_string()));
+        assert!(addresses.iter().any(|info| info.address == another.address));
 
         Ok(())
     }
@@ -1014,7 +1054,7 @@ mod tests {
     #[tokio::test]
     async fn send_to_address_builds_a_fully_signed_tx() -> anyhow::Result<()> {
         let mem_storage = MemDbHandle::new()?;
-        let mut wallet = BMPWallet::new(mem_storage.store, "", Network::Regtest)?;
+        let mut wallet = BMPWallet::new(mem_storage.store, &test_password(), Network::Regtest)?;
         wallet.sync_all(&MockedBDKElectrum {}).await?;
 
         let to_address = "tb1pyfv094rr0vk28lf8v9yx3veaacdzg26ztqk4ga84zucqqhafnn5q9my9rz"
@@ -1042,7 +1082,7 @@ mod tests {
     #[tokio::test]
     async fn send_to_address_rejects_an_unaffordable_payment() -> anyhow::Result<()> {
         let mem_storage = MemDbHandle::new()?;
-        let mut wallet = BMPWallet::new(mem_storage.store, "", Network::Regtest)?;
+        let mut wallet = BMPWallet::new(mem_storage.store, &test_password(), Network::Regtest)?;
 
         let to_address = "tb1pyfv094rr0vk28lf8v9yx3veaacdzg26ztqk4ga84zucqqhafnn5q9my9rz"
             .parse::<Address<_>>()?
@@ -1065,27 +1105,32 @@ mod tests {
     fn change_password_refuses_a_wrong_old_password() -> anyhow::Result<()> {
         let mem_storage = MemDbHandle::new()?;
 
-        let mut wallet = BMPWallet::new(mem_storage.store.clone(), "orig", Network::Regtest)?;
+        let mut wallet = BMPWallet::new(
+            mem_storage.store.clone(),
+            &test_password(),
+            Network::Regtest,
+        )?;
         let seed = wallet.get_seed_phrase()?;
 
-        let Err(err) = wallet.change_password("attacker", "attacker") else {
+        let attacker: Password = "Attacker#9".parse()?;
+        let Err(err) = wallet.change_password(&attacker, &attacker) else {
             panic!("re-keying without the current password must fail");
         };
-        assert!(matches!(err, WalletErrorKind::InvalidPassword));
+        assert!(matches!(err, WalletErrorKind::InvalidPassword(_)));
 
-        assert!(wallet.is_encrypted());
         assert!(
-            wallet.check_password("orig")?,
+            wallet.check_password(&test_password())?,
             "the original password must still be the one in force"
         );
         assert!(
-            !wallet.check_password("attacker")?,
+            !wallet.check_password(&attacker)?,
             "the rejected password must not have taken effect"
         );
         drop(wallet);
 
         // ...and that survives a reload, i.e. nothing reached disk.
-        let reloaded = BMPWallet::load_wallet(mem_storage.store, Network::Regtest, "orig")?;
+        let reloaded =
+            BMPWallet::load_wallet(mem_storage.store, Network::Regtest, &test_password())?;
         assert_eq!(reloaded.get_seed_phrase()?, seed);
 
         Ok(())
@@ -1096,49 +1141,24 @@ mod tests {
     fn change_password_replaces_the_password_in_one_step() -> anyhow::Result<()> {
         let mem_storage = MemDbHandle::new()?;
 
-        let mut wallet = BMPWallet::new(mem_storage.store.clone(), "orig", Network::Regtest)?;
+        let mut wallet = BMPWallet::new(
+            mem_storage.store.clone(),
+            &test_password(),
+            Network::Regtest,
+        )?;
         let seed = wallet.get_seed_phrase()?;
 
-        wallet.change_password("orig", "fresh")?;
+        let fresh: Password = "Fresh#2024".parse()?;
+        wallet.change_password(&test_password(), &fresh)?;
 
-        assert!(wallet.is_encrypted());
-        assert!(wallet.check_password("fresh")?);
+        assert!(wallet.check_password(&fresh)?);
         assert!(
-            !wallet.check_password("orig")?,
+            !wallet.check_password(&test_password())?,
             "old password must stop verifying"
         );
         drop(wallet);
 
-        let reloaded = BMPWallet::load_wallet(mem_storage.store, Network::Regtest, "fresh")?;
-        assert_eq!(reloaded.get_seed_phrase()?, seed);
-
-        Ok(())
-    }
-
-    /// An empty new password removes protection — but only for the holder of the current one.
-    #[test]
-    fn removing_the_password_requires_the_current_one() -> anyhow::Result<()> {
-        let mem_storage = MemDbHandle::new()?;
-
-        let mut wallet = BMPWallet::new(mem_storage.store.clone(), "orig", Network::Regtest)?;
-        let seed = wallet.get_seed_phrase()?;
-        assert!(wallet.is_encrypted());
-
-        assert!(
-            wallet.change_password("wrong", "").is_err(),
-            "wrong password must be rejected"
-        );
-        assert!(
-            wallet.is_encrypted(),
-            "a rejected change must not clear the flag"
-        );
-        assert!(wallet.check_password("orig")?, "...nor rotate the key");
-
-        wallet.change_password("orig", "")?;
-        assert!(!wallet.is_encrypted());
-        drop(wallet);
-
-        let reloaded = BMPWallet::load_wallet(mem_storage.store, Network::Regtest, "")?;
+        let reloaded = BMPWallet::load_wallet(mem_storage.store, Network::Regtest, &fresh)?;
         assert_eq!(reloaded.get_seed_phrase()?, seed);
 
         Ok(())

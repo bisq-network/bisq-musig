@@ -3,14 +3,13 @@ package bisq;
 import bisq.wallet.protobuf.ChangePasswordRequest;
 import bisq.wallet.protobuf.GetBalanceRequest;
 import bisq.wallet.protobuf.GetSeedWordsRequest;
-import bisq.wallet.protobuf.GetNewAddressRequest;
 import bisq.wallet.protobuf.GetUnusedAddressRequest;
 import bisq.wallet.protobuf.GetWalletAddressesRequest;
-import bisq.wallet.protobuf.IsWalletEncryptedRequest;
 import bisq.wallet.protobuf.IsWalletReadyRequest;
 import bisq.wallet.protobuf.ListTransactionsRequest;
 import bisq.wallet.protobuf.ListUtxosRequest;
 import bisq.wallet.protobuf.OpenOrCreateWalletRequest;
+import bisq.wallet.protobuf.PubAddressInfo;
 import bisq.wallet.protobuf.SendToAddressRequest;
 import bisq.wallet.protobuf.Transaction;
 import bisq.wallet.protobuf.Utxo;
@@ -29,9 +28,15 @@ import java.util.concurrent.TimeUnit;
  * {@code BMPWalletServiceImpl}, i.e. every method bisq2's {@code bisq.wallet.WalletService}
  * calls through its {@code WalletGrpcClient}.
  * <p>
- * The generated stubs used here come from {@code src/main/proto/bmp_wallet.proto}, which is a
- * copy of bisq2's own {@code wallet.proto} — same package, service, methods and field numbers —
- * so passing this test means bisq2 can point its {@code WalletGrpcClient} at musigd unchanged.
+ * The generated stubs used here come from {@code src/main/proto/bmp_wallet.proto}, which is
+ * derived from bisq2's own {@code wallet.proto} — same package, service name and field numbers —
+ * but deliberately diverges from it in a few places: no {@code GetNewAddress},
+ * {@code IsWalletEncrypted}, {@code EncryptWallet} or {@code DecryptWallet}; the wallet is always
+ * password-protected, so {@code SendToAddress} requires the passphrase and {@code GetSeedWords}
+ * takes the wallet password; addresses are {@code PubAddressInfo} messages. Those divergences are
+ * listed at the top of the proto and are meant to be upstreamed, so passing this test means bisq2
+ * can point its {@code WalletGrpcClient} at musigd once its copy of the proto has been brought in
+ * line.
  * <p>
  * Run against a musigd started with a wallet directory, e.g.
  * <pre>
@@ -42,10 +47,14 @@ import java.util.concurrent.TimeUnit;
  * <p>
  * The wallet itself is opened (or created) through the {@code OpenOrCreateWallet} RPC as the
  * first check — musigd takes no wallet password on its command line — and is expected to be
- * password-free, as the password checks restore that state on the way out.
+ * protected by {@link #TEST_PASSWORD}, which is what a wallet created by this test gets; the
+ * password check restores that state on the way out. So point musigd at an empty wallet
+ * directory, or at one this test created earlier.
  */
 public class BmpWalletServiceTest {
-    private static final String TEST_PASSWORD = "bmp-wallet-service-test";
+    /** Both follow the wallet's password rules. */
+    private static final String TEST_PASSWORD = "Bmp-Wallet-Test-1";
+    private static final String OTHER_PASSWORD = "Other-Password-2";
     /** A regtest P2WPKH address; only ever used as a send target that is expected to fail. */
     private static final String REGTEST_ADDRESS = "bcrt1qw508d6qejxtdg4y5r3zarvary0c5xw7kygt080";
 
@@ -85,20 +94,20 @@ public class BmpWalletServiceTest {
         check("IsWalletReady", this::isWalletReady);
         check("GetBalance", this::getBalance);
         check("GetSeedWords", this::getSeedWords);
-        check("GetNewAddress + GetUnusedAddress + GetWalletAddresses", this::addresses);
+        check("GetUnusedAddress + GetWalletAddresses", this::addresses);
         check("ListTransactions", this::listTransactions);
         check("ListUtxos", this::listUtxos);
         check("SendToAddress", this::sendToAddress);
         // Mutating, and restores the original state on the way out.
-        check("IsWalletEncrypted + ChangePassword", this::changePasswordRoundTrip);
+        check("ChangePassword", this::changePasswordRoundTrip);
     }
 
     // --- individual checks -------------------------------------------------------------------
 
     private void openOrCreateWallet() {
-        // An empty password: the smoke test expects (and leaves behind) an unprotected wallet.
-        boolean success = stub.openOrCreateWallet(
-                OpenOrCreateWalletRequest.newBuilder().build()).getSuccess();
+        boolean success = stub.openOrCreateWallet(OpenOrCreateWalletRequest.newBuilder()
+                .setPassword(TEST_PASSWORD)
+                .build()).getSuccess();
         assertTrue(success, "OpenOrCreateWallet must report success");
         System.out.println("    wallet opened (or created)");
     }
@@ -123,8 +132,9 @@ public class BmpWalletServiceTest {
     }
 
     private void getSeedWords() {
-        List<String> words =
-                stub.getSeedWords(GetSeedWordsRequest.newBuilder().build()).getSeedWordsList();
+        List<String> words = stub.getSeedWords(GetSeedWordsRequest.newBuilder()
+                .setPassword(TEST_PASSWORD)
+                .build()).getSeedWordsList();
         assertTrue(words.size() == 12 || words.size() == 24,
                 "expected a 12- or 24-word mnemonic, got " + words.size());
         words.forEach(word -> assertTrue(!word.isBlank(), "seed word must not be blank"));
@@ -133,21 +143,24 @@ public class BmpWalletServiceTest {
     }
 
     private void addresses() {
-        String address =
+        PubAddressInfo address =
                 stub.getUnusedAddress(GetUnusedAddressRequest.newBuilder().build()).getAddress();
-        assertTrue(!address.isBlank(), "address must not be blank");
+        assertTrue(!address.getAddress().isBlank(), "address must not be blank");
 
-        String fresh = stub.getNewAddress(GetNewAddressRequest.newBuilder().build()).getAddress();
-        assertTrue(!fresh.isBlank(), "new address must not be blank");
-        assertTrue(!fresh.equals(address), "GetNewAddress must not repeat the last address");
+        PubAddressInfo next =
+                stub.getUnusedAddress(GetUnusedAddressRequest.newBuilder().build()).getAddress();
+        assertTrue(!next.getAddress().isBlank(), "next address must not be blank");
+        assertTrue(!next.equals(address), "GetUnusedAddress must not repeat the last address");
 
-        List<String> all = stub.getWalletAddresses(GetWalletAddressesRequest.newBuilder().build())
-                .getAddressesList();
-        assertTrue(all.contains(address),
-                "a revealed address (" + address + ") must appear among the wallet's addresses");
-        assertTrue(all.contains(fresh),
-                "a new address (" + fresh + ") must appear among the wallet's addresses");
-        System.out.printf("    unused=%s, new=%s, %d address(es) revealed%n", address, fresh, all.size());
+        List<PubAddressInfo> all =
+                stub.getWalletAddresses(GetWalletAddressesRequest.newBuilder().build())
+                        .getAddressesList();
+        assertTrue(all.contains(address), "a revealed address (" + address.getAddress()
+                + ") must appear among the wallet's addresses");
+        assertTrue(all.contains(next), "the next address (" + next.getAddress()
+                + ") must appear among the wallet's addresses");
+        System.out.printf("    unused=%s, next=%s, %d address(es) revealed%n",
+                address.getAddress(), next.getAddress(), all.size());
     }
 
     private void listTransactions() {
@@ -176,7 +189,8 @@ public class BmpWalletServiceTest {
 
     private void sendToAddress() {
         var request = SendToAddressRequest.newBuilder()
-                .setAddress(REGTEST_ADDRESS)
+                .setPassphrase(TEST_PASSWORD)
+                .setAddress(PubAddressInfo.newBuilder().setAddress(REGTEST_ADDRESS))
                 .setAmount(10_000)
                 .build();
         try {
@@ -195,19 +209,22 @@ public class BmpWalletServiceTest {
     }
 
     private void changePasswordRoundTrip() {
-        boolean encryptedBefore = isEncrypted();
-        assertTrue(!encryptedBefore,
-                "expected an unencrypted wallet to start from; refusing to re-key one that "
-                        + "already has a password");
+        assertTrue(BmpWalletProbes.opensWith(stub, TEST_PASSWORD),
+                "expected a wallet protected by the test password to start from; refusing to "
+                        + "re-key one with another password");
 
-        // Setting a password is a change from the empty password.
         stub.changePassword(ChangePasswordRequest.newBuilder()
-                .setNewPassword(TEST_PASSWORD)
+                .setOldPassword(TEST_PASSWORD)
+                .setNewPassword(OTHER_PASSWORD)
                 .build());
-        assertTrue(isEncrypted(), "wallet must report itself encrypted after ChangePassword");
+        assertTrue(BmpWalletProbes.opensWith(stub, OTHER_PASSWORD) &&
+                !BmpWalletProbes.opensWith(stub, TEST_PASSWORD),
+                "wallet must be protected by the new password after ChangePassword");
 
         // The seed must still be readable through the rotated SQLCipher key.
-        assertTrue(!stub.getSeedWords(GetSeedWordsRequest.newBuilder().build())
+        assertTrue(!stub.getSeedWords(GetSeedWordsRequest.newBuilder()
+                        .setPassword(OTHER_PASSWORD)
+                        .build())
                 .getSeedWordsList().isEmpty(), "seed unreadable after re-keying");
 
         try {
@@ -220,19 +237,36 @@ public class BmpWalletServiceTest {
             assertTrue(e.getStatus().getCode() == Status.Code.PERMISSION_DENIED,
                     "expected PERMISSION_DENIED for a wrong password, got " + e.getStatus().getCode());
         }
-        assertTrue(isEncrypted(), "a rejected ChangePassword must leave the wallet encrypted");
+        assertTrue(BmpWalletProbes.opensWith(stub, OTHER_PASSWORD),
+                "a rejected ChangePassword must leave the password as it was");
 
-        // An empty new password removes protection, restoring the original state.
+        // The wallet is always password-protected: a new password breaking the rules, the empty
+        // one included, is refused with the rules spelled out for the user.
+        try {
+            stub.changePassword(ChangePasswordRequest.newBuilder()
+                    .setOldPassword(OTHER_PASSWORD)
+                    .build());
+            fail("ChangePassword accepted an empty new password");
+        } catch (StatusRuntimeException e) {
+            assertTrue(e.getStatus().getCode() == Status.Code.INVALID_ARGUMENT,
+                    "expected INVALID_ARGUMENT for an empty new password, got "
+                            + e.getStatus().getCode());
+            String description = String.valueOf(e.getStatus().getDescription());
+            assertTrue(description.contains("at least 8 characters"),
+                    "the user must be told the password rules, got: " + description);
+        }
+        assertTrue(BmpWalletProbes.opensWith(stub, OTHER_PASSWORD),
+                "a rejected ChangePassword must leave the password as it was");
+
+        // Back to the test password, restoring the original state.
         stub.changePassword(ChangePasswordRequest.newBuilder()
-                .setOldPassword(TEST_PASSWORD)
+                .setOldPassword(OTHER_PASSWORD)
+                .setNewPassword(TEST_PASSWORD)
                 .build());
-        assertTrue(!isEncrypted(), "wallet must report itself unencrypted after the password "
-                + "was removed");
-        System.out.println("    set password -> reject wrong password -> remove password ok");
-    }
-
-    private boolean isEncrypted() {
-        return stub.isWalletEncrypted(IsWalletEncryptedRequest.newBuilder().build()).getEncrypted();
+        assertTrue(BmpWalletProbes.opensWith(stub, TEST_PASSWORD),
+                "wallet must be protected by the test password again");
+        System.out.println("    change password -> reject wrong password -> reject weak password"
+                + " -> change back ok");
     }
 
     // --- tiny test harness -------------------------------------------------------------------

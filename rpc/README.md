@@ -9,10 +9,10 @@ them by `build.rs` (into `src/pb`), the Java code by Maven. The server hosts the
 | `musigrpc.Musig`                      | `rpc.proto`          | The original trade protocol mock-up (see below)                                                                                |
 | `bmp_protocol.BmpProtocolService`     | `bmp_protocol.proto` | Round-based (`Initialize`, `ExecuteRound1`…`5`) interface onto the `protocol` crate's `BMPProtocol`                            |
 | `walletrpc.Wallet`                    | `wallet.proto`       | Experimental wallet and chain notification API, used by `musig-cli`                                                            |
-| `wallet.Wallet`                       | `bmp_wallet.proto`   | Bisq2-facing wallet API backed by a persistent `BMPWallet`; mirrors bisq2's own `wallet.proto` so bisq2 can talk to it unchanged |
+| `wallet.Wallet`                       | `bmp_wallet.proto`   | Bisq2-facing wallet API backed by a persistent `BMPWallet`; derived from bisq2's own `wallet.proto` (see below)                 |
 
 `musigd` serves `Musig` and `walletrpc.Wallet` always, and `wallet.Wallet` when started with `--wallet-dir`.
-`BmpProtocolService` is currently only served by the test daemon in [tests/bmp_service.rs](tests/bmp_service.rs)
+`BmpProtocolService` is currently only served by the test daemon in [tests/test_bmp_service.rs](tests/test_bmp_service.rs)
 (see [Integration tests](#integration-tests-using-testenv-crate)).
 
 #### Trade protocol mock-up (`Musig` service)
@@ -61,6 +61,16 @@ RPC, which carries the wallet password. It syncs over Compact Block Filters from
 <host:port>` (repeatable), re-syncing every `--wallet-poll-secs` seconds; with no peer it does not sync, but all
 non-chain operations still work. `--wallet-network` selects the network (default `regtest`). Transactions are
 broadcast via the Bitcoin Core RPC connection above.
+
+[bmp_wallet.proto](src/main/proto/bmp_wallet.proto) is derived from bisq2's own `wallet/src/main/proto/wallet.proto`
+(same package, service name and field numbers), but it is not a drop-in replacement yet. The wallet is always
+password-protected, so `EncryptWallet` / `DecryptWallet` / `IsWalletEncrypted` are gone, replaced by the authenticated
+`ChangePassword`, and `SendToAddress` requires the passphrase; `GetNewAddress` is gone, `GetSeedWords` takes the wallet
+password, and addresses travel as `PubAddressInfo` messages rather than bare strings. A password set through
+`OpenOrCreateWallet` (when it creates the wallet) or `ChangePassword` must follow the password rules documented on
+`OpenOrCreateWalletRequest` in the proto; one that doesn't is refused with `INVALID_ARGUMENT`, whose message states the
+rules in plain English for the user. These divergences are listed at the top of the proto and are meant to be upstreamed
+into bisq2; until then, bisq2's `WalletGrpcClient` needs matching changes to talk to this service.
 
 ### Building and running the code
 
@@ -147,18 +157,18 @@ e.g. `TESTENV_RPC_URL`, `TESTENV_RPC_USER`, `TESTENV_RPC_PASS` and `TESTENV_P2P_
 2. **Start two test daemons:**
 
 `BmpServiceIntegrationTest` requires two server instances to represent the two parties in the trade (Alice and Bob).
-They are started from an ignored test case in [tests/bmp_service.rs](tests/bmp_service.rs), as `musigd` doesn't serve
+They are started from an ignored test case in [tests/test_bmp_service.rs](tests/test_bmp_service.rs), as `musigd` doesn't serve
 the `BmpProtocolService` yet. Run these commands from the project's root directory, replacing `RPC_URL` and
 `ELECTRUM_URL` with the values printed in step 1. It's best to run them in separate terminal windows so you can monitor
 their output.
 
 *   Server for Bob (port 50051):
     ```sh
-    ELECTRUM_URL=127.0.0.1:33575 RPC_URL=http://127.0.0.1:46111 MUSIGD_PORT=50051 cargo test -p rpc --test bmp_service -- --ignored run_musigd_server --nocapture
+    ELECTRUM_URL=127.0.0.1:33575 RPC_URL=http://127.0.0.1:46111 MUSIGD_PORT=50051 cargo test -p rpc --test test_bmp_service -- --ignored run_musigd_server --nocapture
     ```
 *   Server for Alice (port 50052):
     ```sh
-    ELECTRUM_URL=127.0.0.1:33575 RPC_URL=http://127.0.0.1:46111 MUSIGD_PORT=50052 cargo test -p rpc --test bmp_service -- --ignored run_musigd_server --nocapture
+    ELECTRUM_URL=127.0.0.1:33575 RPC_URL=http://127.0.0.1:46111 MUSIGD_PORT=50052 cargo test -p rpc --test test_bmp_service -- --ignored run_musigd_server --nocapture
     ```
 
 3. **Build `musigd`:**

@@ -14,14 +14,19 @@ use chain::CBFScanner;
 use rpc::bmp_wallet_service::{BMPWalletServiceImpl, BmpWalletImpl, BmpWalletServer};
 use rpc::pb::bmp_wallet::wallet_client::WalletClient;
 use rpc::pb::bmp_wallet::{
-    ChangePasswordRequest, GetBalanceRequest, GetNewAddressRequest, GetSeedWordsRequest,
-    IsWalletEncryptedRequest, IsWalletReadyRequest, OpenOrCreateWalletRequest,
+    ChangePasswordRequest, GetBalanceRequest, GetSeedWordsRequest, GetUnusedAddressRequest,
+    GetWalletAddressesRequest, IsWalletReadyRequest, OpenOrCreateWalletRequest, PubAddressInfo,
+    SendToAddressRequest,
 };
 use tokio::net::TcpListener;
 use tokio::task::JoinHandle;
 use tonic::Code;
 use tonic::transport::Channel;
 use tonic::transport::server::TcpIncoming;
+
+/// Passwords following the wallet's password rules.
+const PASSWORD: &str = "S3cret!!";
+const NEW_PASSWORD: &str = "N3w-Pass!";
 
 /// A running `wallet.Wallet` gRPC server over a fresh [`BMPWalletServiceImpl`] (no chain data
 /// source, no broadcaster) on `wallet_dir`, plus a connected client.
@@ -77,19 +82,22 @@ impl WalletServiceFixture {
             .await
     }
 
-    async fn is_encrypted(&mut self) -> Result<bool, tonic::Status> {
-        Ok(self
-            .client
-            .is_wallet_encrypted(IsWalletEncryptedRequest {})
-            .await?
-            .into_inner()
-            .encrypted)
+    /// Whether `password` is the one currently protecting the wallet, probed by re-opening the
+    /// (already open) wallet with it.
+    async fn opens_with(&mut self, password: &str) -> Result<bool, tonic::Status> {
+        match self.open(password).await {
+            Ok(response) => Ok(response.into_inner().success),
+            Err(status) if status.code() == Code::PermissionDenied => Ok(false),
+            Err(status) => Err(status),
+        }
     }
 
-    async fn seed_words(&mut self) -> Result<Vec<String>, tonic::Status> {
+    async fn seed_words(&mut self, password: &str) -> Result<Vec<String>, tonic::Status> {
         Ok(self
             .client
-            .get_seed_words(GetSeedWordsRequest {})
+            .get_seed_words(GetSeedWordsRequest {
+                password: password.to_owned(),
+            })
             .await?
             .into_inner()
             .seed_words)
@@ -100,12 +108,25 @@ impl WalletServiceFixture {
     }
 }
 
+/// Asserts that `result` is the `INVALID_ARGUMENT` a password breaking the password rules gets,
+/// with the rules spelled out for the user.
+fn assert_weak_password<T>(result: Result<tonic::Response<T>, tonic::Status>) {
+    let Err(err) = result else {
+        panic!("a password breaking the rules must be rejected");
+    };
+    assert_eq!(err.code(), Code::InvalidArgument, "got: {err}");
+    assert!(
+        err.message().contains("at least 8 characters"),
+        "the user must be told the password rules, got: {}",
+        err.message()
+    );
+}
+
 #[tokio::test(flavor = "multi_thread")]
-async fn wallet_lifecycle_over_grpc() -> anyhow::Result<()> {
+async fn operations_before_open_are_refused_over_grpc() -> anyhow::Result<()> {
     let dir = tempfile::tempdir()?;
     let mut fixture = WalletServiceFixture::start(dir.path()).await?;
 
-    // --- Before OpenOrCreateWallet, wallet operations are refused as a precondition failure ---
     let err = fixture
         .client
         .get_balance(GetBalanceRequest {})
@@ -115,7 +136,7 @@ async fn wallet_lifecycle_over_grpc() -> anyhow::Result<()> {
 
     let err = fixture
         .client
-        .get_new_address(GetNewAddressRequest {})
+        .get_unused_address(GetUnusedAddressRequest {})
         .await
         .expect_err("no addresses before the wallet is opened");
     assert_eq!(err.code(), Code::FailedPrecondition, "got: {err}");
@@ -127,9 +148,24 @@ async fn wallet_lifecycle_over_grpc() -> anyhow::Result<()> {
         .into_inner()
         .ready;
     assert!(!ready, "an unopened wallet must not report itself ready");
+    fixture.stop();
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn wallet_lifecycle_over_grpc() -> anyhow::Result<()> {
+    let dir = tempfile::tempdir()?;
+    let mut fixture = WalletServiceFixture::start(dir.path()).await?;
+
+    // --- OpenOrCreateWallet refuses to create a wallet with a password breaking the rules ---
+    for weak in ["", "short"] {
+        assert_weak_password(fixture.open(weak).await);
+    }
 
     // --- OpenOrCreateWallet creates a fresh, password-protected wallet ---
-    assert!(fixture.open("s3cret").await?.into_inner().success);
+    // (which, had a weak password created one above, would be refused as a wrong password)
+    assert!(fixture.open(PASSWORD).await?.into_inner().success);
     let ready = fixture
         .client
         .is_wallet_ready(IsWalletReadyRequest {})
@@ -140,10 +176,10 @@ async fn wallet_lifecycle_over_grpc() -> anyhow::Result<()> {
         ready,
         "with no chain data source the wallet is ready as soon as it is open"
     );
-    assert!(fixture.is_encrypted().await?, "created with a password");
-
-    let seed = fixture.seed_words().await?;
+    let seed = fixture.seed_words(PASSWORD).await?;
     assert_eq!(seed.len(), 24);
+    let err = fixture.seed_words("wrong").await.unwrap_err();
+    assert_eq!(err.code(), Code::PermissionDenied, "got: {err}");
 
     let balance = fixture
         .client
@@ -153,7 +189,7 @@ async fn wallet_lifecycle_over_grpc() -> anyhow::Result<()> {
     assert_eq!(balance.balance, 0, "a fresh wallet starts empty");
 
     // --- Re-opening is idempotent, but only with the right password ---
-    assert!(fixture.open("s3cret").await?.into_inner().success);
+    assert!(fixture.open(PASSWORD).await?.into_inner().success);
     let err = fixture
         .open("wrong")
         .await
@@ -161,40 +197,39 @@ async fn wallet_lifecycle_over_grpc() -> anyhow::Result<()> {
     assert_eq!(err.code(), Code::PermissionDenied, "got: {err}");
 
     // --- ChangePassword requires the current password... ---
+    // (even when the new one would be refused as well: proving to hold the current password
+    // comes first)
     let err = fixture
         .change_password("wrong", "irrelevant")
         .await
         .expect_err("a wrong old password must be rejected");
     assert_eq!(err.code(), Code::PermissionDenied, "got: {err}");
     assert!(
-        fixture.is_encrypted().await?,
+        fixture.opens_with(PASSWORD).await?,
         "a rejected change must leave the wallet as it was"
     );
 
     // --- ...and with it, re-keys the wallet ---
     assert!(
         fixture
-            .change_password("s3cret", "n3w")
+            .change_password(PASSWORD, NEW_PASSWORD)
             .await?
             .into_inner()
             .success
     );
-    assert!(fixture.is_encrypted().await?);
+    assert!(fixture.opens_with(NEW_PASSWORD).await?);
     assert_eq!(
-        fixture.seed_words().await?,
+        fixture.seed_words(NEW_PASSWORD).await?,
         seed,
         "the seed must survive the re-key"
     );
 
-    // An empty new password removes protection.
-    assert!(
-        fixture
-            .change_password("n3w", "")
-            .await?
-            .into_inner()
-            .success
-    );
-    assert!(!fixture.is_encrypted().await?);
+    // A new password breaking the rules is refused, the empty one included, since the wallet is
+    // always password-protected; the current password stays in force.
+    for weak in ["", "short"] {
+        assert_weak_password(fixture.change_password(NEW_PASSWORD, weak).await);
+    }
+    assert!(fixture.opens_with(NEW_PASSWORD).await?);
 
     // --- The wallet (and its final password state) persists across a server restart ---
     fixture.stop();
@@ -205,13 +240,77 @@ async fn wallet_lifecycle_over_grpc() -> anyhow::Result<()> {
         .await
         .expect_err("a wrong password must not open the persisted wallet");
     assert_eq!(err.code(), Code::PermissionDenied, "got: {err}");
+    let err = fixture
+        .open(PASSWORD)
+        .await
+        .expect_err("the password the wallet was created with has been replaced");
+    assert_eq!(err.code(), Code::PermissionDenied, "got: {err}");
 
-    assert!(fixture.open("").await?.into_inner().success);
+    assert!(fixture.open(NEW_PASSWORD).await?.into_inner().success);
     assert_eq!(
-        fixture.seed_words().await?,
+        fixture.seed_words(NEW_PASSWORD).await?,
         seed,
         "reloading must yield the same wallet, not a fresh one"
     );
+    fixture.stop();
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn addresses_travel_as_address_infos_over_grpc() -> anyhow::Result<()> {
+    let dir = tempfile::tempdir()?;
+    let mut fixture = WalletServiceFixture::start(dir.path()).await?;
+    assert!(fixture.open(PASSWORD).await?.into_inner().success);
+
+    let address = fixture
+        .client
+        .get_unused_address(GetUnusedAddressRequest {})
+        .await?
+        .into_inner()
+        .address
+        .expect("GetUnusedAddress must return an address");
+    assert!(
+        address.address.starts_with("bcrt1"),
+        "got: {}",
+        address.address
+    );
+
+    let addresses = fixture
+        .client
+        .get_wallet_addresses(GetWalletAddressesRequest {})
+        .await?
+        .into_inner()
+        .addresses;
+    assert_eq!(addresses, [address], "the one address revealed so far");
+
+    // An address that doesn't parse is refused before it reaches the wallet.
+    let err = fixture
+        .client
+        .send_to_address(SendToAddressRequest {
+            passphrase: PASSWORD.to_owned(),
+            address: Some(PubAddressInfo {
+                address: "not-an-address".to_owned(),
+            }),
+            amount: 1_000,
+            fee_rate_per_kwu: None,
+        })
+        .await
+        .expect_err("a malformed address must be rejected");
+    assert_eq!(err.code(), Code::InvalidArgument, "got: {err}");
+
+    // So is a request with no address at all.
+    let err = fixture
+        .client
+        .send_to_address(SendToAddressRequest {
+            passphrase: PASSWORD.to_owned(),
+            address: None,
+            amount: 1_000,
+            fee_rate_per_kwu: None,
+        })
+        .await
+        .expect_err("a missing address must be rejected");
+    assert_eq!(err.code(), Code::InvalidArgument, "got: {err}");
     fixture.stop();
 
     Ok(())

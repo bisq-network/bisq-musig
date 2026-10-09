@@ -27,13 +27,14 @@ use thiserror::Error;
 
 use crate::chain_data_source::ChainDataSource;
 use crate::coin_selection::{AlwaysSpendImportedFirst, SpendImportedOnly};
+use crate::password::{InvalidPassword, Password};
 use crate::persisted::{BMPDatabase, BMPWalletPersister as _, DBStorage, PersistenceError};
 use crate::protocol_wallet_api::{
     ProtocolWalletApi, WalletExt, finish_standard_psbt, internal_key_at_index,
     sign_selected_inputs_with,
 };
 use crate::utils::{derive_key_from_password, key_verifier};
-use crate::wallet_info::{TxInfo, TxInputInfo, TxOutputInfo, UtxoInfo};
+use crate::wallet_info::{PubAddressInfo, TxInfo, TxInputInfo, TxOutputInfo, UtxoInfo};
 /// An external (non-HD) private key imported into the wallet, together with the Taproot output
 /// template it controls: `tr(P, tap_tree)` where `P` is the (untweaked) internal key derived from
 /// `secret`. A missing tap tree means a key-path-only output (`tr(P)`, as in BIP86).
@@ -110,9 +111,6 @@ pub struct BMPWallet {
     /// plaintext password — or the key itself — in memory: the derived key only exists
     /// transiently, for `PRAGMA key`/`rekey`, and is zeroized right after use.
     key_verifier: [u8; 32],
-    /// Whether the user actually set a password. The database is always encrypted — an empty
-    /// password still yields a valid Argon2 key — so this records intent, not mechanism.
-    encrypted: bool,
 }
 
 pub type Result<T, E = WalletErrorKind> = std::result::Result<T, E>;
@@ -125,8 +123,7 @@ pub enum WalletErrorKind {
     Persistence(#[from] PersistenceError),
     #[error("failed to derive database key: {0}")]
     KeyDerivation(String),
-    #[error("Invalid Password provided")]
-    InvalidPassword,
+    InvalidPassword(#[from] InvalidPassword),
     SignerError(#[from] SignerError),
     #[error("not a Taproot address")]
     NotTaprootAddress,
@@ -280,7 +277,7 @@ impl BMPWallet {
     }
 
     /// Every address revealed so far on either keychain, external first.
-    pub fn list_wallet_addresses(&self) -> Vec<String> {
+    pub fn list_wallet_addresses(&self) -> Vec<PubAddressInfo> {
         [KeychainKind::External, KeychainKind::Internal]
             .into_iter()
             .flat_map(|kind| {
@@ -290,8 +287,8 @@ impl BMPWallet {
                     .derivation_index(kind)
                     .into_iter()
                     .flat_map(move |last_revealed| {
-                        (0..=last_revealed).map(move |index| {
-                            self.wallet.peek_address(kind, index).address.to_string()
+                        (0..=last_revealed).map(move |index| PubAddressInfo {
+                            address: self.wallet.peek_address(kind, index).address,
                         })
                     })
             })
@@ -306,10 +303,10 @@ impl BMPWallet {
     }
 
     /// Renders `script_pubkey` as an address, or `None` if it isn't a standard one.
-    fn address_for_script(&self, script_pubkey: &ScriptBuf) -> Option<String> {
+    fn address_for_script(&self, script_pubkey: &ScriptBuf) -> Option<PubAddressInfo> {
         Address::from_script(script_pubkey, self.wallet.network())
             .ok()
-            .map(|address| address.to_string())
+            .map(|address| PubAddressInfo { address })
     }
 
     /// Confirmation count for a chain position: `0` while unconfirmed.
@@ -413,27 +410,15 @@ impl BMPWallet {
             .collect()
     }
 
-    /// Whether the user has set a wallet password.
-    ///
-    /// Note the database is *always* SQLCipher-encrypted — an empty password still derives a
-    /// valid Argon2 key — so this reports whether a password was chosen, not whether the file
-    /// on disk is ciphertext.
-    pub const fn is_encrypted(&self) -> bool {
-        self.encrypted
-    }
-
     /// Checks `password` against the key currently protecting the database, without needing the
     /// plaintext password (or the key itself) to have been retained: the freshly derived key is
     /// compared by its one-way fingerprint and dropped again.
-    pub fn check_password(&self, password: &str) -> Result<bool> {
+    pub fn check_password(&self, password: &Password) -> Result<bool> {
         let key = derive_key_from_password(password, &self.salt)?;
         Ok(key_verifier(&key) == self.key_verifier)
     }
 
     /// Re-keys the database to `new_password`, rotating the Argon2 salt at the same time.
-    ///
-    /// Passing an empty `new_password` leaves the file encrypted with a well-known key, which is
-    /// how [`Self::change_password`] removes protection.
     ///
     /// The rotation is staged so that the database is at no point keyed by a salt that exists
     /// nowhere on disk (a crash then would make the wallet permanently unopenable): the new salt
@@ -444,7 +429,7 @@ impl BMPWallet {
     /// This is the raw primitive and authenticates nobody: `old_password` is only used to undo
     /// the re-key when committing the new salt fails. Every caller must verify it first — see
     /// [`Self::change_password`].
-    fn rekey(&mut self, old_password: &str, new_password: &str) -> Result<()> {
+    fn rekey(&mut self, old_password: &Password, new_password: &Password) -> Result<()> {
         let mut salt = [0u8; 16];
         rand::rng().fill_bytes(&mut salt);
         let new_key = derive_key_from_password(new_password, &salt)?;
@@ -469,21 +454,23 @@ impl BMPWallet {
 
         self.salt = salt.to_vec();
         self.key_verifier = key_verifier(&new_key);
-        self.encrypted = !new_password.is_empty();
         Ok(())
     }
 
     /// Changes the wallet password from `old_password` to `new_password`, re-keying the
     /// database and rotating the Argon2 salt.
     ///
-    /// `old_password` must be the password currently in force — the empty string for a wallet
-    /// that has no password yet — so nobody who cannot present the current password can rotate
-    /// the key and lock the owner out. An empty `new_password` removes password protection.
-    /// This single method subsumes the former encrypt/decrypt operations: encrypting is
-    /// `change_password("", password)` and decrypting is `change_password(password, "")`.
-    pub fn change_password(&mut self, old_password: &str, new_password: &str) -> Result<()> {
+    /// `old_password` must be the password currently in force, so nobody who cannot present it
+    /// can rotate the key and lock the owner out. The wallet is always password-protected: a
+    /// password can only be replaced, never removed, and `new_password` follows the password rules
+    /// by construction (see [`Password`]).
+    pub fn change_password(
+        &mut self,
+        old_password: &Password,
+        new_password: &Password,
+    ) -> Result<()> {
         if !self.check_password(old_password)? {
-            return Err(WalletErrorKind::InvalidPassword);
+            return Err(InvalidPassword.into());
         }
         self.rekey(old_password, new_password)
     }
@@ -573,7 +560,7 @@ impl BMPWallet {
         storage: DBStorage,
         salt: Vec<u8>,
         network: Network,
-        password: &str,
+        password: &Password,
     ) -> Result<Self> {
         let mut db = storage
             .open(Self::DB_NAME)
@@ -588,7 +575,7 @@ impl BMPWallet {
             .map_err(|e| match e {
                 bdk_wallet::LoadWithPersistError::Persist(rusqlite::Error::SqliteFailure(sqlite_err, _)) => {
                     match sqlite_err.code {
-                        rusqlite::ErrorCode::NotADatabase | rusqlite::ErrorCode::PermissionDenied => WalletErrorKind::InvalidPassword,
+                        rusqlite::ErrorCode::NotADatabase | rusqlite::ErrorCode::PermissionDenied => InvalidPassword.into(),
                         _ => WalletErrorKind::message(sqlite_err.to_string()),
                     }
                 }
@@ -614,7 +601,6 @@ impl BMPWallet {
                 last_unused_address: None,
                 salt,
                 key_verifier: key_verifier(&key),
-                encrypted: !password.is_empty(),
             });
         }
 
@@ -677,11 +663,14 @@ pub trait WalletApi {
     const SEEDS_TABLE_NAME: &'static str;
     const IMPORTED_KEYS_TABLE_NAME: &'static str;
 
-    fn new(storage: DBStorage, password: &str, network: Network) -> Result<Self>
+    /// Creates a fresh wallet in `storage`, protected by `password`.
+    fn new(storage: DBStorage, password: &Password, network: Network) -> Result<Self>
     where
         Self: Sized;
 
-    fn load_wallet(storage: DBStorage, network: Network, password: &str) -> Result<Self>
+    /// Opens the wallet in `storage`; a wrong `password` fails with
+    /// [`WalletErrorKind::InvalidPassword`].
+    fn load_wallet(storage: DBStorage, network: Network, password: &Password) -> Result<Self>
     where
         Self: Sized;
 
@@ -748,7 +737,7 @@ impl WalletApi for BMPWallet {
         Ok(())
     }
 
-    fn new(storage: DBStorage, password: &str, network: Network) -> Result<Self>
+    fn new(storage: DBStorage, password: &Password, network: Network) -> Result<Self>
     where
         Self: Sized,
     {
@@ -808,7 +797,6 @@ impl WalletApi for BMPWallet {
             last_unused_address: None,
             salt,
             key_verifier: key_verifier(&key),
-            encrypted: !password.is_empty(),
         })
     }
 
@@ -895,7 +883,7 @@ impl WalletApi for BMPWallet {
 
     // For already created wallets this will load stored data
     // This will also load the imported keys
-    fn load_wallet(storage: DBStorage, network: Network, password: &str) -> Result<Self> {
+    fn load_wallet(storage: DBStorage, network: Network, password: &Password) -> Result<Self> {
         if let Some(p) = storage.base_path() {
             tracing::debug!(path = %p.display(), "Loading wallet database.");
         } else {
