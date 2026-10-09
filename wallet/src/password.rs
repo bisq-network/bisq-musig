@@ -51,18 +51,21 @@ impl Password {
     /// The password rules as a regular expression: at least 8 characters, among them at least one
     /// lowercase letter, one uppercase letter, one decimal digit and one character that is
     /// neither letter nor digit. Letters and digits are Unicode-aware (`\p{Ll}`, `\p{Lu}`,
-    /// `\p{Nd}`), so a password in any script qualifies. The lookaheads keep the pattern
-    /// portable, e.g. Java's `Pattern` understands it as is, so a client can check a password
-    /// before sending it.
+    /// `\p{Nd}`), and a letter of a script without case (`\p{Lo}`: Chinese, Japanese, Korean,
+    /// Arabic, Hebrew, Thai, …) counts as both lowercase and uppercase, so a password in any
+    /// script qualifies. The lookaheads keep the pattern portable, e.g. Java's `Pattern`
+    /// understands it as is, so a client can check a password before sending it.
     ///
     /// [`Self::REQUIREMENTS`] states the same rules in plain English; keep the two in step.
     pub const PATTERN: &'static str =
-        r"^(?=.*\p{Ll})(?=.*\p{Lu})(?=.*\p{Nd})(?=.*[^\p{L}\p{Nd}]).{8,}$";
+        r"^(?=.*[\p{Ll}\p{Lo}])(?=.*[\p{Lu}\p{Lo}])(?=.*\p{Nd})(?=.*[^\p{L}\p{Nd}]).{8,}$";
 
     /// [`Self::PATTERN`] in plain English, for the user whose password was rejected.
     pub const REQUIREMENTS: &'static str = "The password must be at least 8 characters long and \
         contain at least one lowercase letter, one uppercase letter, one number and one special \
-        character (any character that is neither a letter nor a number, such as ! ? # or %).";
+        character (any character that is neither a letter nor a number, such as ! ? # or %). A \
+        letter of a script without upper- and lowercase, such as Chinese or Arabic, counts as \
+        both.";
 
     /// Checks an *attempt* at a password in force, as entered by a user proving they know it,
     /// against [`Self::PATTERN`] and wraps it.
@@ -143,6 +146,33 @@ mod tests {
             ("PASSW0RD!", "no lowercase letter"),
             ("Password!", "no number"),
             ("Passw0rd1", "no special character"),
+        ] {
+            assert_eq!(
+                candidate.parse::<Password>().unwrap_err(),
+                WeakPassword,
+                "{candidate:?} should be rejected: {broken_rule}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_script_without_case_needs_no_case_variety() {
+        for candidate in [
+            "密码密码密码1!",
+            "パスワード#2024",
+            "كلمة-السر-2024",
+            "รหัสผ่าน#2024",
+        ] {
+            assert!(
+                candidate.parse::<Password>().is_ok(),
+                "{candidate:?} should be accepted"
+            );
+        }
+        // The other rules still apply.
+        for (candidate, broken_rule) in [
+            ("密码1!", "only 4 characters"),
+            ("密码密码密码!!", "no number"),
+            ("密码密码密码12", "no special character"),
         ] {
             assert_eq!(
                 candidate.parse::<Password>().unwrap_err(),

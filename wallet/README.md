@@ -11,7 +11,8 @@ It currently provides the following features:
     password with Argon2; the salt is stored next to the database as `<dbname>.salt`
   - the wallet password is a `Password` (`wallet::password`), which can only be built from a string that follows the
     password rules (at least 8 characters, with a lowercase letter, an uppercase letter, a number and a special
-    character); a rejected password's error states the rules in plain English
+    character; a letter of a script without case, such as Chinese or Arabic, counts as both lowercase and uppercase);
+    a rejected password's error states the rules in plain English
   - the wallet password can be checked and changed, but not removed
   - importing of external private keys (e.g. for the swap tx), which are signed with alongside the HD keys
   - sending to an address, listing addresses, UTXOs and transactions

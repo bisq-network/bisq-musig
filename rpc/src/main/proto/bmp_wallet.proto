@@ -139,9 +139,10 @@ message GetSeedWordsResponse {
 message OpenOrCreateWalletRequest {
     // The wallet password. When this call creates the wallet, it must follow the password rules:
     // at least 8 characters, among them at least one lowercase letter, one uppercase letter, one
-    // number and one special character (neither letter nor number). As a regular expression,
-    // which a client can use to check a password before sending it:
-    //   ^(?=.*\p{Ll})(?=.*\p{Lu})(?=.*\p{Nd})(?=.*[^\p{L}\p{Nd}]).{8,}$
+    // number and one special character (neither letter nor number); a letter of a script without
+    // case, such as Chinese or Arabic, counts as both lowercase and uppercase. As a regular
+    // expression, which a client can use to check a password before sending it:
+    //   ^(?=.*[\p{Ll}\p{Lo}])(?=.*[\p{Lu}\p{Lo}])(?=.*\p{Nd})(?=.*[^\p{L}\p{Nd}]).{8,}$
     // The server's `wallet::password::Password` is authoritative; a rejected password fails with
     // INVALID_ARGUMENT, whose message states the rules in plain English for the user.
     string password = 1;
