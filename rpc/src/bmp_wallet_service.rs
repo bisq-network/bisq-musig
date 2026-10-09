@@ -24,6 +24,7 @@ use ::wallet::bmp_wallet::{BMPWallet, WalletApi as _, WalletErrorKind};
 use ::wallet::chain_data_source::ChainDataSource;
 use ::wallet::password::{InvalidPassword, Password, WeakPassword};
 use ::wallet::wallet_info::{PubAddressInfo, TxInfo, TxOutputInfo, UtxoInfo};
+use anyhow::Context as _;
 use bdk_bitcoind_rpc::bitcoincore_rpc::{Client, RpcApi as _};
 use bdk_wallet::Balance;
 use bdk_wallet::bitcoin::address::{NetworkUnchecked, ParseError};
@@ -326,39 +327,19 @@ impl<S: ChainDataSource + Send + Sync + 'static> BmpWalletService for BMPWalletS
         fs::create_dir_all(&self.wallet_dir)?;
         let db_path = self.wallet_dir.join(BMPWallet::DB_NAME);
         let wallet = if db_path.exists() {
-            let wallet = match BMPWallet::load_wallet(
+            // The error keeps its type under the context, so a wrong password still surfaces
+            // as such (see `status_from`).
+            let wallet = BMPWallet::load_wallet(
                 self.wallet_dir.as_path().into(),
                 self.network,
                 &Password::check(password)?,
-            ) {
-                Ok(wallet) => wallet,
-                Err(err) => match err {
-                    WalletErrorKind::InvalidPassword => {
-                        return Err(anyhow::Error::new(InvalidPassword).context(format!(
-                            "failed to open the existing wallet at {} (wrong password)",
-                            db_path.display()
-                        )));
-                    }
-                    WalletErrorKind::Persistence(err) => {
-                        return Err(anyhow::Error::msg(format!(
-                            "failed to open the existing wallet at {}: persistence error: {err}",
-                            db_path.display()
-                        )));
-                    }
-                    WalletErrorKind::Generic(message) => {
-                        return Err(anyhow::Error::msg(format!(
-                            "failed to open the existing wallet at {}: {message}",
-                            db_path.display()
-                        )));
-                    }
-                    other => {
-                        return Err(anyhow::Error::msg(format!(
-                            "failed to open the existing wallet at {}: {other}",
-                            db_path.display()
-                        )));
-                    }
-                },
-            };
+            )
+            .with_context(|| {
+                format!(
+                    "failed to open the existing wallet at {}",
+                    db_path.display()
+                )
+            })?;
             info!(dir = %self.wallet_dir.display(), "Loaded the existing BMP wallet.");
             wallet
         } else {
@@ -683,20 +664,34 @@ impl wallet_server::Wallet for BmpWalletImpl {
 /// password rules is a bad argument whose message tells the user how to fix it
 /// (`INVALID_ARGUMENT`), and everything else is a server fault (`INTERNAL`).
 fn status_from(error: &anyhow::Error) -> Status {
+    // The alternate form includes the causes, e.g. "failed to open the existing wallet at …:
+    // invalid wallet password", where `to_string()` would stop at the context.
+    let message = format!("{error:#}");
     if error.downcast_ref::<WalletNotOpen>().is_some() {
-        Status::failed_precondition(error.to_string())
-    } else if error.downcast_ref::<InvalidPassword>().is_some() {
-        Status::permission_denied(error.to_string())
+        Status::failed_precondition(message)
+    } else if is_invalid_password(error) {
+        Status::permission_denied(message)
     } else if error.downcast_ref::<WeakPassword>().is_some() {
         // The message is the password rules in plain English, meant for the user's eyes.
-        Status::invalid_argument(error.to_string())
+        Status::invalid_argument(message)
     } else if error.downcast_ref::<ParseError>().is_some() {
         // A malformed address, or one for another network: the client's fault, not ours.
-        Status::invalid_argument(format!("invalid address: {error}"))
+        Status::invalid_argument(format!("invalid address: {message}"))
     } else {
-        error!("Wallet operation failed: {error:#}");
-        Status::internal(error.to_string())
+        error!("Wallet operation failed: {message}");
+        Status::internal(message)
     }
+}
+
+/// Whether `error` is a wrong wallet password, whichever layer caught it: the service, checking
+/// a password itself ([`InvalidPassword`]), or the wallet, when a load or re-key was refused
+/// ([`WalletErrorKind::InvalidPassword`], which wraps the same error).
+fn is_invalid_password(error: &anyhow::Error) -> bool {
+    error.downcast_ref::<InvalidPassword>().is_some()
+        || matches!(
+            error.downcast_ref::<WalletErrorKind>(),
+            Some(WalletErrorKind::InvalidPassword(_))
+        )
 }
 
 // Conversions from the `wallet` crate's transport-agnostic views to the generated protobuf types.
@@ -911,7 +906,7 @@ mod tests {
         // The seed is only revealed to the holder of the password.
         let err = service.seed_words("wrong").await.unwrap_err();
         assert!(
-            err.downcast_ref::<InvalidPassword>().is_some(),
+            is_invalid_password(&err),
             "expected InvalidPassword, got: {err}"
         );
 
@@ -919,19 +914,24 @@ mod tests {
         service.open_or_create_wallet(PASSWORD).await.unwrap();
         let err = service.open_or_create_wallet("wrong").await.unwrap_err();
         assert!(
-            err.downcast_ref::<InvalidPassword>().is_some(),
+            is_invalid_password(&err),
             "expected InvalidPassword, got: {err}"
         );
 
         // A fresh service on the same directory must load the persisted wallet, not create a
-        // new one — and only for the holder of the password.
+        // new one — and only for the holder of the password. A wrong password that follows the
+        // rules gets as far as the wallet, whose own refusal must come out the same way.
         let reloaded =
             BMPWalletServiceImpl::<NoopChainDataSource>::new(dir.path(), Network::Regtest);
-        let err = reloaded.open_or_create_wallet("wrong").await.unwrap_err();
+        let err = reloaded
+            .open_or_create_wallet(NEW_PASSWORD)
+            .await
+            .unwrap_err();
         assert!(
-            err.downcast_ref::<InvalidPassword>().is_some(),
+            is_invalid_password(&err),
             "a wrong password must not open (or overwrite!) the existing wallet, got: {err}"
         );
+        assert_eq!(status_from(&err).code(), tonic::Code::PermissionDenied);
         reloaded.open_or_create_wallet(PASSWORD).await.unwrap();
         assert_eq!(reloaded.seed_words(PASSWORD).await.unwrap(), seed);
     }
@@ -1009,7 +1009,7 @@ mod tests {
             .await
             .unwrap_err();
         assert!(
-            err.downcast_ref::<InvalidPassword>().is_some(),
+            is_invalid_password(&err),
             "wrong password must be rejected, got: {err}"
         );
         service
@@ -1054,7 +1054,7 @@ mod tests {
             .await
             .unwrap_err();
         assert!(
-            err.downcast_ref::<InvalidPassword>().is_some(),
+            is_invalid_password(&err),
             "expected InvalidPassword, got: {err}"
         );
     }

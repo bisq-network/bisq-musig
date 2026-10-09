@@ -1116,7 +1116,7 @@ mod tests {
         let Err(err) = wallet.change_password(&attacker, &attacker) else {
             panic!("re-keying without the current password must fail");
         };
-        assert!(matches!(err, WalletErrorKind::InvalidPassword));
+        assert!(matches!(err, WalletErrorKind::InvalidPassword(_)));
 
         assert!(
             wallet.check_password(&test_password())?,

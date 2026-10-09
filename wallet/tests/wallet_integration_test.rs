@@ -666,5 +666,5 @@ fn load_wallet_rejects_a_wrong_password() {
 
     let wrong: Password = "Wrong#Pw123".parse().unwrap();
     let lw = BMPWallet::load_wallet(dir.into(), Network::Regtest, &wrong);
-    assert!(matches!(lw, Err(WalletErrorKind::InvalidPassword)));
+    assert!(matches!(lw, Err(WalletErrorKind::InvalidPassword(_))));
 }

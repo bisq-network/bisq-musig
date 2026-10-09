@@ -27,7 +27,7 @@ use thiserror::Error;
 
 use crate::chain_data_source::ChainDataSource;
 use crate::coin_selection::{AlwaysSpendImportedFirst, SpendImportedOnly};
-use crate::password::Password;
+use crate::password::{InvalidPassword, Password};
 use crate::persisted::{BMPDatabase, BMPWalletPersister as _, DBStorage, PersistenceError};
 use crate::protocol_wallet_api::{
     ProtocolWalletApi, WalletExt, finish_standard_psbt, internal_key_at_index,
@@ -123,8 +123,7 @@ pub enum WalletErrorKind {
     Persistence(#[from] PersistenceError),
     #[error("failed to derive database key: {0}")]
     KeyDerivation(String),
-    #[error("Invalid Password provided")]
-    InvalidPassword,
+    InvalidPassword(#[from] InvalidPassword),
     SignerError(#[from] SignerError),
     #[error("not a Taproot address")]
     NotTaprootAddress,
@@ -471,7 +470,7 @@ impl BMPWallet {
         new_password: &Password,
     ) -> Result<()> {
         if !self.check_password(old_password)? {
-            return Err(WalletErrorKind::InvalidPassword);
+            return Err(InvalidPassword.into());
         }
         self.rekey(old_password, new_password)
     }
@@ -576,7 +575,7 @@ impl BMPWallet {
             .map_err(|e| match e {
                 bdk_wallet::LoadWithPersistError::Persist(rusqlite::Error::SqliteFailure(sqlite_err, _)) => {
                     match sqlite_err.code {
-                        rusqlite::ErrorCode::NotADatabase | rusqlite::ErrorCode::PermissionDenied => WalletErrorKind::InvalidPassword,
+                        rusqlite::ErrorCode::NotADatabase | rusqlite::ErrorCode::PermissionDenied => InvalidPassword.into(),
                         _ => WalletErrorKind::message(sqlite_err.to_string()),
                     }
                 }
