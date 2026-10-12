@@ -14,6 +14,7 @@ bmp_tracing = { path = "bmp_tracing" }
 chain = { path = "chain" }
 clap = { version = "4.6.5", features = ["derive"] }
 const_format = "0.2.36"
+fancy-regex = "0.19.2"
 hex = "0.4.3"
 musig2 = { version = "0.4.1", features = ["rand"] }
 protocol = { path = "protocol" }

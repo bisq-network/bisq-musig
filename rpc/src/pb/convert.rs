@@ -37,21 +37,6 @@ pub(crate) mod redact {
         serializer.serialize_str(PLACEHOLDER)
     }
 
-    // `serialize_with` hands us the field by reference, so `&Option<_>` is forced here.
-    #[expect(
-        clippy::ref_option,
-        reason = "signature is dictated by serde's serialize_with"
-    )]
-    pub fn opt_string<S: Serializer>(
-        value: &Option<String>,
-        serializer: S,
-    ) -> Result<S::Ok, S::Error> {
-        match value {
-            Some(_) => serializer.serialize_some(PLACEHOLDER),
-            None => serializer.serialize_none(),
-        }
-    }
-
     pub fn string_vec<S: Serializer>(value: &[String], serializer: S) -> Result<S::Ok, S::Error> {
         serializer.collect_seq(value.iter().map(|_| PLACEHOLDER))
     }

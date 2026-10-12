@@ -13,7 +13,15 @@ use protocol::transaction::{CustomPayoutTxBuilder, TransactionExt as _};
 use testenv::TestEnv;
 use tokio::runtime::Runtime;
 use wallet::bmp_wallet::{BMPWallet, WalletApi as _};
+use wallet::password::Password;
 use wallet::protocol_wallet_api::{MemWallet, ProtocolWalletApi};
+
+/// A password that follows the wallet's password rules; the test wallets are throwaway.
+fn test_password() -> Password {
+    "Test-Passw0rd"
+        .parse()
+        .expect("the test password follows the password rules")
+}
 
 #[test]
 fn test_initial_tx_creation() -> anyhow::Result<()> {
@@ -42,7 +50,12 @@ pub fn funded_wallet(env: &mut TestEnv) -> BoxedTradeWallet {
 }
 
 fn funded_bmp_wallet(env: &mut TestEnv) -> BMPWallet {
-    let mut wallet = BMPWallet::new(env.new_temp_path().into(), "", Network::Regtest).unwrap();
+    let mut wallet = BMPWallet::new(
+        env.new_temp_path().into(),
+        &test_password(),
+        Network::Regtest,
+    )
+    .unwrap();
 
     let address = wallet.get_new_address().unwrap();
     let txid = env
@@ -374,7 +387,7 @@ fn imported_payout_key_matches_deposit_payout_descriptor() {
     let dir = std::env::temp_dir().join(format!("bmp-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
 
-    let mut w = BMPWallet::new(dir.as_path().into(), "", Network::Regtest).unwrap();
+    let mut w = BMPWallet::new(dir.as_path().into(), &test_password(), Network::Regtest).unwrap();
     let trade_wallet: &mut dyn ProtocolWalletApi = &mut w;
     trade_wallet
         .import_private_key(

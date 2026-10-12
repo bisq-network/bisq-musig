@@ -6,8 +6,8 @@ use bdk_wallet::bitcoin::key::{Keypair, Secp256k1, TapTweak as _};
 use bdk_wallet::bitcoin::secp256k1::{Message, schnorr};
 use bdk_wallet::bitcoin::sighash::{Prevouts, SighashCache};
 use bdk_wallet::bitcoin::{
-    Amount, BlockHash, OutPoint, PrivateKey, ScriptBuf, Sequence, TapSighashType,
-    Transaction, TxOut, Weight, Witness, XOnlyPublicKey, psbt,
+    Amount, BlockHash, OutPoint, PrivateKey, ScriptBuf, Sequence, TapSighashType, Transaction,
+    TxOut, Weight, Witness, XOnlyPublicKey, psbt,
 };
 use bdk_wallet::chain::{BlockId, ChainPosition, ConfirmationBlockTime};
 use bdk_wallet::rusqlite::Connection;
@@ -18,7 +18,18 @@ use secp::Scalar;
 
 use crate::bmp_wallet::ImportedKey;
 use crate::chain_data_source::ChainDataSource;
+use crate::password::Password;
 use crate::persisted::{BMPWalletPersister, DBStorage};
+
+/// A password that follows the wallet's password rules, for tests that need some password.
+pub const TEST_PASSWORD: &str = "Test-Passw0rd";
+
+/// [`TEST_PASSWORD`] as a [`Password`], for creating wallets and setting passwords.
+pub fn test_password() -> Password {
+    TEST_PASSWORD
+        .parse()
+        .expect("TEST_PASSWORD follows the password rules")
+}
 
 pub struct MockedBDKElectrum;
 
@@ -194,4 +205,3 @@ impl MemDbHandle {
         Ok(())
     }
 }
-
