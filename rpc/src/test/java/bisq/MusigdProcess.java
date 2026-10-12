@@ -92,7 +92,8 @@ public class MusigdProcess implements AutoCloseable {
         ProcessBuilder builder = new ProcessBuilder(command)
                 .redirectErrorStream(true)
                 .redirectOutput(logFile.toFile());
-        builder.environment().put("RUST_LOG", "info");
+        // A RUST_LOG exported by the developer (e.g. debug, to diagnose a sync failure) wins.
+        builder.environment().putIfAbsent("RUST_LOG", "info");
 
         MusigdProcess musigd =
                 new MusigdProcess(builder.start(), walletDir, ownsWalletDir, logFile, port);
@@ -106,18 +107,7 @@ public class MusigdProcess implements AutoCloseable {
     }
 
     private static Path locateBinary() {
-        String configured = System.getProperty("musigd.bin");
-        if (configured != null && !configured.isBlank()) {
-            return Path.of(configured);
-        }
-        // The Maven module lives at <workspace>/rpc, so the cargo target dir is one level up.
-        Path fallback = Path.of("..", "target", "debug", "musigd").normalize().toAbsolutePath();
-        if (!Files.isExecutable(fallback)) {
-            throw new IllegalStateException(
-                    "musigd binary not found at " + fallback + ". Build it with "
-                            + "`cargo build --bin musigd`, or point -Dmusigd.bin at it.");
-        }
-        return fallback;
+        return TestProcessSupport.locateBinary("musigd.bin", "musigd", "cargo build --bin musigd");
     }
 
     /** Blocks until the gRPC port accepts a connection, or the process dies / we time out. */
@@ -142,12 +132,7 @@ public class MusigdProcess implements AutoCloseable {
 
     /** The last few log lines, for putting a real cause in an assertion failure. */
     public String tailLog() {
-        try {
-            List<String> lines = Files.readAllLines(logFile);
-            return String.join("\n", lines.subList(Math.max(0, lines.size() - 40), lines.size()));
-        } catch (IOException e) {
-            return "<could not read " + logFile + ": " + e.getMessage() + ">";
-        }
+        return TestProcessSupport.tailLog(logFile);
     }
 
     private static void sleep(long millis) {

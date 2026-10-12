@@ -140,6 +140,9 @@ The Java integration tests (`mvn verify`) are:
   testenv; it starts its own `musigd` (step 3 below).
 - `BmpWalletLifecycleIntegrationTest` — opening, password changes and restarts of the `BMPWallet`. Starts its own
   `musigd` and needs no chain.
+- `BmpWalletEndToEndIntegrationTest` — every RPC of the `wallet.Wallet` service against a regtest chain, with three
+  real transactions, a password change and a restart. Self-contained: starts its own `testenv-server` and `musigd`,
+  so it needs none of the steps below — see [readme-full-blown-wallet-test.md](readme-full-blown-wallet-test.md).
 
 1. **Start the testenv-server binary crate**
 

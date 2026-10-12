@@ -5,3 +5,6 @@ target
 .settings
 /concept/pandoc/output/
 /CLAUDE.local.md
+
+# Agent-generated temporary artifacts (reviews, discussion notes)
+/temp/
