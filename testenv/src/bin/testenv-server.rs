@@ -22,6 +22,18 @@ struct Args {
 fn main() -> Result<()> {
     let args = Args::parse();
 
+    // Install the shutdown handler before starting bitcoind and electrs, so that a signal
+    // arriving during their start-up still ends in the orderly shutdown below (dropping `env`
+    // stops the daemons and removes their temporary directories) rather than in the default
+    // signal action, which would leave them running. Handles SIGINT (Ctrl+C), SIGTERM and SIGHUP
+    // (the `termination` feature of `ctrlc`).
+    let running = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
+    let running_clone = running.clone();
+    ctrlc::set_handler(move || {
+        running_clone.store(false, std::sync::atomic::Ordering::SeqCst);
+    })
+    .expect("Error setting shutdown signal handler");
+
     // Create TestEnv with optional data directory
     let env = TestEnvBuilder::new(Some("bitcoin".to_owned()))
         .with_data_dir(args.data_dir.clone())
@@ -61,20 +73,9 @@ fn main() -> Result<()> {
         eprintln!("Persistent data directory: {}", data_dir.display());
     }
 
-    // Keep running until we receive Ctrl+C (SIGINT)
-    // We'll use a simple blocking loop with signal handling
-    eprintln!("Server running. Press Ctrl+C to stop.");
+    eprintln!("Server running. Press Ctrl+C (or send SIGTERM) to stop.");
 
-    // Set up Ctrl+C handler to gracefully shutdown
-    let running = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
-    let running_clone = running.clone();
-
-    ctrlc::set_handler(move || {
-        running_clone.store(false, std::sync::atomic::Ordering::SeqCst);
-    })
-    .expect("Error setting Ctrl+C handler");
-
-    // Keep running until signal received
+    // Keep running until a shutdown signal is received
     while running.load(std::sync::atomic::Ordering::SeqCst) {
         std::thread::sleep(std::time::Duration::from_millis(100));
     }
