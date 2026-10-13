@@ -76,6 +76,10 @@ pub struct WalletNotOpen;
 /// can hold `Arc<dyn BmpWalletService>` and be exercised against a stub in tests. Deliberately
 /// *not* a subtrait of [`crate::wallet::WalletService`]: that trait models the bitcoind-backed
 /// trade wallet, which this user-facing wallet no longer depends on.
+#[expect(
+    clippy::double_must_use,
+    reason = "tonic::async_trait marks generated futures as must-use"
+)]
 #[tonic::async_trait]
 pub trait BmpWalletService {
     /// Whether the wallet is open and, if a chain data source is configured, has completed at
@@ -828,6 +832,10 @@ mod tests {
         const BATCH_SIZE: usize = 1;
         const STOP_GAP: usize = 1;
 
+        #[expect(
+            clippy::unused_async_trait_impl,
+            reason = "the ChainDataSource trait requires an async method"
+        )]
         async fn sync(
             &self,
             _persister: Vec<&mut PersistedWallet<impl wallet::persisted::BMPWalletPersister>>,
@@ -840,8 +848,10 @@ mod tests {
     struct UnreachableBroadcaster;
 
     impl ChainApi for UnreachableBroadcaster {
-        fn transaction_broadcast(&self, _tx: &Transaction) -> anyhow::Result<Txid> {
-            anyhow::bail!("nothing should have been broadcast")
+        fn transaction_broadcast(&self, _tx: &Transaction) -> Result<Txid, ChainApiError> {
+            Err(ChainApiError::backend(std::io::Error::other(
+                "nothing should have been broadcast",
+            )))
         }
     }
 
@@ -907,11 +917,11 @@ mod tests {
         );
         assert_eq!(service.full_balance().await.unwrap().total().to_sat(), 0);
         assert_eq!(service.seed_words(PASSWORD).await.unwrap().len(), 24);
-        assert!(service.transactions().await.unwrap().is_empty());
-        assert!(service.utxos().await.unwrap().is_empty());
+        assert_eq!(service.transactions().await.unwrap().len(), 0);
+        assert_eq!(service.utxos().await.unwrap().len(), 0);
 
         // Revealing an address must show up in the address list.
-        assert!(service.wallet_addresses().await.unwrap().is_empty());
+        assert_eq!(service.wallet_addresses().await.unwrap().len(), 0);
         let address = service.unused_address().await.unwrap();
         assert!(service.wallet_addresses().await.unwrap().contains(&address));
 
@@ -1153,7 +1163,7 @@ mod tests {
         // Nothing on chain, so the map stays empty, but the call must not deadlock — it takes
         // the wallet lock and then the confidence-map lock in that order.
         assert!(service.sync_once(&NoopChainDataSource).await.unwrap());
-        assert!(service.utxos().await.unwrap().is_empty());
+        assert_eq!(service.utxos().await.unwrap().len(), 0);
     }
 
     // --- protobuf mapping ---------------------------------------------------------------------

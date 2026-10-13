@@ -34,10 +34,9 @@ mod tests {
     use rand::RngCore as _;
     use secp::Scalar;
 
-    use crate::bmp_wallet::{BMPWallet, ImportedKey, STOP_GAP, WalletApi as _, WalletErrorKind};
-    use crate::password::Password;
     use crate::bmp_wallet::{BMPWallet, ImportedKey, STOP_GAP, WalletApi as _};
     use crate::error::WalletErrorKind;
+    use crate::password::Password;
     use crate::persisted::DBStorage;
     use crate::test_utils::{MemDbHandle, MockedBDKElectrum, derive_public_key, test_password};
 
@@ -69,7 +68,7 @@ mod tests {
         let seed = bmp_wallet.get_seed_phrase()?;
 
         tracing::info!("Generated mnemonic {} ", seed);
-        assert!(!seed.is_empty());
+        assert_ne!(seed, "");
 
         let receiving_addr = bmp_wallet.get_new_address()?;
 
@@ -584,7 +583,7 @@ mod tests {
         )?;
         let seed = bmp_wallet.get_seed_phrase().unwrap();
 
-        assert!(!seed.is_empty());
+        assert_ne!(seed, "");
         assert_eq!(seed.split_whitespace().count(), 24);
 
         let lw =

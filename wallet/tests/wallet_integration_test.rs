@@ -658,14 +658,15 @@ fn load_wallet_rejects_a_wrong_password() {
     let bmp_wallet = BMPWallet::new(dir.into(), &test_password(), Network::Regtest).unwrap();
     let seed = bmp_wallet.get_seed_phrase().unwrap();
 
-    assert!(!seed.is_empty());
+    assert_ne!(seed, "");
     assert_eq!(seed.split_whitespace().count(), 24);
 
-    assert!(!seed.is_empty());
+    assert_ne!(seed, "");
     assert_eq!(seed.split_whitespace().count(), 24);
 
     // Try loading the wallet with wrong decryption key should panic
-    let lw = BMPWallet::load_wallet(dir.into(), Network::Regtest, "secret123");
+    let wrong: Password = "Wrong#Pw123".parse().unwrap();
+    let lw = BMPWallet::load_wallet(dir.into(), Network::Regtest, &wrong);
     let Err(err) = lw else {
         panic!("opening with a wrong password must fail");
     };

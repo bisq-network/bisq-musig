@@ -711,6 +711,10 @@ impl ChainDataSource for Testchain {
     const BATCH_SIZE: usize = 16;
     const STOP_GAP: usize = 10;
 
+    #[expect(
+        clippy::unused_async_trait_impl,
+        reason = "the ChainDataSource trait requires an async method"
+    )]
     async fn sync(
         &self,
         persister: Vec<&mut PersistedWallet<impl BMPWalletPersister>>,
@@ -768,7 +772,6 @@ impl Drop for TestEnv {
 
 #[cfg(test)]
 mod tests {
-    use bdk_bitcoind_rpc::bitcoincore_rpc::RpcApi as _;
     use bmp_tracing::tracing;
 
     use super::*;
@@ -780,7 +783,7 @@ mod tests {
         // Basic checks
         assert!(env.block_count().is_ok());
         assert!(env.genesis_hash().is_ok());
-        assert!(!env.electrum_url().is_empty());
+        assert_ne!(env.electrum_url(), "");
 
         Ok(())
     }
