@@ -192,6 +192,24 @@ mod tests {
     }
 
     #[test]
+    fn test_duplicate_key_import() -> anyhow::Result<()> {
+        let mem_storage = MemDbHandle::new()?;
+        let mut bmp_wallet = BMPWallet::new(
+            mem_storage.store.clone(),
+            &test_password(),
+            Network::Regtest,
+        )?;
+        let pk1 = new_private_key();
+
+        bmp_wallet.import_private_key(pk1, None)?;
+        assert_eq!(bmp_wallet.imported_keys().len(), 1);
+
+        let res = bmp_wallet.import_private_key(pk1, None);
+        assert!(matches!(res, Err(WalletErrorKind::DuplicateKey)));
+        Ok(())
+    }
+
+    #[test]
     fn test_imported_keys_with_tap_tree() -> anyhow::Result<()> {
         let mem_storage = MemDbHandle::new()?;
 

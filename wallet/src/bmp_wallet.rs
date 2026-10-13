@@ -165,7 +165,11 @@ impl BMPWallet {
         pk: Scalar,
         tap_tree: Option<TapTree<XOnlyPublicKey>>,
     ) -> Result<()> {
-        self.imported_keys.push(ImportedKey::new(pk, tap_tree)?);
+        let key_to_import = ImportedKey::new(pk, tap_tree)?;
+        if self.imported_keys.contains(&key_to_import) {
+            return Err(WalletErrorKind::DuplicateKey);
+        }
+        self.imported_keys.push(key_to_import);
         Ok(())
     }
 
@@ -568,11 +572,11 @@ impl ProtocolWalletApi for BMPWallet {
         self.wallet.network()
     }
 
-    fn new_address(&mut self) -> Result<Address, WalletErrorKind> {
+    fn new_address(&mut self) -> Result<Address> {
         Ok(self.next_address(KeychainKind::External)?.address)
     }
 
-    fn new_internal_key(&mut self) -> Result<XOnlyPublicKey, WalletErrorKind> {
+    fn new_internal_key(&mut self) -> Result<XOnlyPublicKey> {
         // Use `next_address` (gap-filling) rather than `reveal_next_address` directly so
         // that the internal key's index stays in step with what `new_address` would yield.
         let index = self.next_address(KeychainKind::External)?.index;
@@ -583,7 +587,7 @@ impl ProtocolWalletApi for BMPWallet {
         &mut self,
         recipients: Vec<(ScriptBuf, Amount)>,
         fee_rate: FeeRate,
-    ) -> Result<Psbt, WalletErrorKind> {
+    ) -> Result<Psbt> {
         finish_standard_psbt(self.build_tx(), recipients, fee_rate)
     }
 
@@ -591,7 +595,7 @@ impl ProtocolWalletApi for BMPWallet {
         &mut self,
         psbt: &mut Psbt,
         is_selected: &dyn Fn(&OutPoint) -> bool,
-    ) -> Result<(), WalletErrorKind> {
+    ) -> Result<()> {
         // TODO unify signing
         sign_selected_inputs_with(self, psbt, is_selected, |w, p, opts| {
             <Self as WalletApi>::sign(w, p, opts)
@@ -602,7 +606,7 @@ impl ProtocolWalletApi for BMPWallet {
         &mut self,
         pk: Scalar,
         tap_tree: Option<TapTree<XOnlyPublicKey>>,
-    ) -> Result<(), WalletErrorKind> {
+    ) -> Result<()> {
         self.import_private_key(pk, tap_tree)
     }
 }
