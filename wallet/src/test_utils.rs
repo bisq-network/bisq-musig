@@ -39,6 +39,10 @@ impl ChainDataSource for MockedBDKElectrum {
     const BATCH_SIZE: usize = 10;
     const STOP_GAP: usize = 10;
 
+    #[expect(
+        clippy::unused_async_trait_impl,
+        reason = "the ChainDataSource trait requires an async method"
+    )]
     async fn sync(
         &self,
         persister: Vec<&mut PersistedWallet<impl BMPWalletPersister>>,

@@ -116,7 +116,6 @@ impl DBStorage {
                     .committed_salt_path(db_name)
                     .expect("file-backed storage should have a committed salt path");
                 fs::write(full_p, general_purpose::STANDARD.encode(salt))?;
-                Ok(salt.to_vec())
             }
             #[cfg(any(test, feature = "test-utils"))]
             Self::Memory(name) => {
@@ -125,9 +124,9 @@ impl DBStorage {
                     .unwrap()
                     .entry(name.clone())
                     .insert_entry(salt.to_vec());
-                Ok(salt.to_vec())
             }
         }
+        Ok(salt.to_vec())
     }
 
     pub fn load_salt(&self, db_name: &str) -> Result<Vec<u8>> {

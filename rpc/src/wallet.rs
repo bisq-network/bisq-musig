@@ -29,6 +29,10 @@ const INTERNAL_DESCRIPTOR: &str = "tr(tprv8ZgxMBicQKsPdrjwWCyXqqJ4YqcyG4DmKtjjsR
 const BITCOIND_POLLING_PERIOD: Duration = Duration::from_secs(1);
 
 #[cfg_attr(feature = "unimock", unimock::unimock(api = WalletServiceMock))]
+#[expect(
+    clippy::double_must_use,
+    reason = "tonic::async_trait marks generated futures as must-use"
+)]
 #[tonic::async_trait]
 pub trait WalletService {
     /// # Errors

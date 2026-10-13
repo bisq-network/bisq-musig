@@ -18,7 +18,6 @@ use protocol::transaction::{
 use protocol::{mocks, script_paths};
 use thiserror::Error;
 use tracing::{info, instrument};
-use wallet::error::WalletErrorKind;
 use wallet::protocol_wallet_api::ProtocolWalletApi;
 
 use crate::storage::{ByRef, ByVal, Storage};
@@ -909,13 +908,25 @@ pub enum ProtocolErrorKind {
     #[error("access denied")]
     AccessDenied,
     #[error("illegal state transition for {role:?}: {old_state} -> {new_state}")]
-    IllegalStateTransition { role: Role, old_state: TradeState, new_state: TradeState },
-    #[error("insufficient redirection funds (available {available_msat} msat, used {used_msat} msat)")]
-    InsufficientRedirectionFunds { available_msat: u64, used_msat: u64 },
+    IllegalStateTransition {
+        role: Role,
+        old_state: TradeState,
+        new_state: TradeState,
+    },
+    #[error(
+        "insufficient redirection funds (available {available_msat} msat, used {used_msat} msat)"
+    )]
+    InsufficientRedirectionFunds {
+        available_msat: u64,
+        used_msat: u64,
+    },
     #[error("excess redirection funds (available {available_msat} msat, used {used_msat} msat)")]
-    ExcessRedirectionFunds { available_msat: u64, used_msat: u64 },
+    ExcessRedirectionFunds {
+        available_msat: u64,
+        used_msat: u64,
+    },
     AddressParse(#[from] bdk_wallet::bitcoin::address::ParseError),
     Transaction(#[from] protocol::transaction::TransactionErrorKind),
     Multisig(#[from] protocol::multisig::MultisigErrorKind),
-    Wallet(#[from] WalletErrorKind),
+    Wallet(#[from] wallet::error::WalletErrorKind),
 }

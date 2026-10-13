@@ -16,7 +16,6 @@ use paste::paste;
 use rand::RngCore;
 use relative::LockTime;
 use thiserror::Error;
-use wallet::error::WalletErrorKind;
 use wallet::protocol_wallet_api::ProtocolWalletApi;
 
 use crate::psbt;
@@ -715,7 +714,7 @@ pub enum TransactionErrorKind {
     ExtractTx(#[from] Box<ExtractTxError>),
     Miniscript(#[from] bdk_wallet::miniscript::Error),
     Conversion(#[from] bdk_wallet::miniscript::descriptor::ConversionError),
-    Wallet(#[from] WalletErrorKind),
+    Wallet(#[from] wallet::error::WalletErrorKind),
 }
 
 impl From<ExtractTxError> for TransactionErrorKind {

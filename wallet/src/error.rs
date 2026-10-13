@@ -1,10 +1,4 @@
-use bdk_wallet::bitcoin::bip32;
 use bdk_wallet::bitcoin::psbt::ExtractTxError;
-use bdk_wallet::chain::DescriptorId;
-use bdk_wallet::descriptor::DescriptorError;
-use bdk_wallet::miniscript::descriptor::ConversionError;
-use bdk_wallet::signer::SignerError;
-use bdk_wallet::{CreateWithPersistError, LoadWithPersistError, rusqlite};
 use thiserror::Error;
 
 use crate::persisted::PersistenceError;
@@ -17,7 +11,7 @@ pub enum ChainDataSourceError {
     #[error("chain scanner error: {0}")]
     Scanner(#[from] chain::SyncError),
     #[error("chain scanner returned an update for unknown descriptor {descriptor:?}")]
-    UnknownDescriptor { descriptor: DescriptorId },
+    UnknownDescriptor { descriptor: bdk_wallet::chain::DescriptorId },
     #[error("chain scanner returned an update for missing wallet index {index}")]
     MissingWallet { index: usize },
     #[error("failed to apply chain update: {0}")]
@@ -36,12 +30,12 @@ pub enum WalletErrorKind {
     KeyDerivation(#[from] argon2::Error),
     #[error("Invalid Password provided")]
     InvalidPassword,
-    Signer(#[from] SignerError),
+    Signer(#[from] bdk_wallet::signer::SignerError),
     #[error("not a Taproot address")]
     NotTaprootAddress,
     #[error("malformed PSBT")]
     MalformedPsbt,
-    Conversion(#[from] ConversionError),
+    Conversion(#[from] bdk_wallet::miniscript::descriptor::ConversionError),
     CreateTx(#[from] bdk_wallet::error::CreateTxError),
     #[error("imported key descriptor does not match its secret key")]
     MismatchedDescriptor,
@@ -52,10 +46,10 @@ pub enum WalletErrorKind {
     #[error("wallet database already exists; refusing to overwrite it")]
     WalletAlreadyExists,
     ExtractTx(#[from] Box<ExtractTxError>),
-    LoadWallet(#[from] LoadWithPersistError<rusqlite::Error>),
-    CreateWallet(#[from] CreateWithPersistError<rusqlite::Error>),
-    Bip32(#[from] bip32::Error),
-    Descriptor(#[from] DescriptorError),
+    LoadWallet(#[from] bdk_wallet::LoadWithPersistError<rusqlite::Error>),
+    CreateWallet(#[from] bdk_wallet::CreateWithPersistError<rusqlite::Error>),
+    Bip32(#[from] bdk_wallet::bitcoin::bip32::Error),
+    Descriptor(#[from] bdk_wallet::descriptor::DescriptorError),
     Mnemonic(#[from] bdk_wallet::keys::bip39::Error),
     Electrum(#[from] bdk_electrum::electrum_client::Error),
     ApplyUpdate(#[from] bdk_wallet::chain::local_chain::CannotConnectError),
