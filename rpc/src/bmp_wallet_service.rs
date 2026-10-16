@@ -20,16 +20,16 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 // Leading `::` disambiguates the `wallet` *crate* from this crate's own `wallet` module.
-use ::wallet::bmp_wallet::{BMPWallet, WalletApi as _, WalletErrorKind};
+use ::wallet::bmp_wallet::{BMPWallet, WalletApi as _};
 use ::wallet::chain_data_source::ChainDataSource;
 use ::wallet::password::{InvalidPassword, Password, WeakPassword};
+use ::wallet::error::WalletErrorKind;
 use ::wallet::wallet_info::{PubAddressInfo, TxInfo, TxOutputInfo, UtxoInfo};
-use anyhow::Context as _;
 use bdk_bitcoind_rpc::bitcoincore_rpc::{Client, RpcApi as _};
 use bdk_wallet::Balance;
 use bdk_wallet::bitcoin::address::{NetworkUnchecked, ParseError};
 use bdk_wallet::bitcoin::{Address, Amount, FeeRate, Network, Transaction, Txid};
-use chain::ChainApi;
+use chain::{ChainApi, ChainApiError};
 use futures_util::never::Never;
 use futures_util::stream::{BoxStream, StreamExt as _};
 use thiserror::Error;
@@ -76,6 +76,10 @@ pub struct WalletNotOpen;
 /// can hold `Arc<dyn BmpWalletService>` and be exercised against a stub in tests. Deliberately
 /// *not* a subtrait of [`crate::wallet::WalletService`]: that trait models the bitcoind-backed
 /// trade wallet, which this user-facing wallet no longer depends on.
+#[expect(
+    clippy::double_must_use,
+    reason = "tonic::async_trait marks generated futures as must-use"
+)]
 #[tonic::async_trait]
 pub trait BmpWalletService {
     /// Whether the wallet is open and, if a chain data source is configured, has completed at
@@ -328,19 +332,27 @@ impl<S: ChainDataSource + Send + Sync + 'static> BmpWalletService for BMPWalletS
         fs::create_dir_all(&self.wallet_dir)?;
         let db_path = self.wallet_dir.join(BMPWallet::DB_NAME);
         let wallet = if db_path.exists() {
-            // The error keeps its type under the context, so a wrong password still surfaces
-            // as such (see `status_from`).
-            let wallet = BMPWallet::load_wallet(
+            let wallet = match BMPWallet::load_wallet(
                 self.wallet_dir.as_path().into(),
                 self.network,
                 &Password::check(password)?,
-            )
-            .with_context(|| {
-                format!(
-                    "failed to open the existing wallet at {}",
-                    db_path.display()
-                )
-            })?;
+            ) {
+                Ok(wallet) => wallet,
+                Err(err) => match err {
+                    WalletErrorKind::InvalidPassword => {
+                        return Err(anyhow::Error::new(InvalidPassword).context(format!(
+                            "failed to open the existing wallet at {} (wrong password)",
+                            db_path.display()
+                        )));
+                    }
+                    other => {
+                        return Err(anyhow::Error::new(other).context(format!(
+                            "failed to open the existing wallet at {}",
+                            db_path.display()
+                        )));
+                    }
+                },
+            };
             info!(dir = %self.wallet_dir.display(), "Loaded the existing BMP wallet.");
             wallet
         } else {
@@ -373,7 +385,14 @@ impl<S: ChainDataSource + Send + Sync + 'static> BmpWalletService for BMPWalletS
         // checking it here too would only double that cost.
         let old_password = Password::check(old_password)?;
         let new_password = Password::new(new_password)?;
-        Ok(wallet.change_password(&old_password, &new_password)?)
+
+        wallet
+        
+            .change_password(&old_password, &new_password)
+            .map_err(|err| match err {
+                WalletErrorKind::InvalidPassword => InvalidPassword.into(),
+                other => anyhow::Error::new(other),
+            })
     }
 
     async fn unused_address(&self) -> anyhow::Result<PubAddressInfo> {
@@ -457,8 +476,10 @@ impl BitcoinCoreChainApi {
 }
 
 impl ChainApi for BitcoinCoreChainApi {
-    fn transaction_broadcast(&self, tx: &Transaction) -> anyhow::Result<Txid> {
-        Ok(self.0.send_raw_transaction(tx)?)
+    fn transaction_broadcast(&self, tx: &Transaction) -> std::result::Result<Txid, ChainApiError> {
+        self.0
+            .send_raw_transaction(tx)
+            .map_err(ChainApiError::backend)
     }
 }
 
@@ -686,12 +707,16 @@ fn status_from(error: &anyhow::Error) -> Status {
     } else if error.downcast_ref::<ParseError>().is_some() {
         // A malformed address, or one for another network: the client's fault, not ours.
         Status::invalid_argument(format!("invalid address: {message}"))
+    } else if matches!(
+        error.downcast_ref::<WalletErrorKind>(),
+        Some(WalletErrorKind::WalletAlreadyExists)
+    ) {
+        Status::already_exists(message)
     } else {
         error!("Wallet operation failed: {message}");
         Status::internal(message)
     }
 }
-
 /// Whether `error` is a wrong wallet password, whichever layer caught it: the service, checking
 /// a password itself ([`InvalidPassword`]), or the wallet, when a load or re-key was refused
 /// ([`WalletErrorKind::InvalidPassword`], which wraps the same error).
@@ -699,7 +724,7 @@ fn is_invalid_password(error: &anyhow::Error) -> bool {
     error.downcast_ref::<InvalidPassword>().is_some()
         || matches!(
             error.downcast_ref::<WalletErrorKind>(),
-            Some(WalletErrorKind::InvalidPassword(_))
+            Some(WalletErrorKind::InvalidPassword)
         )
 }
 
@@ -790,6 +815,7 @@ impl From<TxInfo> for bmp_wallet::Transaction {
 
 #[cfg(test)]
 mod tests {
+    use ::wallet::error::ChainDataSourceError;
     use ::wallet::persisted::DBStorage;
     use ::wallet::utils::derive_key_from_password;
     use bdk_wallet::PersistedWallet;
@@ -806,10 +832,14 @@ mod tests {
         const BATCH_SIZE: usize = 1;
         const STOP_GAP: usize = 1;
 
+        #[expect(
+            clippy::unused_async_trait_impl,
+            reason = "the ChainDataSource trait requires an async method"
+        )]
         async fn sync(
             &self,
             _persister: Vec<&mut PersistedWallet<impl wallet::persisted::BMPWalletPersister>>,
-        ) -> anyhow::Result<()> {
+        ) -> Result<(), ChainDataSourceError> {
             Ok(())
         }
     }
@@ -818,8 +848,10 @@ mod tests {
     struct UnreachableBroadcaster;
 
     impl ChainApi for UnreachableBroadcaster {
-        fn transaction_broadcast(&self, _tx: &Transaction) -> anyhow::Result<Txid> {
-            anyhow::bail!("nothing should have been broadcast")
+        fn transaction_broadcast(&self, _tx: &Transaction) -> Result<Txid, ChainApiError> {
+            Err(ChainApiError::backend(std::io::Error::other(
+                "nothing should have been broadcast",
+            )))
         }
     }
 
@@ -872,7 +904,7 @@ mod tests {
                 .change_password(PASSWORD, NEW_PASSWORD)
                 .await
                 .is_err()
-        );
+        );    
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -885,11 +917,11 @@ mod tests {
         );
         assert_eq!(service.full_balance().await.unwrap().total().to_sat(), 0);
         assert_eq!(service.seed_words(PASSWORD).await.unwrap().len(), 24);
-        assert!(service.transactions().await.unwrap().is_empty());
-        assert!(service.utxos().await.unwrap().is_empty());
+        assert_eq!(service.transactions().await.unwrap().len(), 0);
+        assert_eq!(service.utxos().await.unwrap().len(), 0);
 
         // Revealing an address must show up in the address list.
-        assert!(service.wallet_addresses().await.unwrap().is_empty());
+        assert_eq!(service.wallet_addresses().await.unwrap().len(), 0);
         let address = service.unused_address().await.unwrap();
         assert!(service.wallet_addresses().await.unwrap().contains(&address));
 
@@ -968,10 +1000,15 @@ mod tests {
             format!("{err:#}").contains("seed phrase"),
             "expected the missing seed to be the reason, got: {err:#}"
         );
+        let status = status_from(&err);
+        assert!(
+            status.message().contains("seed phrase"),
+            "expected the gRPC status to retain the missing-seed reason, got: {status}"
+        );
         assert!(!reopened.is_ready());
         assert!(reopened.unused_address().await.is_err());
     }
-
+    
     #[tokio::test(flavor = "multi_thread")]
     async fn creating_a_wallet_requires_an_acceptable_password() {
         let (dir, service) = service();
@@ -1050,7 +1087,7 @@ mod tests {
             .unwrap();
         service.open_or_create_wallet(PASSWORD).await.unwrap();
     }
-
+    
     #[tokio::test(flavor = "multi_thread")]
     async fn send_to_address_requires_the_wallet_password() {
         let (_dir, service) = open_service().await;
@@ -1126,7 +1163,7 @@ mod tests {
         // Nothing on chain, so the map stays empty, but the call must not deadlock — it takes
         // the wallet lock and then the confidence-map lock in that order.
         assert!(service.sync_once(&NoopChainDataSource).await.unwrap());
-        assert!(service.utxos().await.unwrap().is_empty());
+        assert_eq!(service.utxos().await.unwrap().len(), 0);
     }
 
     // --- protobuf mapping ---------------------------------------------------------------------

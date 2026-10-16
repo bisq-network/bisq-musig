@@ -2,7 +2,7 @@ use argon2::{Argon2, Block, Params};
 use bdk_wallet::bitcoin::hashes::{Hash as _, sha256};
 use zeroize::{Zeroize as _, Zeroizing};
 
-use crate::bmp_wallet::{Result, WalletErrorKind};
+use crate::error::Result;
 use crate::password::Password;
 
 /// Derives a 256-bit key from a password and salt using Argon2.
@@ -22,8 +22,8 @@ pub fn derive_key_from_password(password: &Password, salt: &[u8]) -> Result<Zero
             salt,
             &mut key_bytes,
             &mut memory,
-        )
-        .map_err(|err| WalletErrorKind::KeyDerivation(err.to_string()))?;
+        )?;
+
     let key_hex = Zeroizing::new(hex::encode(key_bytes));
 
     key_bytes.zeroize();

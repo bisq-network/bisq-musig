@@ -16,6 +16,7 @@ use tempfile::{TempDir, tempdir};
 use testenv::TestEnv;
 use wallet::bmp_wallet::*;
 use wallet::password::Password;
+use wallet::error::WalletErrorKind;
 use wallet::persisted::DBStorage;
 use wallet::utils::derive_key_from_password;
 
@@ -469,10 +470,10 @@ async fn test_drain_wallet_no_balance() {
 
     let res = wallet.drain_imported_balance(FeeRate::from_sat_per_vb(10).unwrap());
 
-    assert!(matches!(
-        res,
-        Err(WalletErrorKind::CreateTx(OutputBelowDustLimit(_)))
-    ));
+    assert!(
+        matches!(res, Err(WalletErrorKind::CreateTx(OutputBelowDustLimit(_)))),
+        "unexpected error: {res:?}"
+    );
 }
 
 fn get_dir() -> TempDir {
@@ -552,9 +553,7 @@ fn load_ignores_and_cleans_a_stale_staged_salt() -> anyhow::Result<()> {
         wallet.get_seed_phrase()?
     };
 
-    let staged_salt_path = dir
-        .path()
-        .join(format!("{}.salt.new", BMPWallet::DB_NAME));
+    let staged_salt_path = dir.path().join(format!("{}.salt.new", BMPWallet::DB_NAME));
     fs::write(&staged_salt_path, "bm90LXRoZS1yZWFsLXNhbHQ=")?; // valid base64, wrong salt
 
     let wallet = BMPWallet::load_wallet(dir.path().into(), Network::Regtest, &test_password())?;
@@ -618,9 +617,7 @@ fn change_password_rotates_the_key_and_survives_a_reload() -> anyhow::Result<()>
 #[test]
 fn new_refuses_to_overwrite_an_existing_wallet() -> anyhow::Result<()> {
     let dir = get_dir();
-    let salt_path = dir
-        .path()
-        .join(format!("{}.salt", BMPWallet::DB_NAME));
+    let salt_path = dir.path().join(format!("{}.salt", BMPWallet::DB_NAME));
 
     let seed = {
         let wallet = BMPWallet::new(dir.path().into(), &test_password(), Network::Regtest)?;
@@ -661,10 +658,20 @@ fn load_wallet_rejects_a_wrong_password() {
     let bmp_wallet = BMPWallet::new(dir.into(), &test_password(), Network::Regtest).unwrap();
     let seed = bmp_wallet.get_seed_phrase().unwrap();
 
-    assert!(!seed.is_empty());
+    assert_ne!(seed, "");
     assert_eq!(seed.split_whitespace().count(), 24);
 
+    assert_ne!(seed, "");
+    assert_eq!(seed.split_whitespace().count(), 24);
+
+    // Try loading the wallet with wrong decryption key should panic
     let wrong: Password = "Wrong#Pw123".parse().unwrap();
     let lw = BMPWallet::load_wallet(dir.into(), Network::Regtest, &wrong);
-    assert!(matches!(lw, Err(WalletErrorKind::InvalidPassword(_))));
+    let Err(err) = lw else {
+        panic!("opening with a wrong password must fail");
+    };
+    assert!(
+        matches!(err, WalletErrorKind::InvalidPassword),
+        "unexpected error: {err:?}"
+    );
 }

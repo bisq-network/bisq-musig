@@ -19,8 +19,8 @@ use bdk_wallet::{AddressInfo, KeychainKind, SignOptions, TxBuilder, TxOrdering, 
 use rand::RngCore as _;
 use secp::Scalar;
 
-use crate::bmp_wallet::WalletErrorKind::MalformedPsbt;
-use crate::bmp_wallet::{Result, WalletErrorKind};
+use crate::error::WalletErrorKind::MalformedPsbt;
+use crate::error::{Result, WalletErrorKind};
 
 /// The Protocol Wallet API is used by the protocol to create and sign transactions.
 /// It's the part of functionality being exposed only to the protocol.
@@ -82,20 +82,17 @@ impl MemWallet {
         self.wallet.public_descriptor(chain)
     }
 
-    pub fn new(client: BdkElectrumClient<Client>) -> anyhow::Result<Self> {
+    pub fn new(client: BdkElectrumClient<Client>) -> Result<Self> {
         let mut seed: [u8; 32] = [0u8; 32];
         rand::rng().fill_bytes(&mut seed);
 
         let network: Network = Network::Regtest;
         let xprv: Xpriv = Xpriv::new_master(network, &seed)?;
 
-        let (descriptor, external_map, _) = Bip86(xprv, KeychainKind::External)
-            .build(network.into())
-            .expect("Failed to build external descriptor");
-
-        let (change_descriptor, internal_map, _) = Bip86(xprv, KeychainKind::Internal)
-            .build(network.into())
-            .expect("Failed to build internal descriptor");
+        let (descriptor, external_map, _) =
+            Bip86(xprv, KeychainKind::External).build(network.into())?;
+        let (change_descriptor, internal_map, _) =
+            Bip86(xprv, KeychainKind::Internal).build(network.into())?;
 
         let wallet = Wallet::create(descriptor, change_descriptor)
             .network(network)
@@ -106,7 +103,7 @@ impl MemWallet {
         Ok(Self { wallet, client })
     }
 
-    pub fn sync(&mut self) -> anyhow::Result<()> {
+    pub fn sync(&mut self) -> Result<()> {
         // Populate the electrum client's transaction cache so it doesn't re-download transaction we
         // already have.
         self.client

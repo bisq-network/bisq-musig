@@ -4,6 +4,7 @@ pub mod utils;
 pub mod bmp_wallet;
 pub mod chain_data_source;
 pub mod password;
+pub mod error;
 pub mod persisted;
 pub mod protocol_wallet_api;
 #[cfg(test)]
@@ -33,7 +34,8 @@ mod tests {
     use rand::RngCore as _;
     use secp::Scalar;
 
-    use crate::bmp_wallet::{BMPWallet, ImportedKey, STOP_GAP, WalletApi as _, WalletErrorKind};
+    use crate::bmp_wallet::{BMPWallet, ImportedKey, STOP_GAP, WalletApi as _};
+    use crate::error::WalletErrorKind;
     use crate::password::Password;
     use crate::persisted::DBStorage;
     use crate::test_utils::{MemDbHandle, MockedBDKElectrum, derive_public_key, test_password};
@@ -66,7 +68,7 @@ mod tests {
         let seed = bmp_wallet.get_seed_phrase()?;
 
         tracing::info!("Generated mnemonic {} ", seed);
-        assert!(!seed.is_empty());
+        assert_ne!(seed, "");
 
         let receiving_addr = bmp_wallet.get_new_address()?;
 
@@ -396,11 +398,8 @@ mod tests {
         let mut tx_builder = bmp_wallet.build_tx();
         tx_builder.add_recipient(to_address, to_spend);
 
-        let imported_wallets = BMPWallet::load_imported_wallets(
-            &keys,
-            &mem_storage.store,
-            Network::Regtest,
-        )?;
+        let imported_wallets =
+            BMPWallet::load_imported_wallets(&keys, &mem_storage.store, Network::Regtest)?;
         let first_key_unspents = imported_wallets[0].0.list_unspent().collect::<Vec<_>>();
         let second_key_unspents = imported_wallets[1].0.list_unspent().collect::<Vec<_>>();
 
@@ -584,7 +583,7 @@ mod tests {
         )?;
         let seed = bmp_wallet.get_seed_phrase().unwrap();
 
-        assert!(!seed.is_empty());
+        assert_ne!(seed, "");
         assert_eq!(seed.split_whitespace().count(), 24);
 
         let lw =
@@ -592,7 +591,6 @@ mod tests {
         assert_eq!(lw.get_seed_phrase().unwrap(), seed);
         Ok(())
     }
-
 
     #[tokio::test]
     async fn drain_wallet() -> anyhow::Result<()> {
@@ -1098,7 +1096,6 @@ mod tests {
         Ok(())
     }
 
-
     /// Re-keying requires proof of the current password, so a caller who cannot present it must
     /// not be able to rotate the key and lock the owner out.
     #[test]
@@ -1116,8 +1113,10 @@ mod tests {
         let Err(err) = wallet.change_password(&attacker, &attacker) else {
             panic!("re-keying without the current password must fail");
         };
-        assert!(matches!(err, WalletErrorKind::InvalidPassword(_)));
-
+        assert!(
+            matches!(err, WalletErrorKind::InvalidPassword),
+            "unexpected error: {err:?}"
+        );
         assert!(
             wallet.check_password(&test_password())?,
             "the original password must still be the one in force"
