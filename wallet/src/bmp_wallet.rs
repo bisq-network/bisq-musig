@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::ops::{Deref, DerefMut};
 use std::time::UNIX_EPOCH;
 use std::vec;
@@ -25,8 +26,8 @@ use secp::Scalar;
 
 use crate::chain_data_source::ChainDataSource;
 use crate::coin_selection::{AlwaysSpendImportedFirst, SpendImportedOnly};
-use crate::password::Password;
 use crate::error::{Result, WalletErrorKind};
+use crate::password::Password;
 use crate::persisted::{BMPDatabase, BMPWalletPersister as _, DBStorage, PersistenceError};
 use crate::protocol_wallet_api::{
     ProtocolWalletApi, WalletExt, finish_standard_psbt, internal_key_at_index,
@@ -102,6 +103,7 @@ pub struct BMPWallet {
     signers_loaded: bool,
     db: BMPDatabase<Connection>,
     last_unused_address: Option<String>,
+    spk_cache: HashMap<ScriptBuf, ImportedKey>,
     /// Argon2 salt backing the current database key, mirrored on disk as `<db_path>.salt`.
     salt: Vec<u8>,
     /// SHA-256 fingerprint of the `SQLCipher` key currently in force. Retained so a caller-
@@ -165,7 +167,13 @@ impl BMPWallet {
         pk: Scalar,
         tap_tree: Option<TapTree<XOnlyPublicKey>>,
     ) -> Result<()> {
-        self.imported_keys.push(ImportedKey::new(pk, tap_tree)?);
+        let key_to_import = ImportedKey::new(pk, tap_tree)?;
+        if self.imported_keys.contains(&key_to_import) {
+            return Err(WalletErrorKind::DuplicateKey);
+        }
+        self.spk_cache
+            .insert(key_to_import.script_pubkey(), key_to_import.clone());
+        self.imported_keys.push(key_to_import);
         Ok(())
     }
 
@@ -540,6 +548,11 @@ impl BMPWallet {
                         ImportedKey::from_descriptor_str(secret, &descriptor)
                     })
                     .collect::<Result<Vec<_>>>()?;
+            
+            let spk_cache = imported_keys
+                .iter()
+                .map(|key| (key.script_pubkey(), key.clone()))
+                .collect::<HashMap<_, _>>();
 
             return Ok(Self {
                 wallet,
@@ -548,6 +561,7 @@ impl BMPWallet {
                 signers_loaded: false,
                 db: BMPDatabase::new(storage, db),
                 last_unused_address: None,
+                spk_cache,
                 salt,
                 key_verifier: key_verifier(&key),
             });
@@ -568,11 +582,11 @@ impl ProtocolWalletApi for BMPWallet {
         self.wallet.network()
     }
 
-    fn new_address(&mut self) -> Result<Address, WalletErrorKind> {
+    fn new_address(&mut self) -> Result<Address> {
         Ok(self.next_address(KeychainKind::External)?.address)
     }
 
-    fn new_internal_key(&mut self) -> Result<XOnlyPublicKey, WalletErrorKind> {
+    fn new_internal_key(&mut self) -> Result<XOnlyPublicKey> {
         // Use `next_address` (gap-filling) rather than `reveal_next_address` directly so
         // that the internal key's index stays in step with what `new_address` would yield.
         let index = self.next_address(KeychainKind::External)?.index;
@@ -583,7 +597,7 @@ impl ProtocolWalletApi for BMPWallet {
         &mut self,
         recipients: Vec<(ScriptBuf, Amount)>,
         fee_rate: FeeRate,
-    ) -> Result<Psbt, WalletErrorKind> {
+    ) -> Result<Psbt> {
         finish_standard_psbt(self.build_tx(), recipients, fee_rate)
     }
 
@@ -591,7 +605,7 @@ impl ProtocolWalletApi for BMPWallet {
         &mut self,
         psbt: &mut Psbt,
         is_selected: &dyn Fn(&OutPoint) -> bool,
-    ) -> Result<(), WalletErrorKind> {
+    ) -> Result<()> {
         // TODO unify signing
         sign_selected_inputs_with(self, psbt, is_selected, |w, p, opts| {
             <Self as WalletApi>::sign(w, p, opts)
@@ -602,7 +616,7 @@ impl ProtocolWalletApi for BMPWallet {
         &mut self,
         pk: Scalar,
         tap_tree: Option<TapTree<XOnlyPublicKey>>,
-    ) -> Result<(), WalletErrorKind> {
+    ) -> Result<()> {
         self.import_private_key(pk, tap_tree)
     }
 }
@@ -733,6 +747,7 @@ impl WalletApi for BMPWallet {
             signers_loaded: true,
             db: BMPDatabase::new(storage, db),
             last_unused_address: None,
+            spk_cache: HashMap::new(),
             salt,
             key_verifier: key_verifier(&key),
         })
@@ -757,18 +772,11 @@ impl WalletApi for BMPWallet {
     }
 
     fn sign(&mut self, psbt: &mut Psbt, sign_options: SignOptions) -> Result<()> {
-        //// @TODO performance: cache the public keys derivation
         let secp = self.secp_ctx();
-        let is_mine = |input_script: &ScriptBuf| {
-            self.imported_keys
-                .iter()
-                .find(|key| key.script_pubkey() == *input_script)
-        };
-
         for (input_index, input_details) in psbt.inputs.clone().iter().enumerate() {
             let txout = input_details.witness_utxo.as_ref().unwrap();
 
-            if let Some(signing_key) = is_mine(&txout.script_pubkey) {
+            if let Some(signing_key) = self.spk_cache.get(&txout.script_pubkey) {
                 let signer =
                     PrivateKey::from_slice(&signing_key.secret().serialize(), self.network())
                         .map_err(|_e| SignerError::External("Invalid signing key".to_owned()))?;
