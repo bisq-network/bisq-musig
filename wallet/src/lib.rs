@@ -206,6 +206,16 @@ mod tests {
 
         let res = bmp_wallet.import_private_key(pk1, None);
         assert!(matches!(res, Err(WalletErrorKind::DuplicateKey)));
+        assert_eq!(bmp_wallet.imported_keys().len(), 1);
+
+        let (a, b) = (
+            derive_public_key(&new_private_key()),
+            derive_public_key(&new_private_key()),
+        );
+        let tap_tree = sample_tap_tree(&a, &b);
+        let res = bmp_wallet.import_private_key(pk1, Some(tap_tree));
+        assert!(matches!(res, Err(WalletErrorKind::DuplicateKey)));
+        assert_eq!(bmp_wallet.imported_keys().len(), 1);
         Ok(())
     }
 

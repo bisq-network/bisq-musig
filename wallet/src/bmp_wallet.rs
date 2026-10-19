@@ -168,7 +168,11 @@ impl BMPWallet {
         tap_tree: Option<TapTree<XOnlyPublicKey>>,
     ) -> Result<()> {
         let key_to_import = ImportedKey::new(pk, tap_tree)?;
-        if self.imported_keys.contains(&key_to_import) {
+        if self
+            .imported_keys
+            .iter()
+            .any(|key| key.internal_key() == key_to_import.internal_key())
+        {
             return Err(WalletErrorKind::DuplicateKey);
         }
         self.spk_cache
