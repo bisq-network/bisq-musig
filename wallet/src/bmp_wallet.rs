@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::collections::hash_map::Entry;
 use std::ops::{Deref, DerefMut};
 use std::time::UNIX_EPOCH;
 use std::vec;
@@ -98,12 +99,11 @@ pub(crate) const STOP_GAP: usize = 50;
 
 pub struct BMPWallet {
     wallet: PersistedWallet<Connection>,
-    imported_keys: Vec<ImportedKey>,
+    imported_keys: HashMap<ScriptBuf, ImportedKey>,
     imported_balance: Balance,
     signers_loaded: bool,
     db: BMPDatabase<Connection>,
     last_unused_address: Option<String>,
-    spk_cache: HashMap<ScriptBuf, ImportedKey>,
     /// Argon2 salt backing the current database key, mirrored on disk as `<db_path>.salt`.
     salt: Vec<u8>,
     /// SHA-256 fingerprint of the `SQLCipher` key currently in force. Retained so a caller-
@@ -168,24 +168,20 @@ impl BMPWallet {
         tap_tree: Option<TapTree<XOnlyPublicKey>>,
     ) -> Result<()> {
         let key_to_import = ImportedKey::new(pk, tap_tree)?;
-        if self
-            .imported_keys
-            .iter()
-            .any(|key| key.internal_key() == key_to_import.internal_key())
-        {
-            return Err(WalletErrorKind::DuplicateKey);
-        }
-        self.spk_cache
-            .insert(key_to_import.script_pubkey(), key_to_import.clone());
-        self.imported_keys.push(key_to_import);
-        Ok(())
+        Self::insert_imported_key(&mut self.imported_keys, key_to_import)
     }
 
     /// Test-only introspection of the imported keys; enable the `test-utils` feature to use it
     /// from tests in downstream crates.
     #[cfg(any(test, feature = "test-utils"))]
-    pub fn imported_keys(&self) -> &[ImportedKey] {
-        &self.imported_keys
+    pub fn imported_keys(&self) -> Vec<ImportedKey> {
+        let mut keys = self.imported_keys.values().cloned().collect::<Vec<_>>();
+        keys.sort_by(|left, right| {
+            left.script_pubkey()
+                .as_bytes()
+                .cmp(right.script_pubkey().as_bytes())
+        });
+        keys
     }
 
     pub const fn imported_balance(&self) -> &Balance {
@@ -200,8 +196,7 @@ impl BMPWallet {
 
                 let (tap_internal_key, tap_merkle_root) = self
                     .imported_keys
-                    .iter()
-                    .find(|key| key.script_pubkey() == *output_script_pubkey)
+                    .get(output_script_pubkey)
                     .map_or((None, None), |key| {
                         (Some(key.internal_key()), key.merkle_root())
                     });
@@ -258,9 +253,27 @@ impl BMPWallet {
 
     /// The imported key controlling `script_pubkey`, if any.
     fn imported_key_for_script(&self, script_pubkey: &ScriptBuf) -> Option<&ImportedKey> {
-        self.imported_keys
-            .iter()
-            .find(|key| key.script_pubkey() == *script_pubkey)
+        self.imported_keys.get(script_pubkey)
+    }
+
+    fn insert_imported_key(
+        imported_keys: &mut HashMap<ScriptBuf, ImportedKey>,
+        key: ImportedKey,
+    ) -> Result<()> {
+        if imported_keys
+            .values()
+            .any(|existing| existing.internal_key() == key.internal_key())
+        {
+            return Err(WalletErrorKind::DuplicateKey);
+        }
+
+        match imported_keys.entry(key.script_pubkey()) {
+            Entry::Occupied(_) => Err(WalletErrorKind::DuplicateKey),
+            Entry::Vacant(entry) => {
+                entry.insert(key);
+                Ok(())
+            }
+        }
     }
 
     /// Renders `script_pubkey` as an address, or `None` if it isn't a standard one.
@@ -470,20 +483,15 @@ impl BMPWallet {
         Ok(tx)
     }
 
-    pub(crate) fn load_imported_wallets(
-        imported_keys: &[ImportedKey],
+    pub(crate) fn load_imported_wallets<'a>(
+        imported_keys: impl IntoIterator<Item = &'a ImportedKey>,
         storage: &DBStorage,
         network: Network,
     ) -> Result<Vec<(PersistedWallet<Connection>, Connection)>> {
         let mut res = vec![];
         for key in imported_keys {
             let pubk = key.internal_key();
-            // One sub-wallet DB per output template: the same internal key may back a key-path-only
-            // output and a `tr(P, tree)` output, which have different script pubkeys.
-            let db_file = match key.merkle_root() {
-                None => format!("bmp_{pubk}.db3"),
-                Some(root) => format!("bmp_{pubk}_{root}.db3"),
-            };
+            let db_file = format!("bmp_{pubk}.db3");
 
             let imported_storage = storage.sibling(&db_file);
             let mut db = imported_storage.open(&db_file)?;
@@ -543,20 +551,14 @@ impl BMPWallet {
                 tracing::error!("Wallet database has no stored seed phrase.");
                 return Err(WalletErrorKind::MissingSeedPhrase);
             }
-            let imported_keys =
+            let mut imported_keys = HashMap::new();
+            for (key_hex, descriptor) in
                 Connection::load_imported_key_rows(&mut db, Self::IMPORTED_KEYS_TABLE_NAME)?
-                    .into_iter()
-                    .map(|(key_hex, descriptor)| {
-                        let secret =
-                            Scalar::from_hex(&key_hex).map_err(WalletErrorKind::generic)?;
-                        ImportedKey::from_descriptor_str(secret, &descriptor)
-                    })
-                    .collect::<Result<Vec<_>>>()?;
-            
-            let spk_cache = imported_keys
-                .iter()
-                .map(|key| (key.script_pubkey(), key.clone()))
-                .collect::<HashMap<_, _>>();
+            {
+                let secret = Scalar::from_hex(&key_hex).map_err(WalletErrorKind::generic)?;
+                let key = ImportedKey::from_descriptor_str(secret, &descriptor)?;
+                Self::insert_imported_key(&mut imported_keys, key)?;
+            }
 
             return Ok(Self {
                 wallet,
@@ -565,7 +567,6 @@ impl BMPWallet {
                 signers_loaded: false,
                 db: BMPDatabase::new(storage, db),
                 last_unused_address: None,
-                spk_cache,
                 salt,
                 key_verifier: key_verifier(&key),
             });
@@ -669,7 +670,7 @@ impl WalletApi for BMPWallet {
         let network = self.network();
         let mut vec = vec![&mut self.wallet];
         let mut imported =
-            Self::load_imported_wallets(&self.imported_keys, self.db.storage(), network)?;
+            Self::load_imported_wallets(self.imported_keys.values(), self.db.storage(), network)?;
 
         vec.extend(
             imported
@@ -746,12 +747,11 @@ impl WalletApi for BMPWallet {
 
         Ok(Self {
             wallet,
-            imported_keys: vec![],
+            imported_keys: HashMap::new(),
             imported_balance: Balance::default(),
             signers_loaded: true,
             db: BMPDatabase::new(storage, db),
             last_unused_address: None,
-            spk_cache: HashMap::new(),
             salt,
             key_verifier: key_verifier(&key),
         })
@@ -759,10 +759,11 @@ impl WalletApi for BMPWallet {
 
     fn persist(&mut self) -> Result<bool> {
         // Persist imported keys and then persist staged changes from ChangeSet
+        let imported_keys = self.imported_keys.values().collect::<Vec<_>>();
         Connection::persist_imported_keys(
             &mut self.db,
             Self::IMPORTED_KEYS_TABLE_NAME,
-            &self.imported_keys,
+            &imported_keys,
         )?;
 
         match self.wallet.staged_mut() {
@@ -780,7 +781,7 @@ impl WalletApi for BMPWallet {
         for (input_index, input_details) in psbt.inputs.clone().iter().enumerate() {
             let txout = input_details.witness_utxo.as_ref().unwrap();
 
-            if let Some(signing_key) = self.spk_cache.get(&txout.script_pubkey) {
+            if let Some(signing_key) = self.imported_keys.get(&txout.script_pubkey) {
                 let signer =
                     PrivateKey::from_slice(&signing_key.secret().serialize(), self.network())
                         .map_err(|_e| SignerError::External("Invalid signing key".to_owned()))?;
