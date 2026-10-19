@@ -17,6 +17,7 @@ mod tests {
 
     use bdk_kyoto::FeeRate;
     use bdk_kyoto::bip157::{ScriptBuf, tokio};
+    use bdk_wallet::bitcoin::bip32::Xpriv;
     use bdk_wallet::bitcoin::hashes::Hash as _;
     use bdk_wallet::bitcoin::hex::DisplayHex as _;
     use bdk_wallet::bitcoin::key::{Secp256k1, TapTweak as _};
@@ -27,9 +28,11 @@ mod tests {
         psbt, taproot,
     };
     use bdk_wallet::chain::{self, BlockId};
+    use bdk_wallet::keys::bip39::Mnemonic;
     use bdk_wallet::miniscript::Descriptor;
     use bdk_wallet::miniscript::descriptor::TapTree;
     use bdk_wallet::rusqlite::Connection;
+    use bdk_wallet::template::{Bip86, DescriptorTemplate as _};
     use bdk_wallet::test_utils::{ReceiveTo, receive_output_to_address};
     use bdk_wallet::{AddressInfo, KeychainKind, SignOptions};
     use bmp_tracing::tracing;
@@ -90,6 +93,26 @@ mod tests {
         );
 
         assert_ne!(new_receiving_addr, receiving_addr);
+        Ok(())
+    }
+
+    #[test]
+    fn new_wallet_matches_standard_bip39_restore() -> anyhow::Result<()> {
+        let mem_storage = DBStorage::Memory("bmp_wallet".to_owned());
+        let mut wallet = BMPWallet::new(mem_storage, &test_password(), Network::Regtest)?;
+        let seed_phrase = wallet.get_seed_phrase()?;
+        let wallet_address = wallet.get_new_address()?.address;
+
+        let mnemonic = Mnemonic::parse_normalized(&seed_phrase)?;
+        let bip39_seed = mnemonic.to_seed("");
+        let xprv = Xpriv::new_master(Network::Regtest, &bip39_seed)?;
+        let (descriptor, _, _) =
+            Bip86(xprv, KeychainKind::External).build(Network::Regtest.into())?;
+        let expected_address = descriptor
+            .at_derivation_index(0)?
+            .address(Network::Regtest)?;
+
+        assert_eq!(wallet_address, expected_address);
         Ok(())
     }
 

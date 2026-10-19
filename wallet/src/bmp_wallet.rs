@@ -120,7 +120,8 @@ impl BMPWallet {
         seed_phrase: &str,
     ) -> Result<PersistedWallet<Connection>> {
         let mnemonic = Mnemonic::parse_normalized(seed_phrase)?;
-        let xprv = Xpriv::new_master(network, &mnemonic.to_entropy())?;
+        let seed = mnemonic.to_seed("");
+        let xprv = Xpriv::new_master(network, &seed)?;
 
         let (descriptor, external_map, _) =
             Bip86(xprv, KeychainKind::External).build(network.into())?;
@@ -814,8 +815,8 @@ impl WalletApi for BMPWallet {
                 .map_err(|_| SignerError::External("Unable to load keys.".to_owned()))?;
             let mnemonic = Mnemonic::parse_normalized(&recovery_phrase)
                 .map_err(|_| SignerError::External("Unable to parse recovery phrase".to_owned()))?;
-
-            let xprv = Xpriv::new_master(self.network(), &mnemonic.to_entropy())
+            let seed = mnemonic.to_seed("");
+            let xprv = Xpriv::new_master(self.network(), &seed)
                 .map_err(|_| SignerError::External("Unable to load keys".to_owned()))?;
 
             let (_, external_map, _) = Bip86(xprv, KeychainKind::External)

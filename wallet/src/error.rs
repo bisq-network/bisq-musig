@@ -43,8 +43,6 @@ pub enum WalletErrorKind {
     MismatchedDescriptor,
     #[error("no wallet loaded")]
     NoWallet,
-    #[error("Wallet has no stored seed phrase")]
-    MissingSeedPhrase,
     #[error("wallet database already exists; refusing to overwrite it")]
     WalletAlreadyExists,
     ExtractTx(#[from] Box<ExtractTxError>),

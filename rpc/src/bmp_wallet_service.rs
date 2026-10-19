@@ -816,10 +816,11 @@ impl From<TxInfo> for bmp_wallet::Transaction {
 #[cfg(test)]
 mod tests {
     use ::wallet::error::ChainDataSourceError;
-    use ::wallet::persisted::DBStorage;
+    use ::wallet::persisted::{BMPWalletPersister as _, DBStorage};
     use ::wallet::utils::derive_key_from_password;
     use bdk_wallet::PersistedWallet;
     use bdk_wallet::bitcoin::Network;
+    use bdk_wallet::rusqlite::Connection;
     use tempfile::tempdir;
 
     use super::*;
@@ -978,35 +979,35 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread")]
-    async fn open_refuses_a_wallet_without_its_seed() {
-        let (dir, service) = open_service().await;
-        drop(service);
-
-        // Delete the seed row, so the database is left the way it is if creation stops after
-        // committing the BDK wallet but before storing the seed phrase.
+    async fn open_recreates_a_wallet_when_only_its_seed_was_persisted() {
+        let dir = tempdir().unwrap();
         let storage = DBStorage::File(dir.path().to_path_buf());
-        let salt = storage.load_salt(BMPWallet::DB_NAME).unwrap();
-        let db = storage.open(BMPWallet::DB_NAME).unwrap();
+        let salt = storage.persist_salt(BMPWallet::DB_NAME).unwrap();
+        let mut db = storage.open(BMPWallet::DB_NAME).unwrap();
         let key = derive_key_from_password(&PASSWORD.parse().unwrap(), &salt).unwrap();
         db.pragma_update(None, "key", key.as_str()).unwrap();
-        db.execute(&format!("DELETE FROM {}", BMPWallet::SEEDS_TABLE_NAME), [])
-            .unwrap();
+
+        Connection::init(
+            &mut db,
+            Some(BMPWallet::IMPORTED_KEYS_TABLE_NAME),
+            Some(BMPWallet::SEEDS_TABLE_NAME),
+        )
+        .unwrap();
+        let seed_phrase = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
+        Connection::persist_seed_phrase(&mut db, BMPWallet::SEEDS_TABLE_NAME, seed_phrase).unwrap();
         drop(db);
 
+        // The seed is durable, but wallet creation is simulated as having failed before BDK
+        // could persist its wallet record. Reopening must recreate that wallet from the seed.
         let reopened =
             BMPWalletServiceImpl::<NoopChainDataSource>::new(dir.path(), Network::Regtest);
-        let err = reopened.open_or_create_wallet(PASSWORD).await.unwrap_err();
-        assert!(
-            format!("{err:#}").contains("seed phrase"),
-            "expected the missing seed to be the reason, got: {err:#}"
+        reopened.open_or_create_wallet(PASSWORD).await.unwrap();
+        assert!(reopened.is_ready());
+        assert_eq!(
+            reopened.seed_words(PASSWORD).await.unwrap().join(" "),
+            seed_phrase
         );
-        let status = status_from(&err);
-        assert!(
-            status.message().contains("seed phrase"),
-            "expected the gRPC status to retain the missing-seed reason, got: {status}"
-        );
-        assert!(!reopened.is_ready());
-        assert!(reopened.unused_address().await.is_err());
+        assert!(reopened.unused_address().await.is_ok());
     }
     
     #[tokio::test(flavor = "multi_thread")]
