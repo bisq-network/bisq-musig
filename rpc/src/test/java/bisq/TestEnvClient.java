@@ -1,5 +1,10 @@
 package bisq;
 
+import com.google.gson.JsonElement;
+import com.google.gson.JsonObject;
+import com.google.gson.JsonParseException;
+import com.google.gson.JsonParser;
+
 import java.io.IOException;
 import java.net.URI;
 import java.net.http.HttpClient;
@@ -8,6 +13,7 @@ import java.net.http.HttpResponse;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Base64;
+import java.util.Map;
 import java.util.Properties;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -168,9 +174,11 @@ public class TestEnvClient {
     }
 
     /**
-     * Generic RPC call
+     * Generic RPC call. Returns the whole response: bitcoind answers RPC-level errors with a
+     * JSON body (often under HTTP 500), so the body is what callers interpret, and the status
+     * code is only decisive when there is no JSON body at all (see {@link #rpcResult}).
      */
-    private String rpcCall(String method, String paramsJson) {
+    private HttpResponse<String> rpcCall(String method, String paramsJson) {
         try {
             String body = """
                     {
@@ -191,12 +199,7 @@ public class TestEnvClient {
                     .POST(HttpRequest.BodyPublishers.ofString(body))
                     .build();
 
-            HttpResponse<String> response = httpClient.send(
-                    request,
-                    HttpResponse.BodyHandlers.ofString()
-            );
-
-            return response.body();
+            return httpClient.send(request, HttpResponse.BodyHandlers.ofString());
         } catch (IOException | InterruptedException e) {
             throw new RuntimeException("RPC call failed", e);
         }
@@ -214,7 +217,7 @@ public class TestEnvClient {
      * Fund an address
      */
     public String fundAddress(String address, double amount) {
-        String result = rpcCall("sendtoaddress", "[\"" + address + "\"," + amount + "]");
+        String result = rpcCall("sendtoaddress", "[\"" + address + "\"," + amount + "]").body();
         return extractResult(result);
     }
 
@@ -222,7 +225,7 @@ public class TestEnvClient {
      * Get raw transaction hex
      */
     public String getRawTransaction(String txid) {
-        String result = rpcCall("getrawtransaction", "[\"" + txid + "\"]");
+        String result = rpcCall("getrawtransaction", "[\"" + txid + "\"]").body();
         return extractResult(result);
     }
 
@@ -230,7 +233,7 @@ public class TestEnvClient {
      * Get current block height
      */
     public int getBlockCount() {
-        String result = rpcCall("getblockcount", "[]");
+        String result = rpcCall("getblockcount", "[]").body();
         return Integer.parseInt(extractResult(result));
     }
 
@@ -238,7 +241,7 @@ public class TestEnvClient {
      * Get wallet balance
      */
     public double getBalance() {
-        String result = rpcCall("getbalance", "[]");
+        String result = rpcCall("getbalance", "[]").body();
         return Double.parseDouble(extractResult(result));
     }
 
@@ -246,7 +249,7 @@ public class TestEnvClient {
      * Generate a new address
      */
     public String getNewAddress() {
-        String result = rpcCall("getnewaddress", "[]");
+        String result = rpcCall("getnewaddress", "[]").body();
         return extractResult(result);
     }
 
@@ -293,6 +296,70 @@ public class TestEnvClient {
             return full;
         }
         throw new RuntimeException("Invalid RPC response: " + json);
+    }
+
+    // --- JSON-aware calls --------------------------------------------------------------------
+    // The regex-based helpers above cover scalar results; these use Gson (which comes with
+    // protobuf-java-util) for calls whose results are objects or arrays.
+
+    /**
+     * Generic JSON-RPC call returning the {@code result} element, or failing with the node's
+     * error. {@code paramsJson} is a JSON array literal, e.g. {@code "[\"<txid>\", true]"}.
+     */
+    public JsonElement rpcResult(String method, String paramsJson) {
+        HttpResponse<String> response = rpcCall(method, paramsJson);
+        JsonObject json;
+        try {
+            json = JsonParser.parseString(response.body()).getAsJsonObject();
+        } catch (JsonParseException | IllegalStateException e) {
+            // No JSON body means the HTTP layer refused the call: 401 for wrong credentials,
+            // 404 for a wrong path. The status is the only clue there is.
+            throw new RuntimeException(method + " failed: HTTP " + response.statusCode()
+                    + ", body: '" + response.body() + "'", e);
+        }
+        JsonElement error = json.get("error");
+        if (error != null && !error.isJsonNull()) {
+            throw new RuntimeException(method + " failed: " + error);
+        }
+        return json.get("result");
+    }
+
+    /**
+     * Pays several addresses in a single transaction from the node's wallet (amounts in BTC);
+     * returns the txid.
+     */
+    public String sendMany(Map<String, Double> amountsByAddress) {
+        JsonObject outputs = new JsonObject();
+        amountsByAddress.forEach(outputs::addProperty);
+        return rpcResult("sendmany", "[\"\"," + outputs + "]").getAsString();
+    }
+
+    /** Whether the node currently holds {@code txid} in its mempool. */
+    public boolean isInMempool(String txid) {
+        for (JsonElement id : rpcResult("getrawmempool", "[]").getAsJsonArray()) {
+            if (txid.equals(id.getAsString())) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /** The mempool entry for {@code txid} (fees, weight, ...); fails if it isn't in the mempool. */
+    public JsonObject getMempoolEntry(String txid) {
+        return rpcResult("getmempoolentry", "[\"" + txid + "\"]").getAsJsonObject();
+    }
+
+    /**
+     * The decoded transaction with its chain status (confirmations, blockhash, vout, ...). Works
+     * for any transaction, mined or not, because testenv starts bitcoind with {@code -txindex}.
+     */
+    public JsonObject getRawTransactionVerbose(String txid) {
+        return rpcResult("getrawtransaction", "[\"" + txid + "\",true]").getAsJsonObject();
+    }
+
+    /** The node wallet's view of one of its own transactions (amount, confirmations, ...). */
+    public JsonObject getWalletTransaction(String txid) {
+        return rpcResult("gettransaction", "[\"" + txid + "\"]").getAsJsonObject();
     }
 
     @Override

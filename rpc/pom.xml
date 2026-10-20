@@ -13,6 +13,9 @@
         <!-- Overridable with -Dmusigd.bin=/path/to/musigd. The default is where a debug
              cargo build of the musigd binary lands, relative to the workspace root. -->
         <musigd.bin>${project.basedir}/../target/debug/musigd</musigd.bin>
+        <!-- Overridable with -Dtestenv.bin=/path/to/testenv-server. Used by the integration
+             tests that start their own regtest chain (see readme-full-blown-wallet-test.md). -->
+        <testenv.bin>${project.basedir}/../target/debug/testenv-server</testenv.bin>
     </properties>
 
     <dependencies>
@@ -53,6 +56,13 @@
             <groupId>com.google.protobuf</groupId>
             <artifactId>protobuf-java-util</artifactId>
             <version>3.25.5</version>
+        </dependency>
+        <!-- Already pulled in by protobuf-java-util; declared so that the JSON parsing in the
+             integration tests' bitcoind RPC client doesn't hinge on a transitive dependency. -->
+        <dependency>
+            <groupId>com.google.code.gson</groupId>
+            <artifactId>gson</artifactId>
+            <version>2.8.9</version>
         </dependency>
 
         <dependency>
@@ -140,6 +150,9 @@
                         <bitcoinP2pAddr>${env.TESTENV_P2P_ADDR}</bitcoinP2pAddr>
                         <!-- Where BmpWalletServiceIntegrationTest finds the daemon to launch. -->
                         <musigd.bin>${musigd.bin}</musigd.bin>
+                        <!-- Where BmpWalletEndToEndIntegrationTest finds the regtest chain
+                             launcher. -->
+                        <testenv.bin>${testenv.bin}</testenv.bin>
                     </systemPropertyVariables>
                 </configuration>
                 <executions>
