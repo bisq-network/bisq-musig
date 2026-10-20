@@ -19,6 +19,13 @@ It currently provides the following features:
 - `MemWallet`: an in-memory wallet synced via BDK Electrum, mainly used in tests
 - Syncing using Compact Block Filters (CBF) through `bdk_kyoto`, behind the `ChainDataSource` trait
 
+## Imported-key identity
+
+An imported key is identified by its internal Taproot key `P`, independently of its output
+template. Therefore `tr(P)` and `tr(P, tap_tree)` represent the same imported key: once either
+form is imported, another import with the same `P` is a duplicate and must not create a second
+wallet entry.
+
 # Running tests
 
 `cargo test -p wallet`
