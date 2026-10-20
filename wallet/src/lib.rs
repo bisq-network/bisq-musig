@@ -24,8 +24,8 @@ mod tests {
     use bdk_wallet::bitcoin::secp256k1::Message;
     use bdk_wallet::bitcoin::sighash::{Prevouts, SighashCache};
     use bdk_wallet::bitcoin::{
-        Address, AddressType, Amount, BlockHash, Network, OutPoint, TxOut, Weight, XOnlyPublicKey,
-        psbt, taproot,
+        Address, AddressType, Amount, BlockHash, Network, OutPoint, Transaction, TxOut, Weight,
+        XOnlyPublicKey, absolute, psbt, taproot, transaction,
     };
     use bdk_wallet::chain::{self, BlockId};
     use bdk_wallet::keys::bip39::Mnemonic;
@@ -98,8 +98,8 @@ mod tests {
 
     #[test]
     fn new_wallet_matches_standard_bip39_restore() -> anyhow::Result<()> {
-        let mem_storage = DBStorage::Memory("bmp_wallet".to_owned());
-        let mut wallet = BMPWallet::new(mem_storage, &test_password(), Network::Regtest)?;
+        let mem_storage = MemDbHandle::new()?;
+        let mut wallet = BMPWallet::new(mem_storage.store, &test_password(), Network::Regtest)?;
         let seed_phrase = wallet.get_seed_phrase()?;
         let wallet_address = wallet.get_new_address()?.address;
 
@@ -113,6 +113,39 @@ mod tests {
             .address(Network::Regtest)?;
 
         assert_eq!(wallet_address, expected_address);
+        Ok(())
+    }
+
+    #[test]
+    fn signing_rejects_seed_descriptor_mismatch() -> anyhow::Result<()> {
+        let mem_storage = MemDbHandle::new()?;
+        let storage = mem_storage.store.clone();
+
+        let wallet = BMPWallet::new(storage.clone(), &test_password(), Network::Regtest)?;
+        drop(wallet);
+
+        let salt = storage.load_salt(BMPWallet::DB_NAME)?;
+        let mut db = storage.open(BMPWallet::DB_NAME)?;
+        let key = derive_key_from_password(&test_password(), &salt)?;
+        db.pragma_update(None, "key", key.as_str())?;
+        db.execute(&format!("DELETE FROM {}", BMPWallet::SEEDS_TABLE_NAME), [])?;
+        Connection::persist_seed_phrase(
+            &mut db,
+            BMPWallet::SEEDS_TABLE_NAME,
+            "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about",
+        )?;
+        drop(db);
+
+        let mut wallet = BMPWallet::load_wallet(storage, Network::Regtest, &test_password())?;
+        let mut psbt = psbt::Psbt::from_unsigned_tx(Transaction {
+            version: transaction::Version::TWO,
+            lock_time: absolute::LockTime::ZERO,
+            input: vec![],
+            output: vec![],
+        })?;
+        let error = wallet.sign(&mut psbt, SignOptions::default()).unwrap_err();
+
+        assert!(matches!(error, WalletErrorKind::SeedDescriptorMismatch));
         Ok(())
     }
 

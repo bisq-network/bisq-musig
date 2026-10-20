@@ -45,6 +45,8 @@ pub enum WalletErrorKind {
     NoWallet,
     #[error("wallet database already exists; refusing to overwrite it")]
     WalletAlreadyExists,
+    #[error("seed-derived descriptors do not match the persisted wallet descriptors")]
+    SeedDescriptorMismatch,
     ExtractTx(#[from] Box<ExtractTxError>),
     LoadWallet(#[from] bdk_wallet::LoadWithPersistError<rusqlite::Error>),
     CreateWallet(#[from] bdk_wallet::CreateWithPersistError<rusqlite::Error>),

@@ -202,11 +202,7 @@ impl MemDbHandle {
     /// Pin the shared-cache DB for an imported key's sub-wallet so it
     /// survives connections opening/closing around it.
     pub fn anchor_imported_key(&mut self, key: &ImportedKey) -> anyhow::Result<()> {
-        let db_file = match key.merkle_root() {
-            None => format!("bmp_{}.db3", key.internal_key()),
-            Some(root) => format!("bmp_{}_{}.db3", key.internal_key(), root),
-        };
-
+        let db_file = format!("bmp_{}.db3", key.internal_key());
         let sibling_location = self.store.sibling(&db_file);
         self.anchors.push(sibling_location.open(&db_file)?);
         Ok(())

@@ -12,8 +12,9 @@ use bdk_wallet::bitcoin::{
     XOnlyPublicKey, consensus, psbt,
 };
 use bdk_wallet::chain::{ChainPosition, Merge as _};
+use bdk_wallet::descriptor::ExtendedDescriptor;
 use bdk_wallet::keys::bip39::Mnemonic;
-use bdk_wallet::miniscript::descriptor::{TapTree, Tr};
+use bdk_wallet::miniscript::descriptor::{KeyMap, TapTree, Tr};
 use bdk_wallet::miniscript::psbt::PsbtExt as _;
 use bdk_wallet::rusqlite::Connection;
 use bdk_wallet::signer::{InputSigner as _, SignerContext, SignerError, SignerWrapper};
@@ -113,20 +114,37 @@ pub struct BMPWallet {
     key_verifier: [u8; 32],
 }
 
+struct Bip86Keys {
+    external: (ExtendedDescriptor, KeyMap),
+    internal: (ExtendedDescriptor, KeyMap),
+}
+
 impl BMPWallet {
+    fn bip86_keys_from_seed_phrase(network: Network, seed_phrase: &str) -> Result<Bip86Keys> {
+        let mnemonic = Mnemonic::parse_normalized(seed_phrase)?;
+        let seed = mnemonic.to_seed("");
+        let xprv = Xpriv::new_master(network, &seed)?;
+
+        let (external, external_map, _) =
+            Bip86(xprv, KeychainKind::External).build(network.into())?;
+        let (internal, internal_map, _) =
+            Bip86(xprv, KeychainKind::Internal).build(network.into())?;
+
+        Ok(Bip86Keys {
+            external: (external, external_map),
+            internal: (internal, internal_map),
+        })
+    }
+
     fn create_wallet_from_seed(
         db: &mut Connection,
         network: Network,
         seed_phrase: &str,
     ) -> Result<PersistedWallet<Connection>> {
-        let mnemonic = Mnemonic::parse_normalized(seed_phrase)?;
-        let seed = mnemonic.to_seed("");
-        let xprv = Xpriv::new_master(network, &seed)?;
-
-        let (descriptor, external_map, _) =
-            Bip86(xprv, KeychainKind::External).build(network.into())?;
-        let (change_descriptor, internal_map, _) =
-            Bip86(xprv, KeychainKind::Internal).build(network.into())?;
+        let Bip86Keys {
+            external: (descriptor, external_map),
+            internal: (change_descriptor, internal_map),
+        } = Self::bip86_keys_from_seed_phrase(network, seed_phrase)?;
 
         Ok(Wallet::create(descriptor, change_descriptor)
             .network(network)
@@ -567,6 +585,7 @@ impl BMPWallet {
         let wallet = if let Some(wallet) = wallet_opt {
             wallet
         } else if Connection::has_seed_phrase(&db, Self::SEEDS_TABLE_NAME)? {
+            tracing::warn!("No wallet found, but seed phrase exists; creating wallet from seed");
             let seed_phrase = Connection::get_seed_phrase(&db, Self::SEEDS_TABLE_NAME)?;
             Self::create_wallet_from_seed(&mut db, network, &seed_phrase)?
         } else {
@@ -813,19 +832,17 @@ impl WalletApi for BMPWallet {
             let recovery_phrase = self
                 .get_seed_phrase()
                 .map_err(|_| SignerError::External("Unable to load keys.".to_owned()))?;
-            let mnemonic = Mnemonic::parse_normalized(&recovery_phrase)
-                .map_err(|_| SignerError::External("Unable to parse recovery phrase".to_owned()))?;
-            let seed = mnemonic.to_seed("");
-            let xprv = Xpriv::new_master(self.network(), &seed)
+            let Bip86Keys {
+                external: (external_descriptor, external_map),
+                internal: (internal_descriptor, internal_map),
+            } = Self::bip86_keys_from_seed_phrase(self.network(), &recovery_phrase)
                 .map_err(|_| SignerError::External("Unable to load keys".to_owned()))?;
 
-            let (_, external_map, _) = Bip86(xprv, KeychainKind::External)
-                .build(self.network().into())
-                .map_err(|_| SignerError::External("BIP 86 derivation failed".to_owned()))?;
-
-            let (_, internal_map, _) = Bip86(xprv, KeychainKind::Internal)
-                .build(self.network().into())
-                .map_err(|_| SignerError::External("BIP 86 derivation failed".to_owned()))?;
+            if &external_descriptor != self.wallet.public_descriptor(KeychainKind::External)
+                || &internal_descriptor != self.wallet.public_descriptor(KeychainKind::Internal)
+            {
+                return Err(WalletErrorKind::SeedDescriptorMismatch);
+            }
 
             self.wallet.set_keymap(KeychainKind::External, external_map);
             self.wallet.set_keymap(KeychainKind::Internal, internal_map);
