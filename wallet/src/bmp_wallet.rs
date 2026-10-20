@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+use std::collections::hash_map::Entry;
 use std::ops::{Deref, DerefMut};
 use std::time::UNIX_EPOCH;
 use std::vec;
@@ -25,8 +27,8 @@ use secp::Scalar;
 
 use crate::chain_data_source::ChainDataSource;
 use crate::coin_selection::{AlwaysSpendImportedFirst, SpendImportedOnly};
-use crate::password::Password;
 use crate::error::{Result, WalletErrorKind};
+use crate::password::Password;
 use crate::persisted::{BMPDatabase, BMPWalletPersister as _, DBStorage, PersistenceError};
 use crate::protocol_wallet_api::{
     ProtocolWalletApi, WalletExt, finish_standard_psbt, internal_key_at_index,
@@ -97,7 +99,7 @@ pub(crate) const STOP_GAP: usize = 50;
 
 pub struct BMPWallet {
     wallet: PersistedWallet<Connection>,
-    imported_keys: Vec<ImportedKey>,
+    imported_keys: HashMap<ScriptBuf, ImportedKey>,
     imported_balance: Balance,
     signers_loaded: bool,
     db: BMPDatabase<Connection>,
@@ -165,15 +167,21 @@ impl BMPWallet {
         pk: Scalar,
         tap_tree: Option<TapTree<XOnlyPublicKey>>,
     ) -> Result<()> {
-        self.imported_keys.push(ImportedKey::new(pk, tap_tree)?);
-        Ok(())
+        let key_to_import = ImportedKey::new(pk, tap_tree)?;
+        Self::insert_imported_key(&mut self.imported_keys, key_to_import)
     }
 
     /// Test-only introspection of the imported keys; enable the `test-utils` feature to use it
     /// from tests in downstream crates.
     #[cfg(any(test, feature = "test-utils"))]
-    pub fn imported_keys(&self) -> &[ImportedKey] {
-        &self.imported_keys
+    pub fn imported_keys(&self) -> Vec<ImportedKey> {
+        let mut keys = self.imported_keys.values().cloned().collect::<Vec<_>>();
+        keys.sort_by(|left, right| {
+            left.script_pubkey()
+                .as_bytes()
+                .cmp(right.script_pubkey().as_bytes())
+        });
+        keys
     }
 
     pub const fn imported_balance(&self) -> &Balance {
@@ -188,8 +196,7 @@ impl BMPWallet {
 
                 let (tap_internal_key, tap_merkle_root) = self
                     .imported_keys
-                    .iter()
-                    .find(|key| key.script_pubkey() == *output_script_pubkey)
+                    .get(output_script_pubkey)
                     .map_or((None, None), |key| {
                         (Some(key.internal_key()), key.merkle_root())
                     });
@@ -246,9 +253,27 @@ impl BMPWallet {
 
     /// The imported key controlling `script_pubkey`, if any.
     fn imported_key_for_script(&self, script_pubkey: &ScriptBuf) -> Option<&ImportedKey> {
-        self.imported_keys
-            .iter()
-            .find(|key| key.script_pubkey() == *script_pubkey)
+        self.imported_keys.get(script_pubkey)
+    }
+
+    fn insert_imported_key(
+        imported_keys: &mut HashMap<ScriptBuf, ImportedKey>,
+        key: ImportedKey,
+    ) -> Result<()> {
+        if imported_keys
+            .values()
+            .any(|existing| existing.internal_key() == key.internal_key())
+        {
+            return Err(WalletErrorKind::DuplicateKey);
+        }
+
+        match imported_keys.entry(key.script_pubkey()) {
+            Entry::Occupied(_) => Err(WalletErrorKind::DuplicateKey),
+            Entry::Vacant(entry) => {
+                entry.insert(key);
+                Ok(())
+            }
+        }
     }
 
     /// Renders `script_pubkey` as an address, or `None` if it isn't a standard one.
@@ -458,20 +483,15 @@ impl BMPWallet {
         Ok(tx)
     }
 
-    pub(crate) fn load_imported_wallets(
-        imported_keys: &[ImportedKey],
+    pub(crate) fn load_imported_wallets<'a>(
+        imported_keys: impl IntoIterator<Item = &'a ImportedKey>,
         storage: &DBStorage,
         network: Network,
     ) -> Result<Vec<(PersistedWallet<Connection>, Connection)>> {
         let mut res = vec![];
         for key in imported_keys {
             let pubk = key.internal_key();
-            // One sub-wallet DB per output template: the same internal key may back a key-path-only
-            // output and a `tr(P, tree)` output, which have different script pubkeys.
-            let db_file = match key.merkle_root() {
-                None => format!("bmp_{pubk}.db3"),
-                Some(root) => format!("bmp_{pubk}_{root}.db3"),
-            };
+            let db_file = format!("bmp_{pubk}.db3");
 
             let imported_storage = storage.sibling(&db_file);
             let mut db = imported_storage.open(&db_file)?;
@@ -531,15 +551,14 @@ impl BMPWallet {
                 tracing::error!("Wallet database has no stored seed phrase.");
                 return Err(WalletErrorKind::MissingSeedPhrase);
             }
-            let imported_keys =
+            let mut imported_keys = HashMap::new();
+            for (key_hex, descriptor) in
                 Connection::load_imported_key_rows(&mut db, Self::IMPORTED_KEYS_TABLE_NAME)?
-                    .into_iter()
-                    .map(|(key_hex, descriptor)| {
-                        let secret =
-                            Scalar::from_hex(&key_hex).map_err(WalletErrorKind::generic)?;
-                        ImportedKey::from_descriptor_str(secret, &descriptor)
-                    })
-                    .collect::<Result<Vec<_>>>()?;
+            {
+                let secret = Scalar::from_hex(&key_hex).map_err(WalletErrorKind::generic)?;
+                let key = ImportedKey::from_descriptor_str(secret, &descriptor)?;
+                Self::insert_imported_key(&mut imported_keys, key)?;
+            }
 
             return Ok(Self {
                 wallet,
@@ -568,11 +587,11 @@ impl ProtocolWalletApi for BMPWallet {
         self.wallet.network()
     }
 
-    fn new_address(&mut self) -> Result<Address, WalletErrorKind> {
+    fn new_address(&mut self) -> Result<Address> {
         Ok(self.next_address(KeychainKind::External)?.address)
     }
 
-    fn new_internal_key(&mut self) -> Result<XOnlyPublicKey, WalletErrorKind> {
+    fn new_internal_key(&mut self) -> Result<XOnlyPublicKey> {
         // Use `next_address` (gap-filling) rather than `reveal_next_address` directly so
         // that the internal key's index stays in step with what `new_address` would yield.
         let index = self.next_address(KeychainKind::External)?.index;
@@ -583,7 +602,7 @@ impl ProtocolWalletApi for BMPWallet {
         &mut self,
         recipients: Vec<(ScriptBuf, Amount)>,
         fee_rate: FeeRate,
-    ) -> Result<Psbt, WalletErrorKind> {
+    ) -> Result<Psbt> {
         finish_standard_psbt(self.build_tx(), recipients, fee_rate)
     }
 
@@ -591,7 +610,7 @@ impl ProtocolWalletApi for BMPWallet {
         &mut self,
         psbt: &mut Psbt,
         is_selected: &dyn Fn(&OutPoint) -> bool,
-    ) -> Result<(), WalletErrorKind> {
+    ) -> Result<()> {
         // TODO unify signing
         sign_selected_inputs_with(self, psbt, is_selected, |w, p, opts| {
             <Self as WalletApi>::sign(w, p, opts)
@@ -602,7 +621,7 @@ impl ProtocolWalletApi for BMPWallet {
         &mut self,
         pk: Scalar,
         tap_tree: Option<TapTree<XOnlyPublicKey>>,
-    ) -> Result<(), WalletErrorKind> {
+    ) -> Result<()> {
         self.import_private_key(pk, tap_tree)
     }
 }
@@ -651,7 +670,7 @@ impl WalletApi for BMPWallet {
         let network = self.network();
         let mut vec = vec![&mut self.wallet];
         let mut imported =
-            Self::load_imported_wallets(&self.imported_keys, self.db.storage(), network)?;
+            Self::load_imported_wallets(self.imported_keys.values(), self.db.storage(), network)?;
 
         vec.extend(
             imported
@@ -728,7 +747,7 @@ impl WalletApi for BMPWallet {
 
         Ok(Self {
             wallet,
-            imported_keys: vec![],
+            imported_keys: HashMap::new(),
             imported_balance: Balance::default(),
             signers_loaded: true,
             db: BMPDatabase::new(storage, db),
@@ -740,10 +759,11 @@ impl WalletApi for BMPWallet {
 
     fn persist(&mut self) -> Result<bool> {
         // Persist imported keys and then persist staged changes from ChangeSet
+        let imported_keys = self.imported_keys.values().collect::<Vec<_>>();
         Connection::persist_imported_keys(
             &mut self.db,
             Self::IMPORTED_KEYS_TABLE_NAME,
-            &self.imported_keys,
+            &imported_keys,
         )?;
 
         match self.wallet.staged_mut() {
@@ -757,18 +777,11 @@ impl WalletApi for BMPWallet {
     }
 
     fn sign(&mut self, psbt: &mut Psbt, sign_options: SignOptions) -> Result<()> {
-        //// @TODO performance: cache the public keys derivation
         let secp = self.secp_ctx();
-        let is_mine = |input_script: &ScriptBuf| {
-            self.imported_keys
-                .iter()
-                .find(|key| key.script_pubkey() == *input_script)
-        };
-
         for (input_index, input_details) in psbt.inputs.clone().iter().enumerate() {
             let txout = input_details.witness_utxo.as_ref().unwrap();
 
-            if let Some(signing_key) = is_mine(&txout.script_pubkey) {
+            if let Some(signing_key) = self.imported_keys.get(&txout.script_pubkey) {
                 let signer =
                     PrivateKey::from_slice(&signing_key.secret().serialize(), self.network())
                         .map_err(|_e| SignerError::External("Invalid signing key".to_owned()))?;
