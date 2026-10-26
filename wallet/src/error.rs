@@ -28,6 +28,8 @@ pub enum WalletErrorKind {
     Persistence(#[from] PersistenceError),
     #[error("failed to derive database key: {0}")]
     KeyDerivation(#[from] argon2::Error),
+    #[error("an imported key with this internal key already exists")]
+    DuplicateKey,
     #[error("Invalid Password provided")]
     InvalidPassword,
     Signer(#[from] bdk_wallet::signer::SignerError),

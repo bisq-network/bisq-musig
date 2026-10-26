@@ -18,6 +18,7 @@ mod tests {
     use bdk_kyoto::FeeRate;
     use bdk_kyoto::bip157::{ScriptBuf, tokio};
     use bdk_wallet::bitcoin::hashes::Hash as _;
+    use bdk_wallet::bitcoin::hex::DisplayHex as _;
     use bdk_wallet::bitcoin::key::{Secp256k1, TapTweak as _};
     use bdk_wallet::bitcoin::secp256k1::Message;
     use bdk_wallet::bitcoin::sighash::{Prevouts, SighashCache};
@@ -192,6 +193,66 @@ mod tests {
     }
 
     #[test]
+    fn load_rejects_duplicate_imported_internal_key() -> anyhow::Result<()> {
+        let mem_storage = MemDbHandle::new()?;
+        let mut wallet = BMPWallet::new(
+            mem_storage.store.clone(),
+            &test_password(),
+            Network::Regtest,
+        )?;
+        let pk = new_private_key();
+
+        wallet.import_private_key(pk, None)?;
+        wallet.persist()?;
+
+        let descriptor = wallet.imported_keys()[0].descriptor().to_string();
+        let negated_pk = -pk;
+        assert_eq!(derive_public_key(&pk), derive_public_key(&negated_pk));
+
+        let db = mem_storage.store.open(BMPWallet::DB_NAME)?;
+        db.execute(
+            &format!(
+                "INSERT INTO {} (key, descriptor) VALUES (?1, ?2)",
+                BMPWallet::IMPORTED_KEYS_TABLE_NAME
+            ),
+            bdk_wallet::rusqlite::params![negated_pk.serialize().to_lower_hex_string(), descriptor],
+        )?;
+        drop(db);
+
+        let result = BMPWallet::load_wallet(mem_storage.store, Network::Regtest, &test_password());
+        assert!(matches!(result, Err(WalletErrorKind::DuplicateKey)));
+        Ok(())
+    }
+
+    #[test]
+    fn test_duplicate_key_import() -> anyhow::Result<()> {
+        let mem_storage = MemDbHandle::new()?;
+        let mut bmp_wallet = BMPWallet::new(
+            mem_storage.store.clone(),
+            &test_password(),
+            Network::Regtest,
+        )?;
+        let pk1 = new_private_key();
+
+        bmp_wallet.import_private_key(pk1, None)?;
+        assert_eq!(bmp_wallet.imported_keys().len(), 1);
+
+        let res = bmp_wallet.import_private_key(pk1, None);
+        assert!(matches!(res, Err(WalletErrorKind::DuplicateKey)));
+        assert_eq!(bmp_wallet.imported_keys().len(), 1);
+
+        let (a, b) = (
+            derive_public_key(&new_private_key()),
+            derive_public_key(&new_private_key()),
+        );
+        let tap_tree = sample_tap_tree(&a, &b);
+        let res = bmp_wallet.import_private_key(pk1, Some(tap_tree));
+        assert!(matches!(res, Err(WalletErrorKind::DuplicateKey)));
+        assert_eq!(bmp_wallet.imported_keys().len(), 1);
+        Ok(())
+    }
+
+    #[test]
     fn test_imported_keys_with_tap_tree() -> anyhow::Result<()> {
         let mem_storage = MemDbHandle::new()?;
 
@@ -226,7 +287,8 @@ mod tests {
 
         assert_eq!(loaded_wallet.imported_keys().len(), 1);
 
-        let loaded = &loaded_wallet.imported_keys()[0];
+        let loaded_keys = loaded_wallet.imported_keys();
+        let loaded = &loaded_keys[0];
         assert_eq!(loaded.secret(), pk);
         assert_eq!(loaded.internal_key(), derive_public_key(&pk));
         assert_eq!(loaded.tap_tree(), Some(&tap_tree));
@@ -376,7 +438,7 @@ mod tests {
         }
 
         // Anchor the connections of the imported keys
-        for key in bmp_wallet.imported_keys() {
+        for key in &bmp_wallet.imported_keys() {
             mem_storage.anchor_imported_key(key)?;
         }
 

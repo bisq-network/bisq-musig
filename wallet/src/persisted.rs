@@ -301,7 +301,7 @@ pub trait BMPWalletPersister: WalletPersister {
     fn persist_imported_keys(
         db: &mut Self::DB,
         keys_table_name: &str,
-        keys: &[ImportedKey],
+        keys: &[&ImportedKey],
     ) -> Result<()>;
 
     fn get_seed_phrase(db: &Self::DB, seeds_table_name: &str) -> Result<String>;
@@ -397,7 +397,7 @@ impl BMPWalletPersister for Connection {
     fn persist_imported_keys(
         db: &mut Self::DB,
         keys_table_name: &str,
-        keys: &[ImportedKey],
+        keys: &[&ImportedKey],
     ) -> Result<()> {
         let db_trx = db.transaction()?;
         {
