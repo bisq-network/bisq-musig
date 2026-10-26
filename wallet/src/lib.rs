@@ -17,18 +17,22 @@ mod tests {
 
     use bdk_kyoto::FeeRate;
     use bdk_kyoto::bip157::{ScriptBuf, tokio};
+    use bdk_wallet::bitcoin::bip32::Xpriv;
     use bdk_wallet::bitcoin::hashes::Hash as _;
     use bdk_wallet::bitcoin::hex::DisplayHex as _;
     use bdk_wallet::bitcoin::key::{Secp256k1, TapTweak as _};
     use bdk_wallet::bitcoin::secp256k1::Message;
     use bdk_wallet::bitcoin::sighash::{Prevouts, SighashCache};
     use bdk_wallet::bitcoin::{
-        Address, AddressType, Amount, BlockHash, Network, OutPoint, TxOut, Weight, XOnlyPublicKey,
-        psbt, taproot,
+        Address, AddressType, Amount, BlockHash, Network, OutPoint, Transaction, TxOut, Weight,
+        XOnlyPublicKey, absolute, psbt, taproot, transaction,
     };
     use bdk_wallet::chain::{self, BlockId};
+    use bdk_wallet::keys::bip39::Mnemonic;
     use bdk_wallet::miniscript::Descriptor;
     use bdk_wallet::miniscript::descriptor::TapTree;
+    use bdk_wallet::rusqlite::Connection;
+    use bdk_wallet::template::{Bip86, DescriptorTemplate as _};
     use bdk_wallet::test_utils::{ReceiveTo, receive_output_to_address};
     use bdk_wallet::{AddressInfo, KeychainKind, SignOptions};
     use bmp_tracing::tracing;
@@ -38,8 +42,9 @@ mod tests {
     use crate::bmp_wallet::{BMPWallet, ImportedKey, STOP_GAP, WalletApi as _};
     use crate::error::WalletErrorKind;
     use crate::password::Password;
-    use crate::persisted::DBStorage;
+    use crate::persisted::{BMPWalletPersister as _, DBStorage};
     use crate::test_utils::{MemDbHandle, MockedBDKElectrum, derive_public_key, test_password};
+    use crate::utils::derive_key_from_password;
 
     fn new_private_key() -> Scalar {
         let mut seed: [u8; 32] = [0u8; 32];
@@ -88,6 +93,59 @@ mod tests {
         );
 
         assert_ne!(new_receiving_addr, receiving_addr);
+        Ok(())
+    }
+
+    #[test]
+    fn new_wallet_matches_standard_bip39_restore() -> anyhow::Result<()> {
+        let mem_storage = MemDbHandle::new()?;
+        let mut wallet = BMPWallet::new(mem_storage.store, &test_password(), Network::Regtest)?;
+        let seed_phrase = wallet.get_seed_phrase()?;
+        let wallet_address = wallet.get_new_address()?.address;
+
+        let mnemonic = Mnemonic::parse_normalized(&seed_phrase)?;
+        let bip39_seed = mnemonic.to_seed("");
+        let xprv = Xpriv::new_master(Network::Regtest, &bip39_seed)?;
+        let (descriptor, _, _) =
+            Bip86(xprv, KeychainKind::External).build(Network::Regtest.into())?;
+        let expected_address = descriptor
+            .at_derivation_index(0)?
+            .address(Network::Regtest)?;
+
+        assert_eq!(wallet_address, expected_address);
+        Ok(())
+    }
+
+    #[test]
+    fn signing_rejects_seed_descriptor_mismatch() -> anyhow::Result<()> {
+        let mem_storage = MemDbHandle::new()?;
+        let storage = mem_storage.store.clone();
+
+        let wallet = BMPWallet::new(storage.clone(), &test_password(), Network::Regtest)?;
+        drop(wallet);
+
+        let salt = storage.load_salt(BMPWallet::DB_NAME)?;
+        let mut db = storage.open(BMPWallet::DB_NAME)?;
+        let key = derive_key_from_password(&test_password(), &salt)?;
+        db.pragma_update(None, "key", key.as_str())?;
+        db.execute(&format!("DELETE FROM {}", BMPWallet::SEEDS_TABLE_NAME), [])?;
+        Connection::persist_seed_phrase(
+            &mut db,
+            BMPWallet::SEEDS_TABLE_NAME,
+            "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about",
+        )?;
+        drop(db);
+
+        let mut wallet = BMPWallet::load_wallet(storage, Network::Regtest, &test_password())?;
+        let mut psbt = psbt::Psbt::from_unsigned_tx(Transaction {
+            version: transaction::Version::TWO,
+            lock_time: absolute::LockTime::ZERO,
+            input: vec![],
+            output: vec![],
+        })?;
+        let error = wallet.sign(&mut psbt, SignOptions::default()).unwrap_err();
+
+        assert!(matches!(error, WalletErrorKind::SeedDescriptorMismatch));
         Ok(())
     }
 
@@ -142,28 +200,28 @@ mod tests {
     }
 
     #[test]
-    fn load_refuses_wallet_without_seed_phrase() -> anyhow::Result<()> {
+    fn load_recreates_wallet_when_seed_is_present() -> anyhow::Result<()> {
         let mem_storage = MemDbHandle::new()?;
-        BMPWallet::new(
-            mem_storage.store.clone(),
-            &test_password(),
-            Network::Regtest,
+        let storage = mem_storage.store.clone();
+        let seed_phrase = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
+        let mut db = storage.open(BMPWallet::DB_NAME)?;
+        let salt = storage.persist_salt(BMPWallet::DB_NAME)?;
+        let key = derive_key_from_password(&test_password(), &salt)?;
+        db.pragma_update(None, "key", key.as_str())?;
+        Connection::init(
+            &mut db,
+            Some(BMPWallet::IMPORTED_KEYS_TABLE_NAME),
+            Some(BMPWallet::SEEDS_TABLE_NAME),
         )?;
-
-        // Put the database in the state creation leaves it in if it stops after committing the
-        // BDK wallet, but before storing the seed phrase.
-        let db = mem_storage.store.open(BMPWallet::DB_NAME)?;
-        db.execute(&format!("DELETE FROM {}", BMPWallet::SEEDS_TABLE_NAME), [])?;
+        Connection::persist_seed_phrase(&mut db, BMPWallet::SEEDS_TABLE_NAME, seed_phrase)?;
         drop(db);
 
-        let Err(err) =
-            BMPWallet::load_wallet(mem_storage.store, Network::Regtest, &test_password())
-        else {
-            panic!("a wallet without its seed phrase must not load");
-        };
-        assert!(
-            err.to_string().contains("seed phrase"),
-            "unexpected error: {err}"
+        let mut wallet = BMPWallet::load_wallet(storage, Network::Regtest, &test_password())?;
+        assert_eq!(wallet.imported_keys().len(), 0);
+        assert_eq!(wallet.get_seed_phrase()?, seed_phrase);
+        assert_eq!(
+            wallet.get_new_address()?.address.address_type(),
+            Some(AddressType::P2tr)
         );
         Ok(())
     }

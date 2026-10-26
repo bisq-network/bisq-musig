@@ -12,8 +12,9 @@ use bdk_wallet::bitcoin::{
     XOnlyPublicKey, consensus, psbt,
 };
 use bdk_wallet::chain::{ChainPosition, Merge as _};
+use bdk_wallet::descriptor::ExtendedDescriptor;
 use bdk_wallet::keys::bip39::Mnemonic;
-use bdk_wallet::miniscript::descriptor::{TapTree, Tr};
+use bdk_wallet::miniscript::descriptor::{KeyMap, TapTree, Tr};
 use bdk_wallet::miniscript::psbt::PsbtExt as _;
 use bdk_wallet::rusqlite::Connection;
 use bdk_wallet::signer::{InputSigner as _, SignerContext, SignerError, SignerWrapper};
@@ -113,8 +114,45 @@ pub struct BMPWallet {
     key_verifier: [u8; 32],
 }
 
+struct Bip86Keys {
+    external: (ExtendedDescriptor, KeyMap),
+    internal: (ExtendedDescriptor, KeyMap),
+}
 
 impl BMPWallet {
+    fn bip86_keys_from_seed_phrase(network: Network, seed_phrase: &str) -> Result<Bip86Keys> {
+        let mnemonic = Mnemonic::parse_normalized(seed_phrase)?;
+        let seed = mnemonic.to_seed("");
+        let xprv = Xpriv::new_master(network, &seed)?;
+
+        let (external, external_map, _) =
+            Bip86(xprv, KeychainKind::External).build(network.into())?;
+        let (internal, internal_map, _) =
+            Bip86(xprv, KeychainKind::Internal).build(network.into())?;
+
+        Ok(Bip86Keys {
+            external: (external, external_map),
+            internal: (internal, internal_map),
+        })
+    }
+
+    fn create_wallet_from_seed(
+        db: &mut Connection,
+        network: Network,
+        seed_phrase: &str,
+    ) -> Result<PersistedWallet<Connection>> {
+        let Bip86Keys {
+            external: (descriptor, external_map),
+            internal: (change_descriptor, internal_map),
+        } = Self::bip86_keys_from_seed_phrase(network, seed_phrase)?;
+
+        Ok(Wallet::create(descriptor, change_descriptor)
+            .network(network)
+            .keymap(KeychainKind::External, external_map)
+            .keymap(KeychainKind::Internal, internal_map)
+            .create_wallet(db)?)
+    }
+
     pub fn list_unused_addresses_since_last_used(
         &self,
         key_chain: KeychainKind,
@@ -544,35 +582,35 @@ impl BMPWallet {
                 other => other.into(),
             })?;
 
-        if let Some(wallet) = wallet_opt {
-            // A wallet whose seed phrase was never stored, as when creation stops half way, can
-            // still hand out addresses but can never sign for them, so refuse to open it:
-            if !Connection::has_seed_phrase(&db, Self::SEEDS_TABLE_NAME)? {
-                tracing::error!("Wallet database has no stored seed phrase.");
-                return Err(WalletErrorKind::MissingSeedPhrase);
-            }
-            let mut imported_keys = HashMap::new();
-            for (key_hex, descriptor) in
-                Connection::load_imported_key_rows(&mut db, Self::IMPORTED_KEYS_TABLE_NAME)?
-            {
-                let secret = Scalar::from_hex(&key_hex).map_err(WalletErrorKind::generic)?;
-                let key = ImportedKey::from_descriptor_str(secret, &descriptor)?;
-                Self::insert_imported_key(&mut imported_keys, key)?;
-            }
+        let wallet = if let Some(wallet) = wallet_opt {
+            wallet
+        } else if Connection::has_seed_phrase(&db, Self::SEEDS_TABLE_NAME)? {
+            tracing::warn!("No wallet found, but seed phrase exists; creating wallet from seed");
+            let seed_phrase = Connection::get_seed_phrase(&db, Self::SEEDS_TABLE_NAME)?;
+            Self::create_wallet_from_seed(&mut db, network, &seed_phrase)?
+        } else {
+            return Err(WalletErrorKind::NoWallet);
+        };
 
-            return Ok(Self {
-                wallet,
-                imported_keys,
-                imported_balance: Balance::default(),
-                signers_loaded: false,
-                db: BMPDatabase::new(storage, db),
-                last_unused_address: None,
-                salt,
-                key_verifier: key_verifier(&key),
-            });
+        let mut imported_keys = HashMap::new();
+        for (key_hex, descriptor) in
+            Connection::load_imported_key_rows(&mut db, Self::IMPORTED_KEYS_TABLE_NAME)?
+        {
+            let secret = Scalar::from_hex(&key_hex).map_err(WalletErrorKind::generic)?;
+            let key = ImportedKey::from_descriptor_str(secret, &descriptor)?;
+            Self::insert_imported_key(&mut imported_keys, key)?;
         }
 
-        Err(WalletErrorKind::NoWallet)
+        Ok(Self {
+            wallet,
+            imported_keys,
+            imported_balance: Balance::default(),
+            signers_loaded: false,
+            db: BMPDatabase::new(storage, db),
+            last_unused_address: None,
+            salt,
+            key_verifier: key_verifier(&key),
+        })
     }
 }
 
@@ -711,13 +749,6 @@ impl WalletApi for BMPWallet {
         let mut seed = [0u8; 32];
         rand::rng().fill_bytes(&mut seed);
 
-        let xprv = Xpriv::new_master(network, &seed)?;
-
-        let (descriptor, external_map, _) =
-            Bip86(xprv, KeychainKind::External).build(network.into())?;
-        let (change_descriptor, internal_map, _) =
-            Bip86(xprv, KeychainKind::Internal).build(network.into())?;
-
         // Never create over an existing wallet.
         if storage.db_exists(Self::DB_NAME) {
             return Err(WalletErrorKind::WalletAlreadyExists);
@@ -729,12 +760,6 @@ impl WalletApi for BMPWallet {
         let key = derive_key_from_password(password, &salt)?;
         db.pragma_update(None, "key", key.as_str())?;
 
-        let wallet = Wallet::create(descriptor, change_descriptor)
-            .network(network)
-            .keymap(KeychainKind::External, external_map)
-            .keymap(KeychainKind::Internal, internal_map)
-            .create_wallet(&mut db)?;
-
         Connection::init(
             &mut db,
             Some(Self::IMPORTED_KEYS_TABLE_NAME),
@@ -744,6 +769,8 @@ impl WalletApi for BMPWallet {
         let mnemonic = Mnemonic::from_entropy(&seed)?;
         let words = mnemonic.to_string();
         Connection::persist_seed_phrase(&mut db, Self::SEEDS_TABLE_NAME, &words)?;
+
+        let wallet = Self::create_wallet_from_seed(&mut db, network, &words)?;
 
         Ok(Self {
             wallet,
@@ -805,19 +832,17 @@ impl WalletApi for BMPWallet {
             let recovery_phrase = self
                 .get_seed_phrase()
                 .map_err(|_| SignerError::External("Unable to load keys.".to_owned()))?;
-            let mnemonic = Mnemonic::parse_normalized(&recovery_phrase)
-                .map_err(|_| SignerError::External("Unable to parse recovery phrase".to_owned()))?;
-
-            let xprv = Xpriv::new_master(self.network(), &mnemonic.to_entropy())
+            let Bip86Keys {
+                external: (external_descriptor, external_map),
+                internal: (internal_descriptor, internal_map),
+            } = Self::bip86_keys_from_seed_phrase(self.network(), &recovery_phrase)
                 .map_err(|_| SignerError::External("Unable to load keys".to_owned()))?;
 
-            let (_, external_map, _) = Bip86(xprv, KeychainKind::External)
-                .build(self.network().into())
-                .map_err(|_| SignerError::External("BIP 86 derivation failed".to_owned()))?;
-
-            let (_, internal_map, _) = Bip86(xprv, KeychainKind::Internal)
-                .build(self.network().into())
-                .map_err(|_| SignerError::External("BIP 86 derivation failed".to_owned()))?;
+            if &external_descriptor != self.wallet.public_descriptor(KeychainKind::External)
+                || &internal_descriptor != self.wallet.public_descriptor(KeychainKind::Internal)
+            {
+                return Err(WalletErrorKind::SeedDescriptorMismatch);
+            }
 
             self.wallet.set_keymap(KeychainKind::External, external_map);
             self.wallet.set_keymap(KeychainKind::Internal, internal_map);

@@ -43,10 +43,10 @@ pub enum WalletErrorKind {
     MismatchedDescriptor,
     #[error("no wallet loaded")]
     NoWallet,
-    #[error("Wallet has no stored seed phrase")]
-    MissingSeedPhrase,
     #[error("wallet database already exists; refusing to overwrite it")]
     WalletAlreadyExists,
+    #[error("seed-derived descriptors do not match the persisted wallet descriptors")]
+    SeedDescriptorMismatch,
     ExtractTx(#[from] Box<ExtractTxError>),
     LoadWallet(#[from] bdk_wallet::LoadWithPersistError<rusqlite::Error>),
     CreateWallet(#[from] bdk_wallet::CreateWithPersistError<rusqlite::Error>),
