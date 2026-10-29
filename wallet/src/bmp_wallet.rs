@@ -120,8 +120,7 @@ struct Bip86Keys {
 }
 
 impl BMPWallet {
-    fn bip86_keys_from_seed_phrase(network: Network, seed_phrase: &str) -> Result<Bip86Keys> {
-        let mnemonic = Mnemonic::parse_normalized(seed_phrase)?;
+    fn bip86_keys_from_seed_phrase(network: Network, mnemonic: &Mnemonic) -> Result<Bip86Keys> {
         let seed = mnemonic.to_seed("");
         let xprv = Xpriv::new_master(network, &seed)?;
 
@@ -139,18 +138,24 @@ impl BMPWallet {
     fn create_wallet_from_seed(
         db: &mut Connection,
         network: Network,
-        seed_phrase: &str,
+        mnemonic: &Mnemonic,
     ) -> Result<PersistedWallet<Connection>> {
         let Bip86Keys {
             external: (descriptor, external_map),
             internal: (change_descriptor, internal_map),
-        } = Self::bip86_keys_from_seed_phrase(network, seed_phrase)?;
+        } = Self::bip86_keys_from_seed_phrase(network, mnemonic)?;
 
         Ok(Wallet::create(descriptor, change_descriptor)
             .network(network)
             .keymap(KeychainKind::External, external_map)
             .keymap(KeychainKind::Internal, internal_map)
             .create_wallet(db)?)
+    }
+
+    /// Reads the persisted seed phrase and parses it as BIP39.
+    fn load_mnemonic(db: &Connection) -> Result<Mnemonic> {
+        let text = Connection::get_seed_phrase(db, Self::SEEDS_TABLE_NAME)?;
+        Ok(Mnemonic::parse_normalized(&text)?)
     }
 
     pub fn list_unused_addresses_since_last_used(
@@ -586,8 +591,8 @@ impl BMPWallet {
             wallet
         } else if Connection::has_seed_phrase(&db, Self::SEEDS_TABLE_NAME)? {
             tracing::warn!("No wallet found, but seed phrase exists; creating wallet from seed");
-            let seed_phrase = Connection::get_seed_phrase(&db, Self::SEEDS_TABLE_NAME)?;
-            Self::create_wallet_from_seed(&mut db, network, &seed_phrase)?
+            let mnemonic = Self::load_mnemonic(&db)?;
+            Self::create_wallet_from_seed(&mut db, network, &mnemonic)?
         } else {
             return Err(WalletErrorKind::NoWallet);
         };
@@ -684,7 +689,8 @@ pub trait WalletApi {
     fn get_new_address(&mut self) -> Result<AddressInfo>;
     fn get_change_address(&mut self) -> Result<AddressInfo>;
 
-    fn get_seed_phrase(&self) -> Result<String>;
+    /// The persisted seed phrase, validated as BIP39; a corrupt stored value is an error.
+    fn get_seed_phrase(&self) -> Result<Mnemonic>;
 
     fn balance(&self) -> Amount;
 
@@ -767,10 +773,9 @@ impl WalletApi for BMPWallet {
         )?;
 
         let mnemonic = Mnemonic::from_entropy(&seed)?;
-        let words = mnemonic.to_string();
-        Connection::persist_seed_phrase(&mut db, Self::SEEDS_TABLE_NAME, &words)?;
+        Connection::persist_seed_phrase(&mut db, Self::SEEDS_TABLE_NAME, &mnemonic.to_string())?;
 
-        let wallet = Self::create_wallet_from_seed(&mut db, network, &words)?;
+        let wallet = Self::create_wallet_from_seed(&mut db, network, &mnemonic)?;
 
         Ok(Self {
             wallet,
@@ -906,11 +911,8 @@ impl WalletApi for BMPWallet {
         (self.imported_balance.clone() + self.wallet.balance()).trusted_spendable()
     }
 
-    fn get_seed_phrase(&self) -> Result<String> {
-        Ok(Connection::get_seed_phrase(
-            &self.db,
-            Self::SEEDS_TABLE_NAME,
-        )?)
+    fn get_seed_phrase(&self) -> Result<Mnemonic> {
+        Self::load_mnemonic(&self.db)
     }
 
     fn drain_imported_balance(&mut self, fee_rate: FeeRate) -> Result<Psbt> {
