@@ -152,6 +152,7 @@ mod tests {
 
         mnemonic.zeroize();
 
+        // Zeroization replaces all word indices with zero, so word_count() returns 24.
         assert_eq!(mnemonic.word_count(), 24);
         assert!(mnemonic.word_indices().all(|index| index == 0));
         Ok(())

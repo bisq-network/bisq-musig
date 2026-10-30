@@ -25,6 +25,7 @@ use bdk_wallet::{
 };
 use rand::RngCore as _;
 use secp::Scalar;
+use zeroize::Zeroizing;
 
 use crate::chain_data_source::ChainDataSource;
 use crate::coin_selection::{AlwaysSpendImportedFirst, SpendImportedOnly};
@@ -121,8 +122,8 @@ struct Bip86Keys {
 
 impl BMPWallet {
     fn bip86_keys_from_seed_phrase(network: Network, mnemonic: &Mnemonic) -> Result<Bip86Keys> {
-        let seed = mnemonic.to_seed("");
-        let xprv = Xpriv::new_master(network, &seed)?;
+        let seed = Zeroizing::new(mnemonic.to_seed(""));
+        let xprv = Xpriv::new_master(network, &seed[..])?;
 
         let (external, external_map, _) =
             Bip86(xprv, KeychainKind::External).build(network.into())?;
@@ -154,7 +155,7 @@ impl BMPWallet {
 
     /// Reads the persisted seed phrase and parses it as BIP39.
     fn load_mnemonic(db: &Connection) -> Result<Mnemonic> {
-        let text = Connection::get_seed_phrase(db, Self::SEEDS_TABLE_NAME)?;
+        let text = Zeroizing::new(Connection::get_seed_phrase(db, Self::SEEDS_TABLE_NAME)?);
         Ok(Mnemonic::parse_normalized(&text)?)
     }
 
@@ -755,8 +756,8 @@ impl WalletApi for BMPWallet {
         Self: Sized,
     {
         // TODO: Make the word size configurable?
-        let mut seed = [0u8; 32];
-        rand::rng().fill_bytes(&mut seed);
+        let mut entropy = Zeroizing::new([0u8; 32]);
+        rand::rng().fill_bytes(&mut entropy[..]);
 
         // Never create over an existing wallet.
         if storage.db_exists(Self::DB_NAME) {
@@ -775,8 +776,20 @@ impl WalletApi for BMPWallet {
             Some(Self::SEEDS_TABLE_NAME),
         )?;
 
-        let mnemonic = Mnemonic::from_entropy(&seed)?;
-        Connection::persist_seed_phrase(&mut db, Self::SEEDS_TABLE_NAME, &mnemonic.to_string())?;
+        let mnemonic = Mnemonic::from_entropy(&entropy[..])?;
+        let capacity =
+            mnemonic.words().map(str::len).sum::<usize>() + mnemonic.word_count().saturating_sub(1);
+
+        let mut phrase = Zeroizing::new(String::with_capacity(capacity));
+
+        for (i, word) in mnemonic.words().enumerate() {
+            if i > 0 {
+                phrase.push(' ');
+            }
+            phrase.push_str(word);
+        }
+
+        Connection::persist_seed_phrase(&mut db, Self::SEEDS_TABLE_NAME, &phrase)?;
 
         let wallet = Self::create_wallet_from_seed(&mut db, network, &mnemonic)?;
 
