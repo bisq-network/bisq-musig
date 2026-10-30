@@ -39,6 +39,7 @@ mod tests {
     use bmp_tracing::tracing;
     use rand::RngCore as _;
     use secp::Scalar;
+    use zeroize::{Zeroize as _, ZeroizeOnDrop};
 
     use crate::bmp_wallet::{BMPWallet, ImportedKey, STOP_GAP, WalletApi as _};
     use crate::error::WalletErrorKind;
@@ -133,6 +134,26 @@ mod tests {
         let parsed = Mnemonic::parse_normalized(&text)?;
         assert_eq!(parsed.word_count(), 24);
         assert_eq!(parsed.to_string(), text);
+        Ok(())
+    }
+
+    /// `Mnemonic` is imported through `bdk_wallet`, as in production code, so this fails to compile
+    /// if `bip39`'s `zeroize` feature is not active on that exact type.
+    #[test]
+    fn mnemonic_zeroizes_on_drop() {
+        const fn assert_zeroize_on_drop<T: ZeroizeOnDrop>() {}
+        assert_zeroize_on_drop::<Mnemonic>();
+    }
+
+    #[test]
+    fn explicit_zeroize_clears_a_mnemonic() -> anyhow::Result<()> {
+        let mut mnemonic = Mnemonic::parse_normalized(ABANDON)?;
+        assert_eq!(mnemonic.word_count(), 12);
+
+        mnemonic.zeroize();
+
+        assert_eq!(mnemonic.word_count(), 24);
+        assert!(mnemonic.word_indices().all(|index| index == 0));
         Ok(())
     }
 

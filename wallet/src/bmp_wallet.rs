@@ -690,6 +690,9 @@ pub trait WalletApi {
     fn get_change_address(&mut self) -> Result<AddressInfo>;
 
     /// The persisted seed phrase, validated as BIP39; a corrupt stored value is an error.
+    ///
+    /// The returned [`Mnemonic`] is wiped when dropped. Copies the caller makes from it, such as a
+    /// `String` of its words, are not.
     fn get_seed_phrase(&self) -> Result<Mnemonic>;
 
     fn balance(&self) -> Amount;
