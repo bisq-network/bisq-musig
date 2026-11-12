@@ -1157,6 +1157,11 @@ mod tests {
         wallet.lock_utxo(owned_outpoint)?;
 
         assert_eq!(wallet.full_balance().confirmed, Amount::from_int_btc(2));
+        assert_eq!(
+            wallet.available_balance() + wallet.locked_balance(),
+            wallet.full_balance(),
+            "available and locked balances must partition the full balance"
+        );
         assert_eq!(wallet.locked_balance().confirmed, Amount::from_int_btc(2));
         assert_eq!(wallet.available_balance().trusted_spendable(), Amount::ZERO);
         assert_eq!(wallet.balance(), Amount::ZERO);

@@ -129,13 +129,13 @@ pub trait BmpWalletService {
 
     async fn full_balance(&self) -> anyhow::Result<Balance>;
 
-/// Returns `(total, available, locked)` from one wallet snapshot.
+    /// Returns `(available, locked)` from one wallet snapshot.
     ///
-    /// `total` is the complete BDK balance breakdown, including locked outputs. `available` is the
-    /// same breakdown after removing locked outputs; the RPC's scalar `balance` is derived from
-    /// its trusted-spendable portion. `locked` is the aggregate balance of those locked outputs
-    /// held out of coin selection.
-    async fn balance_snapshot(&self) -> anyhow::Result<(Balance, Balance, Balance)>;
+    /// `available` is the breakdown of outputs eligible for coin selection; `locked` is the
+    /// aggregate breakdown of currently unspent locked outputs. The complete balance is their
+    /// field sum, and the RPC's scalar `balance` is derived from `available`'s
+    /// trusted-spendable portion.
+    async fn balance_snapshot(&self) -> anyhow::Result<(Balance, Balance)>;
 
     /// The wallet's seed phrase, one word per element.
     ///
@@ -452,11 +452,10 @@ impl<S: ChainDataSource + Send + Sync + 'static> BmpWalletService for BMPWalletS
         Ok(require_open(&mut guard)?.full_balance())
     }
 
-    async fn balance_snapshot(&self) -> anyhow::Result<(Balance, Balance, Balance)> {
+    async fn balance_snapshot(&self) -> anyhow::Result<(Balance, Balance)> {
         let mut guard = self.wallet.lock().await;
         let wallet = require_open(&mut guard)?;
         Ok((
-            wallet.full_balance(),
             wallet.available_balance(),
             wallet.locked_balance(),
         ))
@@ -649,17 +648,13 @@ impl wallet_server::Wallet for BmpWalletImpl {
         request: Request<GetBalanceRequest>,
     ) -> Result<Response<GetBalanceResponse>> {
         handle_request_async(request, |_request| async {
-            let (total, available, locked) = self
+            let (available, locked) = self
                 .wallet_service
                 .balance_snapshot()
                 .await
                 .map_err(|e| status_from(&e))?;
 
-            Ok(GetBalanceResponse::from_balances(
-                &total,
-                &available,
-                &locked,
-            ))
+            Ok(GetBalanceResponse::from_balances(&available, &locked))
         })
         .await
     }
@@ -746,12 +741,13 @@ fn is_invalid_password(error: &anyhow::Error) -> bool {
 impl From<Balance> for GetBalanceResponse {
     fn from(value: Balance) -> Self {
         let locked = Balance::default();
-        Self::from_balances(&value, &value, &locked)
+        Self::from_balances(&value, &locked)
     }
 }
 
 impl GetBalanceResponse {
-    fn from_balances(total: &Balance, available: &Balance, locked: &Balance) -> Self {
+    fn from_balances(available: &Balance, locked: &Balance) -> Self {
+        let total = available.clone() + locked.clone();
         Self {
             // bisq2 reads only `balance`; keep it the trusted-spendable amount that is actually
             // available for a new transaction, excluding locked outputs.
@@ -1273,11 +1269,7 @@ mod tests {
     }
 
     #[test]
-    fn balance_maps_available_and_reserved_amounts_for_get_balance() {
-        let total = Balance {
-            confirmed: Amount::from_sat(2_000),
-            ..Balance::default()
-        };
+    fn balance_maps_available_and_locked_amounts_for_get_balance() {
         let available = Balance {
             confirmed: Amount::from_sat(750),
             ..Balance::default()
@@ -1289,10 +1281,13 @@ mod tests {
             confirmed: Amount::from_sat(1_250),
         };
 
-        let proto = GetBalanceResponse::from_balances(&total, &available, &locked);
+        let proto = GetBalanceResponse::from_balances(&available, &locked);
 
         assert_eq!(proto.balance, 750);
         assert_eq!(proto.confirmed, 2_000);
+        assert_eq!(proto.trusted_pending, 20);
+        assert_eq!(proto.untrusted_pending, 30);
+        assert_eq!(proto.immature, 10);
         assert_eq!(proto.locked, 1_310);
     }
 
