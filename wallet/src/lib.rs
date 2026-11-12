@@ -1157,7 +1157,7 @@ mod tests {
         wallet.lock_utxo(owned_outpoint)?;
 
         assert_eq!(wallet.full_balance().confirmed, Amount::from_int_btc(2));
-        assert_eq!(wallet.reserved_balance().confirmed, Amount::from_int_btc(2));
+        assert_eq!(wallet.locked_balance().confirmed, Amount::from_int_btc(2));
         assert_eq!(wallet.available_balance().trusted_spendable(), Amount::ZERO);
         assert_eq!(wallet.balance(), Amount::ZERO);
 
@@ -1167,7 +1167,7 @@ mod tests {
             Amount::from_int_btc(1)
         );
         assert_eq!(
-            wallet.reserved_balance().trusted_spendable(),
+            wallet.locked_balance().trusted_spendable(),
             Amount::from_int_btc(1)
         );
 

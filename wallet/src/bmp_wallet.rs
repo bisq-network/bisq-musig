@@ -267,14 +267,15 @@ impl BMPWallet {
             })
     }
 
-    /// The balance reserved by currently unspent outputs held out of coin selection.
-    pub fn reserved_balance(&self) -> Balance {
+    /// The aggregate balance of currently unspent locked outputs.
+    pub fn locked_balance(&self) -> Balance {
         self.balance_for_lock_state(true) + self.imported_balance_for_lock_state(true)
     }
 
     /// The balance available to a newly-built transaction.
     ///
-    /// `full_balance` remains the complete balance breakdown, including reserved funds.
+    /// `full_balance` remains the complete balance breakdown, including the reserved balance of
+    /// locked outputs.
     pub fn available_balance(&self) -> Balance {
         self.balance_for_lock_state(false) + self.imported_balance_for_lock_state(false)
     }
