@@ -102,8 +102,7 @@ impl musig_server::Musig for MusigImpl {
             } else {
                 let peer_nonce_shares = request.peers_nonce_shares
                     .ok_or_else(|| Status::not_found("missing request.peers_nonce_shares"))?;
-                trade_model.set_peer_half_deposit_psbt((&peer_nonce_shares.half_deposit_psbt[..]).try_proto_into()?);
-                trade_model.compute_unsigned_deposit_tx()?;
+                trade_model.set_and_check_peer_half_deposit_psbt((&peer_nonce_shares.half_deposit_psbt[..]).try_proto_into()?)?;
                 trade_model.set_redirection_receivers(request.redirection_receivers.into_iter().map(TryProtoInto::try_proto_into))?;
                 trade_model.check_redirect_tx_params()?;
                 let (addresses, nonce_shares) = peer_nonce_shares.try_proto_into()?;

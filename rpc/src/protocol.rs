@@ -429,6 +429,33 @@ impl TradeModel {
         }
     }
 
+    /// Stores the peer's half-deposit PSBT and validates it. If this call stored it and
+    /// validation fails, the rejected PSBT is discarded so a corrected retry is not blocked.
+    /// A PSBT already present before this call is left untouched.
+    pub fn set_and_check_peer_half_deposit_psbt(&mut self, half_deposit_psbt: Psbt) -> Result<()> {
+        let already_set = if self.am_buyer() {
+            self.deposit_tx.builder.sellers_half_psbt().is_ok()
+        } else {
+            self.deposit_tx.builder.buyers_half_psbt().is_ok()
+        };
+        self.set_peer_half_deposit_psbt(half_deposit_psbt);
+        let res = self.compute_unsigned_deposit_tx();
+        let rejected = matches!(
+            &res,
+            Err(ProtocolErrorKind::Transaction(
+                protocol::transaction::TransactionErrorKind::InvalidPsbt
+            ))
+        );
+        if rejected && !already_set {
+            if self.am_buyer() {
+                self.deposit_tx.builder.discard_sellers_half_psbt();
+            } else {
+                self.deposit_tx.builder.discard_buyers_half_psbt();
+            }
+        }
+        res
+    }
+
     pub fn compute_unsigned_deposit_tx(&mut self) -> Result<()> {
         self.deposit_tx.builder.compute_unsigned_tx()?;
         Ok(())
@@ -929,4 +956,77 @@ pub enum ProtocolErrorKind {
     Transaction(#[from] protocol::transaction::TransactionErrorKind),
     Multisig(#[from] protocol::multisig::MultisigErrorKind),
     Wallet(#[from] wallet::error::WalletErrorKind),
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn configure_and_init(model: &mut TradeModel) {
+        model.set_trade_amount(Amount::from_sat(100_000));
+        model.set_buyers_security_deposit(Amount::from_sat(20_000));
+        model.set_sellers_security_deposit(Amount::from_sat(20_000));
+        model.set_deposit_tx_fee_rate(FeeRate::from_sat_per_vb_u32(2));
+        model.set_trade_fee_receiver(None).expect("no trade fee receiver");
+        model.init_my_half_deposit_psbt().expect("init own half PSBT");
+    }
+
+    fn buyer_model(trade_id: &str) -> TradeModel {
+        let mut model = TradeModel::new(trade_id.to_owned(), Role::BuyerAsTaker);
+        configure_and_init(&mut model);
+        model
+    }
+
+    fn valid_and_invalid_peer_psbts() -> (Psbt, Psbt) {
+        let mut seller = TradeModel::new("peer-psbt-seller".to_owned(), Role::SellerAsTaker);
+        configure_and_init(&mut seller);
+        let valid = seller.my_half_deposit_psbt().expect("seller half PSBT").clone();
+        let mut invalid = valid.clone();
+        invalid.unsigned_tx.output[0].value = Amount::from_sat(1);
+        (valid, invalid)
+    }
+
+    fn is_invalid_psbt<T>(res: &Result<T>) -> bool {
+        matches!(
+            res,
+            Err(ProtocolErrorKind::Transaction(
+                protocol::transaction::TransactionErrorKind::InvalidPsbt
+            ))
+        )
+    }
+
+    #[test]
+    fn rejected_peer_psbt_is_discarded_so_a_corrected_retry_is_not_blocked() {
+        let mut model = buyer_model("peer-psbt-model");
+        let (valid, invalid) = valid_and_invalid_peer_psbts();
+
+        let res = model.set_and_check_peer_half_deposit_psbt(invalid);
+        assert!(is_invalid_psbt(&res), "expected InvalidPsbt, got {res:?}");
+        assert_eq!(model.deposit_tx.builder.sellers_half_psbt().ok(), None);
+
+        // Later errors must not discard the corrected PSBT.
+        let retry = model.set_and_check_peer_half_deposit_psbt(valid.clone());
+        assert!(!is_invalid_psbt(&retry), "corrected PSBT rejected: {retry:?}");
+        assert_eq!(model.deposit_tx.builder.sellers_half_psbt().ok(), Some(&valid));
+    }
+
+    #[test]
+    fn rejected_peer_psbt_is_discarded_on_the_seller_side() {
+        let mut buyer = TradeModel::new("peer-psbt-buyer".to_owned(), Role::BuyerAsTaker);
+        configure_and_init(&mut buyer);
+        let valid = buyer.my_half_deposit_psbt().expect("buyer half PSBT").clone();
+        let mut invalid = valid.clone();
+        invalid.unsigned_tx.output[0].value = Amount::from_sat(1);
+
+        let mut model = TradeModel::new("peer-psbt-seller-model".to_owned(), Role::SellerAsTaker);
+        configure_and_init(&mut model);
+
+        let res = model.set_and_check_peer_half_deposit_psbt(invalid);
+        assert!(is_invalid_psbt(&res), "expected InvalidPsbt, got {res:?}");
+        assert_eq!(model.deposit_tx.builder.buyers_half_psbt().ok(), None);
+
+        let retry = model.set_and_check_peer_half_deposit_psbt(valid.clone());
+        assert!(!is_invalid_psbt(&retry), "corrected PSBT rejected: {retry:?}");
+        assert_eq!(model.deposit_tx.builder.buyers_half_psbt().ok(), Some(&valid));
+    }
 }
