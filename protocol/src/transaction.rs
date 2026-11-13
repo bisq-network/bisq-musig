@@ -282,6 +282,15 @@ impl DepositTxBuilder {
             psbt::create_half_deposit_psbt(wallet, deposit_amount, fee_rate, trade_fee_receivers, rng)?))
     }
 
+    /// Discards a stored half PSBT so a corrected one can be stored.
+    pub fn discard_buyers_half_psbt(&mut self) {
+        self.buyers_half_psbt = None;
+    }
+
+    pub fn discard_sellers_half_psbt(&mut self) {
+        self.sellers_half_psbt = None;
+    }
+
     pub fn compute_unsigned_tx(&mut self) -> Result<&mut Self> {
         // Check that the placeholder output & receiver outputs of each PSBT half are correct.
         let [buyer_psbt, seller_psbt] = [self.buyers_half_psbt()?, self.sellers_half_psbt()?];
