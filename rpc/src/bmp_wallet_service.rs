@@ -43,11 +43,13 @@ use zeroize::Zeroizing;
 use crate::observable::ObservableHashMap;
 pub use crate::pb::bmp_wallet::wallet_server::WalletServer as BmpWalletServer;
 use crate::pb::bmp_wallet::{
-    self, ChangePasswordRequest, ChangePasswordResponse, GetBalanceRequest, GetBalanceResponse,
-    GetSeedWordsRequest, GetSeedWordsResponse, GetUnusedAddressRequest, GetUnusedAddressResponse,
+    self, AbandonTransactionRequest, AbandonTransactionResponse, ChangePasswordRequest,
+    ChangePasswordResponse, GetBalanceRequest, GetBalanceResponse, GetSeedWordsRequest,
+    GetSeedWordsResponse, GetUnusedAddressRequest, GetUnusedAddressResponse,
     GetWalletAddressesRequest, GetWalletAddressesResponse, IsWalletReadyRequest,
     IsWalletReadyResponse, ListTransactionsRequest, ListTransactionsResponse, ListUtxosRequest,
-    ListUtxosResponse, OpenOrCreateWalletRequest, OpenOrCreateWalletResponse, SendToAddressRequest,
+    ListUtxosResponse, OpenOrCreateWalletRequest, OpenOrCreateWalletResponse,
+    RebroadcastTransactionRequest, RebroadcastTransactionResponse, SendToAddressRequest,
     SendToAddressResponse, wallet_server,
 };
 use crate::server::handle_request_async;
@@ -139,6 +141,19 @@ pub trait BmpWalletService {
         fee_rate: Option<FeeRate>,
     ) -> anyhow::Result<Txid>;
 
+    /// Re-sends an already-recorded, unconfirmed transaction, preceded by its unconfirmed
+    /// ancestors (parent first). Returns the transactions the node accepted, in order.
+    ///
+    /// Never creates a new transaction, never changes wallet state, and never abandons anything,
+    /// even on failure. An ancestor the node reports as already confirmed is skipped; the same
+    /// report for `txid` itself is an error ([`RebroadcastError::AlreadyInUtxoSet`]).
+    async fn rebroadcast_transaction(&self, txid: Txid) -> anyhow::Result<Vec<Txid>>;
+
+    /// Stops tracking `txid` and its unconfirmed descendants as pending and releases their
+    /// inputs. **Local only: this does not cancel the transaction on the network**; see
+    /// [`BMPWallet::abandon_transaction`]. Requires the wallet password.
+    async fn abandon_transaction(&self, password: &str, txid: Txid) -> anyhow::Result<Vec<Txid>>;
+
     async fn full_balance(&self) -> anyhow::Result<Balance>;
 
     /// Returns `(total, available, reserved)` from one wallet snapshot.
@@ -179,6 +194,9 @@ pub struct BMPWalletServiceImpl<S> {
     tx_confidence_map: Mutex<ObservableHashMap<Txid, TxConfidence>>,
     chain_data_source: Option<S>,
     broadcaster: Option<Arc<dyn ChainApi>>,
+    /// Serializes `rebroadcast_transaction` and `abandon_transaction`, so an abandonment cannot
+    /// release inputs while a rebroadcast is still sending. Acquire before `wallet`.
+    tx_operation: AsyncMutex<()>,
     /// Set once `wallet` holds an open wallet (it is never closed again), so that the status
     /// can be read without waiting on the wallet lock, which a sync may hold for a long time.
     open: AtomicBool,
@@ -207,6 +225,7 @@ impl<S> BMPWalletServiceImpl<S> {
             tx_confidence_map: Mutex::new(ObservableHashMap::new()),
             chain_data_source: None,
             broadcaster: None,
+            tx_operation: AsyncMutex::new(()),
             open: AtomicBool::new(false),
             ready: AtomicBool::new(false),
             poll_period: DEFAULT_POLL_PERIOD,
@@ -472,9 +491,68 @@ impl<S: ChainDataSource + Send + Sync + 'static> BmpWalletService for BMPWalletS
         // Broadcast while still holding the lock, so a concurrent send can't build a conflicting
         // transaction from the same UTXO set before this one is out. `transaction_broadcast` is
         // a blocking network call, so it must not run directly on an async worker thread.
-        let txid = task::block_in_place(|| broadcaster.transaction_broadcast(&tx))?;
+        let txid =
+            task::block_in_place(|| broadcaster.transaction_broadcast(&tx)).map_err(|source| {
+                BroadcastFailed {
+                    txid: tx.compute_txid(),
+                    source,
+                }
+            })?;
         info!(%txid, "Broadcast wallet payment.");
         Ok(txid)
+    }
+
+    async fn rebroadcast_transaction(&self, txid: Txid) -> anyhow::Result<Vec<Txid>> {
+        let broadcaster = self.broadcaster.as_ref().ok_or_else(|| {
+            anyhow::anyhow!("no chain backend configured for broadcasting transactions")
+        })?;
+
+        let _operation = self.tx_operation.lock().await;
+
+        let txs = {
+            let mut guard = self.wallet.lock().await;
+            require_open(&mut guard)?.transactions_to_broadcast(txid)?
+        };
+
+        let mut broadcast = Vec::new();
+        for tx in &txs {
+            let id = tx.compute_txid();
+            match task::block_in_place(|| broadcaster.transaction_broadcast(tx)) {
+                Ok(_) => broadcast.push(id),
+                Err(e) if is_already_in_utxo_set(&e) => {
+                    if id == txid {
+                        return Err(RebroadcastError::AlreadyInUtxoSet(id).into());
+                    }
+                    info!(%id, "Ancestor is already in the node's UTXO set; skipping it.");
+                }
+                Err(source) => {
+                    return Err(RebroadcastError::Failed {
+                        failed: id,
+                        broadcast,
+                        source,
+                    }
+                    .into());
+                }
+            }
+        }
+        info!(%txid, ?broadcast, "Rebroadcast wallet transaction.");
+        Ok(broadcast)
+    }
+
+    async fn abandon_transaction(&self, password: &str, txid: Txid) -> anyhow::Result<Vec<Txid>> {
+        let _operation = self.tx_operation.lock().await;
+        let mut guard = self.wallet.lock().await;
+        let wallet = require_open(&mut guard)?;
+        if !wallet.check_password(&Password::check(password)?)? {
+            return Err(InvalidPassword.into());
+        }
+        let abandoned = wallet.abandon_transaction(txid)?;
+        self.tx_confidence_map
+            .lock()
+            .unwrap()
+            .sync(tx_confidence_entries(wallet));
+        warn!(%txid, ?abandoned, "Abandoned wallet transaction locally.");
+        Ok(abandoned)
     }
 
     async fn full_balance(&self) -> anyhow::Result<Balance> {
@@ -678,6 +756,52 @@ impl wallet_server::Wallet for BmpWalletImpl {
     }
 
     #[instrument(skip_all)]
+    async fn rebroadcast_transaction(
+        &self,
+        request: Request<RebroadcastTransactionRequest>,
+    ) -> Result<Response<RebroadcastTransactionResponse>> {
+        handle_request_async(request, |request| async move {
+            let txid = request
+                .tx_id
+                .parse::<Txid>()
+                .map_err(|e| Status::invalid_argument(format!("invalid txId: {e}")))?;
+            let broadcast = self
+                .wallet_service
+                .rebroadcast_transaction(txid)
+                .await
+                .map_err(|e| status_from(&e))?;
+            Ok(RebroadcastTransactionResponse {
+                broadcast_tx_ids: broadcast.iter().map(ToString::to_string).collect(),
+            })
+        })
+        .await
+    }
+
+    #[instrument(skip_all)]
+    async fn abandon_transaction(
+        &self,
+        request: Request<AbandonTransactionRequest>,
+    ) -> Result<Response<AbandonTransactionResponse>> {
+        handle_request_async(request, |request| async move {
+            let txid = request
+                .tx_id
+                .parse::<Txid>()
+                .map_err(|e| Status::invalid_argument(format!("invalid txId: {e}")))?;
+            let passphrase = Zeroizing::new(request.passphrase);
+            let abandoned = self
+                .wallet_service
+                .abandon_transaction(&passphrase, txid)
+                .await
+                .map_err(|e| status_from(&e))?;
+            Ok(AbandonTransactionResponse {
+                abandoned_tx_ids: abandoned.iter().map(ToString::to_string).collect(),
+                warning: ABANDON_WARNING.to_owned(),
+            })
+        })
+        .await
+    }
+
+    #[instrument(skip_all)]
     async fn get_balance(
         &self,
         request: Request<GetBalanceRequest>,
@@ -759,6 +883,33 @@ fn status_from(error: &anyhow::Error) -> Status {
         Some(WalletErrorKind::WalletAlreadyExists)
     ) {
         Status::already_exists(message)
+    } else if let Some(failed) = error.downcast_ref::<BroadcastFailed>() {
+        warn!(txid = %failed.txid, "{message}");
+        let mut status = Status::internal(message);
+        if let Ok(value) = failed
+            .txid
+            .to_string()
+            .parse::<tonic::metadata::MetadataValue<tonic::metadata::Ascii>>()
+        {
+            status.metadata_mut().insert("x-broadcast-failed-txid", value);
+        }
+        status
+    } else if matches!(
+        error.downcast_ref::<WalletErrorKind>(),
+        Some(WalletErrorKind::TransactionNotFound(_))
+    ) {
+        Status::not_found(message)
+    } else if matches!(
+        error.downcast_ref::<WalletErrorKind>(),
+        Some(WalletErrorKind::TransactionConfirmed(_))
+    ) || matches!(
+        error.downcast_ref::<WalletErrorKind>(),
+        Some(WalletErrorKind::TransactionNotPending(_))
+    ) || matches!(
+        error.downcast_ref::<RebroadcastError>(),
+        Some(RebroadcastError::AlreadyInUtxoSet(_))
+    ) {
+        Status::failed_precondition(message)
     } else {
         error!("Wallet operation failed: {message}");
         Status::internal(message)
@@ -774,6 +925,55 @@ fn is_invalid_password(error: &anyhow::Error) -> bool {
             Some(WalletErrorKind::InvalidPassword)
         )
 }
+
+/// The wallet recorded the payment but broadcasting it failed. The outcome is unknown: the node
+/// may have accepted it. The transaction stays tracked and its inputs stay unavailable until it
+/// is rebroadcast and confirms, or the user abandons it.
+#[derive(Debug, Error)]
+#[error(
+    "transaction {txid} was recorded by the wallet but broadcasting it failed (it may still \
+         have reached the network; use RebroadcastTransaction or AbandonTransaction): {source}"
+)]
+pub struct BroadcastFailed {
+    pub txid: Txid,
+    #[source]
+    pub source: ChainApiError,
+}
+
+#[derive(Debug, Error)]
+pub enum RebroadcastError {
+    #[error("broadcasting {failed} failed after broadcasting {broadcast:?}: {source}")]
+    Failed {
+        failed: Txid,
+        broadcast: Vec<Txid>,
+        #[source]
+        source: ChainApiError,
+    },
+    /// Bitcoin Core reports the transaction's outputs are already in the UTXO set, which means
+    /// it is almost certainly confirmed. The wallet just hasn't synced that yet.
+    #[error(
+        "transaction {0} is already in the node's UTXO set; it is probably confirmed, so wait for the wallet to sync"
+    )]
+    AlreadyInUtxoSet(Txid),
+}
+
+/// Bitcoin Core's `RPC_VERIFY_ALREADY_IN_UTXO_SET` (-27).
+fn is_already_in_utxo_set(error: &ChainApiError) -> bool {
+    use bdk_bitcoind_rpc::bitcoincore_rpc::Error as CoreError;
+    use bdk_bitcoind_rpc::bitcoincore_rpc::jsonrpc::error::Error as JsonRpcError;
+
+    let ChainApiError::Backend(inner) = error else {
+        return false;
+    };
+    matches!(
+        inner.downcast_ref::<CoreError>(),
+        Some(CoreError::JsonRpc(JsonRpcError::Rpc(rpc))) if rpc.code == -27
+    )
+}
+
+const ABANDON_WARNING: &str = "The transaction was abandoned locally only. Nothing was cancelled \
+on the network: if a node still holds it, it can still confirm, and spending its released inputs \
+elsewhere could result in both payments being made.";
 
 // Conversions from the `wallet` crate's transport-agnostic views to the generated protobuf types.
 
@@ -876,11 +1076,16 @@ impl From<TxInfo> for bmp_wallet::Transaction {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::VecDeque;
+    use std::sync::mpsc;
+    use std::time::Duration;
+
     use ::wallet::error::ChainDataSourceError;
     use ::wallet::persisted::{BMPWalletPersister as _, DBStorage};
     use ::wallet::utils::derive_key_from_password;
     use bdk_wallet::PersistedWallet;
     use bdk_wallet::bitcoin::Network;
+    use bdk_wallet::bitcoin::hashes::Hash as _;
     use bdk_wallet::rusqlite::Connection;
     use tempfile::tempdir;
 
@@ -1515,5 +1720,397 @@ mod tests {
         assert_eq!(proto.date, 0);
         assert_eq!(proto.num_confirmations, 0);
         assert!(!proto.incoming);
+    }
+
+    fn unknown_txid() -> Txid {
+        Txid::from_byte_array([7; 32])
+    }
+
+    #[test]
+    fn a_failed_broadcast_reports_the_txid_to_the_caller() {
+        let txid = unknown_txid();
+        let error = anyhow::Error::new(BroadcastFailed {
+            txid,
+            source: ChainApiError::backend(std::io::Error::other("node unreachable")),
+        });
+
+        let status = status_from(&error);
+
+        assert_eq!(status.code(), tonic::Code::Internal);
+        assert_eq!(
+            status
+                .metadata()
+                .get("x-broadcast-failed-txid")
+                .unwrap()
+                .to_str()
+                .unwrap(),
+            txid.to_string()
+        );
+        assert!(status.message().contains(&txid.to_string()));
+    }
+
+    #[test]
+    fn rebroadcast_and_abandon_errors_map_to_grpc_codes() {
+        let txid = unknown_txid();
+        let code = |e: anyhow::Error| status_from(&e).code();
+
+        assert_eq!(
+            code(WalletErrorKind::TransactionNotFound(txid).into()),
+            tonic::Code::NotFound
+        );
+        assert_eq!(
+            code(WalletErrorKind::TransactionConfirmed(txid).into()),
+            tonic::Code::FailedPrecondition
+        );
+        assert_eq!(
+            code(RebroadcastError::AlreadyInUtxoSet(txid).into()),
+            tonic::Code::FailedPrecondition
+        );
+        assert_eq!(
+            code(WalletErrorKind::TransactionNotPending(txid).into()),
+            tonic::Code::FailedPrecondition
+        );
+    }
+
+    #[test]
+    fn only_rpc_code_minus_27_is_treated_as_already_in_utxo_set() {
+        use bdk_bitcoind_rpc::bitcoincore_rpc::Error as CoreError;
+        use bdk_bitcoind_rpc::bitcoincore_rpc::jsonrpc::error::{Error as JsonRpcError, RpcError};
+
+        let rpc_error = |code| {
+            ChainApiError::backend(CoreError::JsonRpc(JsonRpcError::Rpc(RpcError {
+                code,
+                message: "test".into(),
+                data: None,
+            })))
+        };
+        assert!(is_already_in_utxo_set(&rpc_error(-27)));
+        assert!(!is_already_in_utxo_set(&rpc_error(-25)));
+        assert!(!is_already_in_utxo_set(&ChainApiError::backend(
+            std::io::Error::other("x")
+        )));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn abandon_transaction_checks_the_password_before_anything_else() {
+        let (_dir, service) = open_service().await;
+        let err = service
+            .abandon_transaction("wrong-Pass1!", unknown_txid())
+            .await
+            .unwrap_err();
+        assert!(is_invalid_password(&err), "got: {err}");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn abandon_transaction_of_an_unknown_txid_is_not_found() {
+        let (_dir, service) = open_service().await;
+        let err = service
+            .abandon_transaction(PASSWORD, unknown_txid())
+            .await
+            .unwrap_err();
+        assert_eq!(status_from(&err).code(), tonic::Code::NotFound);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn rebroadcast_without_a_broadcaster_is_an_error() {
+        let (_dir, service) = open_service().await;
+        assert!(
+            service
+                .rebroadcast_transaction(unknown_txid())
+                .await
+                .is_err()
+        );
+    }
+
+    struct FundingChainDataSource;
+
+    impl ChainDataSource for FundingChainDataSource {
+        const RECOVERY_HEIGHT: usize = 0;
+        const BATCH_SIZE: usize = 1;
+        const STOP_GAP: usize = 1;
+
+        #[expect(
+            clippy::unused_async_trait_impl,
+            reason = "the ChainDataSource trait requires an async method"
+        )]
+        async fn sync(
+            &self,
+            persister: Vec<&mut PersistedWallet<impl wallet::persisted::BMPWalletPersister>>,
+        ) -> Result<(), ChainDataSourceError> {
+            use bdk_wallet::KeychainKind;
+            use bdk_wallet::bitcoin::absolute::LockTime;
+            use bdk_wallet::bitcoin::transaction::Version;
+            use bdk_wallet::bitcoin::{OutPoint, TxIn, TxOut};
+
+            if let Some(hd_wallet) = persister.into_iter().next() {
+                let script_pubkey = hd_wallet
+                    .peek_address(KeychainKind::External, 0)
+                    .script_pubkey();
+                let funding = Transaction {
+                    version: Version::TWO,
+                    lock_time: LockTime::ZERO,
+                    input: vec![TxIn {
+                        previous_output: OutPoint::new(Txid::from_byte_array([9; 32]), 0),
+                        ..Default::default()
+                    }],
+                    output: vec![TxOut {
+                        value: Amount::from_sat(100_000),
+                        script_pubkey,
+                    }],
+                };
+                hd_wallet.apply_unconfirmed_txs([(funding, 1_000)]);
+            }
+            Ok(())
+        }
+    }
+
+    async fn funded_service() -> (
+        tempfile::TempDir,
+        BMPWalletServiceImpl<FundingChainDataSource>,
+    ) {
+        let dir = tempdir().unwrap();
+        let service =
+            BMPWalletServiceImpl::<FundingChainDataSource>::new(dir.path(), Network::Regtest)
+                .with_broadcaster(Arc::new(UnreachableBroadcaster));
+        service.open_or_create_wallet(PASSWORD).await.unwrap();
+        service.sync_once(&FundingChainDataSource).await.unwrap();
+        (dir, service)
+    }
+
+    async fn send_with_failing_broadcast(
+        service: &BMPWalletServiceImpl<FundingChainDataSource>,
+    ) -> Txid {
+        let err = service
+            .send_to_address(
+                PASSWORD,
+                REGTEST_ADDRESS.parse().unwrap(),
+                Amount::from_sat(10_000),
+                None,
+            )
+            .await
+            .unwrap_err();
+        err.downcast_ref::<BroadcastFailed>()
+            .unwrap_or_else(|| panic!("expected BroadcastFailed, got: {err}"))
+            .txid
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn failed_send_returns_the_txid_and_keeps_the_transaction_recorded() {
+        let (_dir, service) = funded_service().await;
+
+        let txid = send_with_failing_broadcast(&service).await;
+
+        let txs = service.transactions().await.unwrap();
+        assert!(
+            txs.iter().any(|t| t.tx_id == txid),
+            "tx must stay recorded, not abandoned"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn failed_rebroadcast_reports_the_failure_and_changes_nothing() {
+        let (_dir, service) = funded_service().await;
+        let txid = send_with_failing_broadcast(&service).await;
+        let before = service.transactions().await.unwrap().len();
+
+        let err = service.rebroadcast_transaction(txid).await.unwrap_err();
+
+        match err.downcast_ref::<RebroadcastError>() {
+            Some(RebroadcastError::Failed {
+                failed, broadcast, ..
+            }) => {
+                assert_ne!(
+                    *failed, txid,
+                    "the unconfirmed funding ancestor is sent first, so it fails first"
+                );
+                assert!(broadcast.is_empty());
+            }
+            other => panic!("expected RebroadcastError::Failed, got: {other:?}"),
+        }
+        let txs = service.transactions().await.unwrap();
+        assert_eq!(txs.len(), before);
+        assert!(txs.iter().any(|t| t.tx_id == txid));
+    }
+
+    fn rpc_error(code: i32) -> ChainApiError {
+        use bdk_bitcoind_rpc::bitcoincore_rpc::Error as CoreError;
+        use bdk_bitcoind_rpc::bitcoincore_rpc::jsonrpc::error::{Error as JsonRpcError, RpcError};
+
+        ChainApiError::backend(CoreError::JsonRpc(JsonRpcError::Rpc(RpcError {
+            code,
+            message: "test".into(),
+            data: None,
+        })))
+    }
+
+    enum Outcome {
+        Accept,
+        Fail,
+        Rpc(i32),
+    }
+
+    /// Answers successive broadcasts with the scripted outcomes and records what it was asked.
+    struct ScriptedBroadcaster {
+        outcomes: Mutex<VecDeque<Outcome>>,
+        seen: Mutex<Vec<Txid>>,
+    }
+
+    impl ScriptedBroadcaster {
+        fn new(outcomes: impl IntoIterator<Item = Outcome>) -> Arc<Self> {
+            Arc::new(Self {
+                outcomes: Mutex::new(outcomes.into_iter().collect()),
+                seen: Mutex::new(Vec::new()),
+            })
+        }
+
+        fn seen(&self) -> Vec<Txid> {
+            self.seen.lock().unwrap().clone()
+        }
+    }
+
+    impl ChainApi for ScriptedBroadcaster {
+        fn transaction_broadcast(&self, tx: &Transaction) -> Result<Txid, ChainApiError> {
+            let txid = tx.compute_txid();
+            self.seen.lock().unwrap().push(txid);
+            match self
+                .outcomes
+                .lock()
+                .unwrap()
+                .pop_front()
+                .expect("unscripted broadcast")
+            {
+                Outcome::Accept => Ok(txid),
+                Outcome::Fail => Err(ChainApiError::backend(std::io::Error::other(
+                    "node unreachable",
+                ))),
+                Outcome::Rpc(code) => Err(rpc_error(code)),
+            }
+        }
+    }
+
+    /// Blocks inside `transaction_broadcast` until released, accepting every transaction.
+    struct BlockingBroadcaster {
+        entered: Mutex<mpsc::Sender<()>>,
+        release: Mutex<mpsc::Receiver<()>>,
+    }
+
+    impl ChainApi for BlockingBroadcaster {
+        fn transaction_broadcast(&self, tx: &Transaction) -> Result<Txid, ChainApiError> {
+            let _ = self.entered.lock().unwrap().send(());
+            self.release.lock().unwrap().recv().unwrap();
+            Ok(tx.compute_txid())
+        }
+    }
+
+    /// A payment that was recorded but not broadcast, with `broadcaster` installed afterwards.
+    /// Its unconfirmed funding transaction is the payment's only ancestor, so rebroadcast sends
+    /// the funding transaction first and the payment second.
+    async fn pending_payment_with(
+        broadcaster: Arc<dyn ChainApi>,
+    ) -> (
+        tempfile::TempDir,
+        BMPWalletServiceImpl<FundingChainDataSource>,
+        Txid,
+    ) {
+        let (dir, service) = funded_service().await;
+        let txid = send_with_failing_broadcast(&service).await;
+        (dir, service.with_broadcaster(broadcaster), txid)
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn rebroadcast_failure_of_the_requested_tx_reports_the_ancestors_already_sent() {
+        let broadcaster = ScriptedBroadcaster::new([Outcome::Accept, Outcome::Fail]);
+        let (_dir, service, txid) = pending_payment_with(broadcaster.clone()).await;
+
+        let err = service.rebroadcast_transaction(txid).await.unwrap_err();
+
+        let seen = broadcaster.seen();
+        match err.downcast_ref::<RebroadcastError>() {
+            Some(RebroadcastError::Failed {
+                failed, broadcast, ..
+            }) => {
+                assert_eq!(*failed, txid);
+                assert_eq!(broadcast, &vec![seen[0]]);
+            }
+            other => panic!("expected RebroadcastError::Failed, got: {other:?}"),
+        }
+        assert_eq!(seen.len(), 2);
+        assert_eq!(seen[1], txid);
+        let txs = service.transactions().await.unwrap();
+        assert!(txs.iter().any(|t| t.tx_id == txid), "must stay recorded");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn rebroadcast_treats_already_in_utxo_set_for_the_requested_tx_as_such() {
+        let broadcaster = ScriptedBroadcaster::new([Outcome::Accept, Outcome::Rpc(-27)]);
+        let (_dir, service, txid) = pending_payment_with(broadcaster).await;
+
+        let err = service.rebroadcast_transaction(txid).await.unwrap_err();
+
+        assert!(
+            matches!(
+                err.downcast_ref::<RebroadcastError>(),
+                Some(RebroadcastError::AlreadyInUtxoSet(id)) if *id == txid
+            ),
+            "got: {err}"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn rebroadcast_skips_an_ancestor_that_is_already_in_the_utxo_set() {
+        let broadcaster = ScriptedBroadcaster::new([Outcome::Rpc(-27), Outcome::Accept]);
+        let (_dir, service, txid) = pending_payment_with(broadcaster.clone()).await;
+
+        let broadcast = service.rebroadcast_transaction(txid).await.unwrap();
+
+        assert_eq!(broadcast, vec![txid]);
+        assert_eq!(
+            broadcaster.seen().len(),
+            2,
+            "the ancestor was attempted first"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn abandon_waits_for_a_rebroadcast_in_progress() {
+        let (entered_tx, entered_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        let broadcaster = Arc::new(BlockingBroadcaster {
+            entered: Mutex::new(entered_tx),
+            release: Mutex::new(release_rx),
+        });
+        let (_dir, service, txid) = pending_payment_with(broadcaster).await;
+        let service = Arc::new(service);
+
+        let rebroadcast = tokio::spawn({
+            let service = service.clone();
+            async move { service.rebroadcast_transaction(txid).await }
+        });
+        // The rebroadcast is now inside its first broadcast.
+        task::spawn_blocking(move || entered_rx.recv().unwrap())
+            .await
+            .unwrap();
+
+        let abandon = tokio::spawn({
+            let service = service.clone();
+            async move { service.abandon_transaction(PASSWORD, txid).await }
+        });
+        time::sleep(Duration::from_millis(300)).await;
+        assert!(
+            !abandon.is_finished(),
+            "abandon must wait for the rebroadcast"
+        );
+        let txs = service.transactions().await.unwrap();
+        assert!(
+            txs.iter().any(|t| t.tx_id == txid),
+            "still tracked while rebroadcasting"
+        );
+
+        release_tx.send(()).unwrap();
+        release_tx.send(()).unwrap();
+        let broadcast = rebroadcast.await.unwrap().unwrap();
+        assert_eq!(broadcast.last(), Some(&txid));
+        let abandoned = abandon.await.unwrap().unwrap();
+        assert_eq!(abandoned, vec![txid]);
     }
 }

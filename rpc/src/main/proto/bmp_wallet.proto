@@ -32,6 +32,8 @@ syntax = "proto3";
 // longer needs the password on its command line. `GetNewAddress` is gone (`GetUnusedAddress` is
 // the one way to obtain a receive address), and `GetSeedWords` takes the wallet password.
 // Addresses are carried as `PubAddressInfo` messages rather than as bare strings.
+// `RebroadcastTransaction` and `AbandonTransaction` are additions with no bisq2 counterpart yet;
+// they are new methods and messages only, so bisq2's existing client is unaffected.
 //
 // NOTE: this is a *different* service from `walletrpc.Wallet` in `wallet.proto`. That one is the
 // low-level wallet the trade protocol drives; this one is the user-facing wallet backed by
@@ -59,6 +61,9 @@ service Wallet {
     // Builds, signs and broadcasts a payment. `passphrase` must be the wallet password
     // (PERMISSION_DENIED otherwise).
     rpc SendToAddress (SendToAddressRequest) returns (SendToAddressResponse);
+    rpc RebroadcastTransaction (RebroadcastTransactionRequest) returns (RebroadcastTransactionResponse);
+    // Local only: does not cancel the transaction on the network.
+    rpc AbandonTransaction (AbandonTransactionRequest) returns (AbandonTransactionResponse);
     rpc GetBalance (GetBalanceRequest) returns (GetBalanceResponse);
     rpc GetSeedWords (GetSeedWordsRequest) returns (GetSeedWordsResponse);
     // Re-keys the wallet database from oldPassword to newPassword. Requires the password
@@ -128,6 +133,32 @@ message SendToAddressRequest {
 
 message SendToAddressResponse {
     string txId = 1;
+}
+
+message RebroadcastTransactionRequest {
+    // The transaction to rebroadcast, as hex.
+    string txId = 1;
+}
+
+message RebroadcastTransactionResponse {
+    // Transactions the node accepted, in the order they were sent: unconfirmed ancestors first,
+    // the requested transaction last.
+    repeated string broadcastTxIds = 1;
+}
+
+message AbandonTransactionRequest {
+    // The wallet password.
+    string passphrase = 1;
+    // The transaction to abandon, as hex.
+    string txId = 2;
+}
+
+message AbandonTransactionResponse {
+    // The transactions that were abandoned: the requested one and its unconfirmed descendants.
+    // Empty if it had already been abandoned.
+    repeated string abandonedTxIds = 1;
+    // Reminder that the abandonment is local only; show it to the user.
+    string warning = 2;
 }
 
 message GetBalanceRequest {}
