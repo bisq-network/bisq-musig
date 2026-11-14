@@ -1,3 +1,4 @@
+use bdk_wallet::bitcoin::Txid;
 use bdk_wallet::bitcoin::psbt::ExtractTxError;
 use thiserror::Error;
 
@@ -57,6 +58,14 @@ pub enum WalletErrorKind {
     ApplyUpdate(#[from] bdk_wallet::chain::local_chain::CannotConnectError),
     ChainDataSource(#[from] ChainDataSourceError),
     Generic(Box<dyn std::error::Error + Sync + Send + 'static>),
+    #[error("transaction {0} is not known to the wallet")]
+    TransactionNotFound(Txid),
+    #[error("transaction {0} is confirmed, so it cannot be rebroadcast or abandoned")]
+    TransactionConfirmed(Txid),
+    #[error(
+        "transaction {0} is known to the wallet but is no longer pending (it was abandoned or replaced)"
+    )]
+    TransactionNotPending(Txid),
 }
 
 impl WalletErrorKind {
