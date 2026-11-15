@@ -24,7 +24,7 @@ mod tests {
     use bdk_wallet::bitcoin::secp256k1::Message;
     use bdk_wallet::bitcoin::sighash::{Prevouts, SighashCache};
     use bdk_wallet::bitcoin::{
-        Address, AddressType, Amount, BlockHash, Network, OutPoint, Transaction, Weight,
+        Address, AddressType, Amount, BlockHash, Network, OutPoint, Transaction, Txid, Weight,
         XOnlyPublicKey, absolute, psbt, taproot, transaction,
     };
     use bdk_wallet::chain::{self, BlockId};
@@ -48,8 +48,9 @@ mod tests {
     use crate::protocol_wallet_api::ProtocolWalletApi as _;
     use crate::test_utils::{
         MemDbHandle, MockedBDKElectrum, MockedBDKElectrumWithCoinbase,
-        MockedBDKElectrumWithEvictedSpend, MockedBDKElectrumWithPending,
-        MockedBDKElectrumWithSpend, MockedBDKElectrumWithSpendOf, derive_public_key, test_password,
+        MockedBDKElectrumWithConfirmedTx, MockedBDKElectrumWithEvictedSpend,
+        MockedBDKElectrumWithPending, MockedBDKElectrumWithSpend, MockedBDKElectrumWithSpendOf,
+        derive_public_key, test_password,
     };
     use crate::utils::derive_key_from_password;
 
@@ -2085,6 +2086,63 @@ mod tests {
         let reloaded = BMPWallet::load_wallet(mem_storage.store, Network::Regtest, &fresh)?;
         assert_eq!(reloaded.get_seed_phrase(&fresh)?, seed);
 
+        Ok(())
+    }
+
+    /// Sends three chained payments (each spends the previous one's change).
+    async fn spend_chain(wallet: &mut BMPWallet) -> anyhow::Result<[Transaction; 3]> {
+        wallet.sync_all(&MockedBDKElectrum {}).await?;
+        let to = "tb1pyfv094rr0vk28lf8v9yx3veaacdzg26ztqk4ga84zucqqhafnn5q9my9rz"
+            .parse::<Address<_>>()?
+            .assume_checked();
+        let fee_rate = FeeRate::from_sat_per_kwu(250);
+        let parent = wallet.send_to_address(&to, Amount::from_sat(60_000_000), fee_rate)?;
+        let child = wallet.send_to_address(&to, Amount::from_sat(10_000_000), fee_rate)?;
+        let grandchild = wallet.send_to_address(&to, Amount::from_sat(5_000_000), fee_rate)?;
+        for (p, c) in [(&parent, &child), (&child, &grandchild)] {
+            assert!(
+                c.input
+                    .iter()
+                    .any(|i| i.previous_output.txid == p.compute_txid())
+            );
+        }
+        Ok([parent, child, grandchild])
+    }
+
+    #[tokio::test]
+    async fn transactions_to_broadcast_orders_ancestors_first_and_skips_confirmed()
+    -> anyhow::Result<()> {
+        let mem_storage = MemDbHandle::new()?;
+        let mut wallet = BMPWallet::new(mem_storage.store, &test_password(), Network::Regtest)?;
+        let [parent, child, grandchild] = spend_chain(&mut wallet).await?;
+        let ids = [
+            parent.compute_txid(),
+            child.compute_txid(),
+            grandchild.compute_txid(),
+        ];
+        let ordered = |w: &BMPWallet, t| -> Vec<Txid> {
+            w.transactions_to_broadcast(t)
+                .unwrap()
+                .iter()
+                .map(Transaction::compute_txid)
+                .collect()
+        };
+
+        assert_eq!(ordered(&wallet, ids[2]), ids.to_vec());
+        assert_eq!(ordered(&wallet, ids[0]), vec![ids[0]]);
+        assert!(matches!(
+            wallet.transactions_to_broadcast(Txid::from_byte_array([7; 32])),
+            Err(WalletErrorKind::TransactionNotFound(_))
+        ));
+
+        wallet
+            .sync_all(&MockedBDKElectrumWithConfirmedTx { tx: parent })
+            .await?;
+        assert_eq!(ordered(&wallet, ids[2]), vec![ids[1], ids[2]]);
+        assert!(matches!(
+            wallet.transactions_to_broadcast(ids[0]),
+            Err(WalletErrorKind::TransactionConfirmed(_))
+        ));
         Ok(())
     }
 }

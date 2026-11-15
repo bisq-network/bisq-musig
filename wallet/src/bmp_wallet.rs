@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::ops::{Deref, DerefMut};
 use std::time::UNIX_EPOCH;
 use std::vec;
@@ -7,7 +7,7 @@ use bdk_electrum::bdk_core::bitcoin::{Address, FeeRate, OutPoint};
 use bdk_wallet::bitcoin::bip32::Xpriv;
 use bdk_wallet::bitcoin::hex::DisplayHex as _;
 use bdk_wallet::bitcoin::{
-    Amount, Network, PrivateKey, Psbt, ScriptBuf, Sequence, TapNodeHash, Transaction, Weight,
+    Amount, Network, PrivateKey, Psbt, ScriptBuf, Sequence, TapNodeHash, Transaction, Txid, Weight,
     XOnlyPublicKey, consensus, psbt,
 };
 use bdk_wallet::chain::{CanonicalizationParams, ChainPosition, FullTxOut, Merge as _};
@@ -667,6 +667,79 @@ impl BMPWallet {
         <Self as WalletApi>::persist(self)?;
 
         Ok(tx)
+    }
+
+    /// The HD wallet's graph first, then every imported wallet's graph. The graphs can hold
+    /// different histories, because each only records transactions relevant to itself.
+    fn graph_wallets(&self) -> Vec<&Wallet> {
+        std::iter::once(&*self.wallet)
+            .chain(self.imported_wallets.iter().map(|w| &*w.wallet))
+            .collect()
+    }
+
+    /// The signed transactions to (re)broadcast so that `txid` can be accepted: its unconfirmed
+    /// ancestors, parent first, then `txid` itself (always last). Read-only: it neither changes
+    /// nor persists any wallet state.
+    ///
+    /// Descendants are deliberately not included; they do not affect whether `txid` is valid.
+    ///
+    /// # Errors
+    /// [`WalletErrorKind::TransactionNotFound`] if no graph holds `txid` at all,
+    /// [`WalletErrorKind::TransactionNotPending`] if a graph holds it but it is no longer
+    /// pending (abandoned or replaced), [`WalletErrorKind::TransactionConfirmed`] if the wallet
+    /// knows it is confirmed.
+    pub fn transactions_to_broadcast(&self, txid: Txid) -> Result<Vec<Transaction>> {
+        let mut ordered = Vec::new();
+        let mut visited = BTreeSet::new();
+        self.collect_unconfirmed_ancestry(txid, true, &mut visited, &mut ordered)?;
+        Ok(ordered)
+    }
+
+    fn collect_unconfirmed_ancestry(
+        &self,
+        txid: Txid,
+        is_root: bool,
+        visited: &mut BTreeSet<Txid>,
+        ordered: &mut Vec<Transaction>,
+    ) -> Result<()> {
+        if !visited.insert(txid) {
+            return Ok(());
+        }
+        let mut found: Option<std::sync::Arc<Transaction>> = None;
+        let mut confirmed = false;
+        for wallet in self.graph_wallets() {
+            if let Some(wallet_tx) = wallet.get_tx(txid) {
+                confirmed |= matches!(wallet_tx.chain_position, ChainPosition::Confirmed { .. });
+                found.get_or_insert_with(|| wallet_tx.tx_node.tx.clone());
+            }
+        }
+        let Some(tx) = found else {
+            // An unknown ancestor is simply not ours to send (e.g. an old confirmed parent).
+            if !is_root {
+                return Ok(());
+            }
+            let known = self
+                .graph_wallets()
+                .iter()
+                .any(|wallet| wallet.tx_graph().get_tx(txid).is_some());
+            return Err(if known {
+                WalletErrorKind::TransactionNotPending(txid)
+            } else {
+                WalletErrorKind::TransactionNotFound(txid)
+            });
+        };
+        if confirmed {
+            return if is_root {
+                Err(WalletErrorKind::TransactionConfirmed(txid))
+            } else {
+                Ok(())
+            };
+        }
+        for input in &tx.input {
+            self.collect_unconfirmed_ancestry(input.previous_output.txid, false, visited, ordered)?;
+        }
+        ordered.push((*tx).clone());
+        Ok(())
     }
 
     fn load_imported_wallet(

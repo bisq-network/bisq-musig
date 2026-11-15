@@ -333,6 +333,53 @@ impl ChainDataSource for MockedBDKElectrumWithCoinbase {
     }
 }
 
+pub struct MockedBDKElectrumWithConfirmedTx {
+    pub tx: Transaction,
+}
+
+impl ChainDataSource for MockedBDKElectrumWithConfirmedTx {
+    const RECOVERY_HEIGHT: usize = 10;
+    const BATCH_SIZE: usize = 1;
+    const STOP_GAP: usize = 1;
+
+    #[expect(
+        clippy::unused_async_trait_impl,
+        reason = "the ChainDataSource trait requires an async method"
+    )]
+    async fn sync(
+        &self,
+        persister: Vec<&mut PersistedWallet<impl BMPWalletPersister>>,
+    ) -> Result<(), ChainDataSourceError> {
+        let block_id = BlockId {
+            height: 2_001,
+            hash: BlockHash::all_zeros(),
+        };
+
+        for wallet in persister {
+            insert_checkpoint(wallet, block_id);
+
+            let txid = self.tx.compute_txid();
+            let mut tx_update = bdk_wallet::chain::TxUpdate::default();
+            tx_update.txs = vec![std::sync::Arc::new(self.tx.clone())];
+            tx_update.anchors = [(
+                ConfirmationBlockTime {
+                    block_id,
+                    confirmation_time: 2_001,
+                },
+                txid,
+            )]
+            .into();
+
+            wallet.apply_update(bdk_wallet::Update {
+                tx_update,
+                ..Default::default()
+            })?;
+        }
+
+        Ok(())
+    }
+}
+
 pub fn verify_signature(
     signing_key: &PrivateKey,
     witness: &Witness,
