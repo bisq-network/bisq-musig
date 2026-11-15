@@ -123,6 +123,8 @@ fn configure_bmp_wallet_serde(builder: tonic_prost_build::Builder) -> tonic_pros
             ".wallet.ListUtxosRequest",
             ".wallet.ListUtxosResponse",
             ".wallet.SendToAddressResponse",
+            ".wallet.RebroadcastTransactionRequest",
+            ".wallet.RebroadcastTransactionResponse",
             ".wallet.GetBalanceRequest",
             ".wallet.GetBalanceResponse",
             ".wallet.OpenOrCreateWalletResponse",

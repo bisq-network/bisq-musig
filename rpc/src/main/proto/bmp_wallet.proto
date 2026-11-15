@@ -32,6 +32,8 @@ syntax = "proto3";
 // longer needs the password on its command line. `GetNewAddress` is gone (`GetUnusedAddress` is
 // the one way to obtain a receive address), and `GetSeedWords` takes the wallet password.
 // Addresses are carried as `PubAddressInfo` messages rather than as bare strings.
+// `RebroadcastTransaction` is an addition with no bisq2 counterpart yet; it is a new
+// method and message only, so bisq2's existing client is unaffected.
 //
 // NOTE: this is a *different* service from `walletrpc.Wallet` in `wallet.proto`. That one is the
 // low-level wallet the trade protocol drives; this one is the user-facing wallet backed by
@@ -60,6 +62,7 @@ service Wallet {
     // (PERMISSION_DENIED otherwise). If broadcasting fails, the transaction stays recorded in
     // the wallet; its id is in the `x-broadcast-failed-txid` response metadata.
     rpc SendToAddress (SendToAddressRequest) returns (SendToAddressResponse);
+    rpc RebroadcastTransaction (RebroadcastTransactionRequest) returns (RebroadcastTransactionResponse);
     rpc GetBalance (GetBalanceRequest) returns (GetBalanceResponse);
     rpc GetSeedWords (GetSeedWordsRequest) returns (GetSeedWordsResponse);
     // Re-keys the wallet database from oldPassword to newPassword. Requires the password
@@ -129,6 +132,17 @@ message SendToAddressRequest {
 
 message SendToAddressResponse {
     string txId = 1;
+}
+
+message RebroadcastTransactionRequest {
+    // The transaction to rebroadcast, as hex.
+    string txId = 1;
+}
+
+message RebroadcastTransactionResponse {
+    // Transactions the node accepted, in the order they were sent: unconfirmed ancestors first,
+    // the requested transaction last.
+    repeated string broadcastTxIds = 1;
 }
 
 message GetBalanceRequest {}
