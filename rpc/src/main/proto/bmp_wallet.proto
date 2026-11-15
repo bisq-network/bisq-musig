@@ -57,7 +57,8 @@ service Wallet {
     rpc ListTransactions (ListTransactionsRequest) returns (ListTransactionsResponse);
     rpc ListUtxos (ListUtxosRequest) returns (ListUtxosResponse);
     // Builds, signs and broadcasts a payment. `passphrase` must be the wallet password
-    // (PERMISSION_DENIED otherwise).
+    // (PERMISSION_DENIED otherwise). If broadcasting fails, the transaction stays recorded in
+    // the wallet; its id is in the `x-broadcast-failed-txid` response metadata.
     rpc SendToAddress (SendToAddressRequest) returns (SendToAddressResponse);
     rpc GetBalance (GetBalanceRequest) returns (GetBalanceResponse);
     rpc GetSeedWords (GetSeedWordsRequest) returns (GetSeedWordsResponse);
