@@ -43,14 +43,13 @@ use zeroize::Zeroizing;
 use crate::observable::ObservableHashMap;
 pub use crate::pb::bmp_wallet::wallet_server::WalletServer as BmpWalletServer;
 use crate::pb::bmp_wallet::{
-    self, ChangePasswordRequest, ChangePasswordResponse, GetBalanceRequest,
-    GetBalanceResponse, GetSeedWordsRequest,
+    self, AbandonTransactionRequest, AbandonTransactionResponse, ChangePasswordRequest,
+    ChangePasswordResponse, GetBalanceRequest, GetBalanceResponse, GetSeedWordsRequest,
     GetSeedWordsResponse, GetUnusedAddressRequest, GetUnusedAddressResponse,
     GetWalletAddressesRequest, GetWalletAddressesResponse, IsWalletReadyRequest,
     IsWalletReadyResponse, ListTransactionsRequest, ListTransactionsResponse, ListUtxosRequest,
     ListUtxosResponse, OpenOrCreateWalletRequest, OpenOrCreateWalletResponse,
-    RebroadcastTransactionRequest, RebroadcastTransactionResponse,
-    SendToAddressRequest,
+    RebroadcastTransactionRequest, RebroadcastTransactionResponse, SendToAddressRequest,
     SendToAddressResponse, wallet_server,
 };
 use crate::server::handle_request_async;
@@ -150,6 +149,11 @@ pub trait BmpWalletService {
     /// even on failure. An ancestor the node reports as already confirmed is skipped; the same
     /// report for `txid` itself is an error ([`RebroadcastError::AlreadyInUtxoSet`]).
     async fn rebroadcast_transaction(&self, txid: Txid) -> anyhow::Result<Vec<Txid>>;
+
+    /// Stops tracking `txid` and its unconfirmed descendants as pending and releases their
+    /// inputs. **Local only: this does not cancel the transaction on the network**; see
+    /// [`BMPWallet::abandon_transaction`]. Requires the wallet password.
+    async fn abandon_transaction(&self, password: &str, txid: Txid) -> anyhow::Result<Vec<Txid>>;
 
     async fn full_balance(&self) -> anyhow::Result<Balance>;
 
@@ -536,6 +540,24 @@ impl<S: ChainDataSource + Send + Sync + 'static> BmpWalletService for BMPWalletS
         Ok(broadcast)
     }
 
+    async fn abandon_transaction(&self, password: &str, txid: Txid) -> anyhow::Result<Vec<Txid>> {
+        let _operation = self.tx_operation.lock().await;
+        let mut guard = self.wallet.lock().await;
+        let wallet = require_open(&mut guard)?;
+        if !wallet.check_password(&Password::check(password)?)? {
+            return Err(InvalidPassword.into());
+        }
+        let result = wallet.abandon_transaction(txid);
+        // Resync even on error: the graphs may have changed before saving failed.
+        self.tx_confidence_map
+            .lock()
+            .unwrap()
+            .sync(tx_confidence_entries(wallet));
+        let abandoned = result?;
+        warn!(%txid, ?abandoned, "Abandoned wallet transaction locally.");
+        Ok(abandoned)
+    }
+
     async fn full_balance(&self) -> anyhow::Result<Balance> {
         let mut guard = self.wallet.lock().await;
         Ok(require_open(&mut guard)?.full_balance())
@@ -759,6 +781,30 @@ impl wallet_server::Wallet for BmpWalletImpl {
     }
 
     #[instrument(skip_all)]
+    async fn abandon_transaction(
+        &self,
+        request: Request<AbandonTransactionRequest>,
+    ) -> Result<Response<AbandonTransactionResponse>> {
+        handle_request_async(request, |request| async move {
+            let txid = request
+                .tx_id
+                .parse::<Txid>()
+                .map_err(|e| Status::invalid_argument(format!("invalid txId: {e}")))?;
+            let passphrase = Zeroizing::new(request.passphrase);
+            let abandoned = self
+                .wallet_service
+                .abandon_transaction(&passphrase, txid)
+                .await
+                .map_err(|e| status_from(&e))?;
+            Ok(AbandonTransactionResponse {
+                abandoned_tx_ids: abandoned.iter().map(ToString::to_string).collect(),
+                warning: ABANDON_WARNING.to_owned(),
+            })
+        })
+        .await
+    }
+
+    #[instrument(skip_all)]
     async fn get_balance(
         &self,
         request: Request<GetBalanceRequest>,
@@ -931,6 +977,10 @@ fn is_already_in_utxo_set(error: &ChainApiError) -> bool {
     )
 }
 
+const ABANDON_WARNING: &str = "The transaction was abandoned in this wallet only. It was not \
+cancelled on the network and may still confirm. If you make another payment with different \
+funds, you could end up paying the same recipient twice.";
+
 // Conversions from the `wallet` crate's transport-agnostic views to the generated protobuf types.
 
 impl From<Balance> for GetBalanceResponse {
@@ -1032,14 +1082,18 @@ impl From<TxInfo> for bmp_wallet::Transaction {
 
 #[cfg(test)]
 mod tests {
-    use ::wallet::error::ChainDataSourceError;
     use std::collections::VecDeque;
+    use std::sync::mpsc;
+    use std::time::Duration;
+
+    use ::wallet::error::ChainDataSourceError;
     use ::wallet::persisted::{BMPWalletPersister as _, DBStorage};
     use ::wallet::utils::derive_key_from_password;
     use bdk_wallet::PersistedWallet;
     use bdk_wallet::bitcoin::Network;
     use bdk_wallet::bitcoin::hashes::Hash as _;
     use bdk_wallet::rusqlite::Connection;
+    use futures_util::FutureExt as _;
     use tempfile::tempdir;
 
     use super::*;
@@ -1987,6 +2041,104 @@ mod tests {
             broadcaster.seen().len(),
             2,
             "the ancestor was attempted first"
+        );
+    }
+
+    /// Blocks inside `transaction_broadcast` until released, accepting every transaction.
+    struct BlockingBroadcaster {
+        entered: Mutex<mpsc::Sender<()>>,
+        release: Mutex<mpsc::Receiver<()>>,
+    }
+
+    impl ChainApi for BlockingBroadcaster {
+        fn transaction_broadcast(&self, tx: &Transaction) -> Result<Txid, ChainApiError> {
+            let _ = self.entered.lock().unwrap().send(());
+            self.release
+                .lock()
+                .unwrap()
+                .recv_timeout(Duration::from_secs(10))
+                .expect("test did not release the broadcaster");
+            Ok(tx.compute_txid())
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn abandon_transaction_checks_the_password_before_anything_else() {
+        let (_dir, service) = open_service().await;
+        let err = service
+            .abandon_transaction("wrong-Pass1!", unknown_txid())
+            .await
+            .unwrap_err();
+        assert!(is_invalid_password(&err), "got: {err}");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn abandon_transaction_of_an_unknown_txid_is_not_found() {
+        let (_dir, service) = open_service().await;
+        let err = service
+            .abandon_transaction(PASSWORD, unknown_txid())
+            .await
+            .unwrap_err();
+        assert_eq!(status_from(&err).code(), tonic::Code::NotFound);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn abandon_waits_for_a_rebroadcast_in_progress() {
+        let (entered_tx, entered_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        let broadcaster = Arc::new(BlockingBroadcaster {
+            entered: Mutex::new(entered_tx),
+            release: Mutex::new(release_rx),
+        });
+        let (_dir, service, txid) = pending_payment_with(broadcaster).await;
+        service.sync_once(&FundingChainDataSource).await.unwrap();
+        let service = Arc::new(service);
+        let mut confidence = service.get_tx_confidence_stream(txid);
+        assert!(
+            confidence.next().await.unwrap().is_some(),
+            "pending before abandon"
+        );
+
+        let rebroadcast = tokio::spawn({
+            let service = service.clone();
+            async move { service.rebroadcast_transaction(txid).await }
+        });
+        // Blocked inside its first broadcast, holding the operation lock.
+        task::spawn_blocking(move || entered_rx.recv_timeout(Duration::from_secs(10)).unwrap())
+            .await
+            .unwrap();
+
+        // One poll runs abandon up to its first await, the operation lock.
+        let mut abandon = Box::pin(service.abandon_transaction(PASSWORD, txid));
+        assert!(
+            (&mut abandon).now_or_never().is_none(),
+            "abandon must wait for the rebroadcast"
+        );
+        let txs = service.transactions().await.unwrap();
+        assert!(
+            txs.iter().any(|t| t.tx_id == txid),
+            "still tracked while rebroadcasting"
+        );
+
+        // Release the funding ancestor's broadcast, then the payment's.
+        release_tx.send(()).unwrap();
+        release_tx.send(()).unwrap();
+        let (rebroadcast, abandoned) = time::timeout(Duration::from_secs(10), async {
+            tokio::join!(rebroadcast, abandon)
+        })
+        .await
+        .expect("rebroadcast and abandon did not finish");
+        assert_eq!(rebroadcast.unwrap().unwrap().last(), Some(&txid));
+        assert_eq!(abandoned.unwrap(), vec![txid]);
+
+        let txs = service.transactions().await.unwrap();
+        assert!(txs.iter().all(|t| t.tx_id != txid));
+        let after = time::timeout(Duration::from_secs(10), confidence.next())
+            .await
+            .expect("no confidence update after abandon");
+        assert!(
+            after.unwrap().is_none(),
+            "abandoned tx leaves the confidence map"
         );
     }
 }

@@ -125,6 +125,7 @@ fn configure_bmp_wallet_serde(builder: tonic_prost_build::Builder) -> tonic_pros
             ".wallet.SendToAddressResponse",
             ".wallet.RebroadcastTransactionRequest",
             ".wallet.RebroadcastTransactionResponse",
+            ".wallet.AbandonTransactionResponse",
             ".wallet.GetBalanceRequest",
             ".wallet.GetBalanceResponse",
             ".wallet.OpenOrCreateWalletResponse",
@@ -137,6 +138,10 @@ fn configure_bmp_wallet_serde(builder: tonic_prost_build::Builder) -> tonic_pros
         ])
         .serde_serialized_type(
             ".wallet.SendToAddressRequest",
+            &[redacted_string("passphrase")],
+        )
+        .serde_serialized_type(
+            ".wallet.AbandonTransactionRequest",
             &[redacted_string("passphrase")],
         )
         .serde_serialized_type(
