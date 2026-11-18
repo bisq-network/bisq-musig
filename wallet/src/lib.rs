@@ -13,6 +13,7 @@ pub mod wallet_info;
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeSet;
     use std::str::FromStr as _;
 
     use bdk_kyoto::FeeRate;
@@ -24,7 +25,7 @@ mod tests {
     use bdk_wallet::bitcoin::secp256k1::Message;
     use bdk_wallet::bitcoin::sighash::{Prevouts, SighashCache};
     use bdk_wallet::bitcoin::{
-        Address, AddressType, Amount, BlockHash, Network, OutPoint, Transaction, Weight,
+        Address, AddressType, Amount, BlockHash, Network, OutPoint, Transaction, Txid, Weight,
         XOnlyPublicKey, absolute, psbt, taproot, transaction,
     };
     use bdk_wallet::chain::{self, BlockId};
@@ -49,8 +50,9 @@ mod tests {
     use crate::protocol_wallet_api::ProtocolWalletApi as _;
     use crate::test_utils::{
         MemDbHandle, MockedBDKElectrum, MockedBDKElectrumWithCoinbase,
-        MockedBDKElectrumWithEvictedSpend, MockedBDKElectrumWithPending,
-        MockedBDKElectrumWithSpend, MockedBDKElectrumWithSpendOf, derive_public_key, test_password,
+        MockedBDKElectrumWithConfirmedTx, MockedBDKElectrumWithEvictedSpend,
+        MockedBDKElectrumWithPending, MockedBDKElectrumWithSeenTx, MockedBDKElectrumWithSpend,
+        MockedBDKElectrumWithSpendOf, derive_public_key, test_password,
     };
     use crate::utils::derive_key_from_password;
 
@@ -2112,6 +2114,348 @@ mod tests {
         let reloaded = BMPWallet::load_wallet(mem_storage.store, Network::Regtest, &fresh)?;
         assert_eq!(reloaded.get_seed_phrase(&fresh)?, seed);
 
+        Ok(())
+    }
+
+    fn txid_set(wallet: &BMPWallet) -> BTreeSet<Txid> {
+        wallet.transactions().map(|t| t.tx_node.txid).collect()
+    }
+
+    /// Sends three chained payments (each spends the previous one's change).
+    async fn spend_chain(wallet: &mut BMPWallet) -> anyhow::Result<[Transaction; 3]> {
+        wallet.sync_all(&MockedBDKElectrum {}).await?;
+        let parent = wallet.send_to_address(&payee(), Amount::from_sat(60_000_000), FEE_RATE)?;
+        let child = wallet.send_to_address(&payee(), Amount::from_sat(10_000_000), FEE_RATE)?;
+        let grandchild = wallet.send_to_address(&payee(), Amount::from_sat(5_000_000), FEE_RATE)?;
+        for (p, c) in [(&parent, &child), (&child, &grandchild)] {
+            assert!(
+                c.input
+                    .iter()
+                    .any(|i| i.previous_output.txid == p.compute_txid())
+            );
+        }
+        Ok([parent, child, grandchild])
+    }
+
+    #[tokio::test]
+    async fn abandon_transaction_takes_unconfirmed_descendants_and_releases_inputs()
+    -> anyhow::Result<()> {
+        // From the middle: the parent stays until it is abandoned itself.
+        let (mem_storage, mut wallet, [p, c, g]) = chain_wallet().await?;
+
+        let abandoned = wallet.abandon_transaction(c)?;
+        assert_eq!(
+            abandoned.into_iter().collect::<BTreeSet<_>>(),
+            BTreeSet::from([c, g])
+        );
+        assert!(txid_set(&wallet).contains(&p));
+        assert_ne!(wallet.balance(), Amount::ONE_BTC);
+
+        assert_eq!(wallet.abandon_transaction(p)?, vec![p]);
+        assert_gone(&wallet, &[p, c, g]);
+        assert_eq!(wallet.balance(), Amount::ONE_BTC);
+        assert_eq!(wallet.abandon_transaction(p)?, Vec::<Txid>::new());
+
+        let wallet = reload(&mem_storage, wallet)?;
+        assert_gone(&wallet, &[p, c, g]);
+        assert_eq!(wallet.balance(), Amount::ONE_BTC);
+
+        // From the root: the whole chain goes at once.
+        let (mem_storage, mut wallet, chain) = chain_wallet().await?;
+        let abandoned = wallet.abandon_transaction(chain[0])?;
+        assert_eq!(
+            abandoned.into_iter().collect::<BTreeSet<_>>(),
+            BTreeSet::from(chain)
+        );
+        let wallet = reload(&mem_storage, wallet)?;
+        assert_gone(&wallet, &chain);
+        assert_eq!(wallet.balance(), Amount::ONE_BTC);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn abandon_transaction_rejects_unknown_txid() -> anyhow::Result<()> {
+        let mem_storage = MemDbHandle::new()?;
+        let mut wallet = BMPWallet::new(mem_storage.store, &test_password(), Network::Regtest)?;
+        let unknown = Txid::from_byte_array([7; 32]);
+        assert!(matches!(
+            wallet.abandon_transaction(unknown),
+            Err(WalletErrorKind::TransactionNotFound(id)) if id == unknown
+        ));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn abandon_transaction_refuses_a_confirmed_chain_and_changes_nothing()
+    -> anyhow::Result<()> {
+        let (_mem_storage, mut wallet, [parent, child, _]) = imported_chain().await?;
+        let (parent_txid, child_txid) = (parent.compute_txid(), child.compute_txid());
+        wallet
+            .sync_all(&MockedBDKElectrumWithConfirmedTx { tx: child })
+            .await?;
+
+        let before = txid_set(&wallet);
+        for id in [parent_txid, child_txid] {
+            assert!(matches!(
+                wallet.abandon_transaction(id),
+                Err(WalletErrorKind::TransactionConfirmed(_))
+            ));
+        }
+        assert_eq!(txid_set(&wallet), before);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn abandoned_transaction_becomes_canonical_again_when_it_confirms() -> anyhow::Result<()>
+    {
+        let (mem_storage, mut wallet) = funded_wallet().await?;
+        let a = wallet.send_to_address(&payee(), Amount::from_sat(60_000_000), FEE_RATE)?;
+        let a_id = a.compute_txid();
+
+        assert_eq!(wallet.abandon_transaction(a_id)?, vec![a_id]);
+        assert_gone(&wallet, &[a_id]);
+        assert!(matches!(
+            wallet.transactions_to_broadcast(a_id),
+            Err(WalletErrorKind::TransactionNotPending(_))
+        ));
+
+        // The released inputs are spent again before `a` confirms.
+        let b = wallet.send_to_address(&payee(), Amount::from_sat(50_000_000), FEE_RATE)?;
+        let b_id = b.compute_txid();
+        assert!(
+            a.input.iter().all(|i| b
+                .input
+                .iter()
+                .any(|j| j.previous_output == i.previous_output)),
+            "the replacement must spend the released inputs"
+        );
+        let expected_balance =
+            a.output.iter().map(|o| o.value).sum::<Amount>() - Amount::from_sat(60_000_000);
+
+        wallet
+            .sync_all(&MockedBDKElectrumWithConfirmedTx { tx: a })
+            .await?;
+        let check = |w: &BMPWallet| {
+            let listed = w.list_transactions();
+            let a = listed
+                .iter()
+                .find(|t| t.tx_id == a_id)
+                .expect("listed again");
+            assert!(a.block_height.is_some());
+            assert!(listed.iter().all(|t| t.tx_id != b_id));
+            assert_eq!(w.balance(), expected_balance);
+        };
+        check(&wallet);
+        check(&reload(&mem_storage, wallet)?);
+        Ok(())
+    }
+
+    const FEE_RATE: FeeRate = FeeRate::from_sat_per_kwu(250);
+
+    fn payee() -> Address {
+        "tb1pyfv094rr0vk28lf8v9yx3veaacdzg26ztqk4ga84zucqqhafnn5q9my9rz"
+            .parse::<Address<_>>()
+            .unwrap()
+            .assume_checked()
+    }
+
+    fn assert_gone(wallet: &BMPWallet, ids: &[Txid]) {
+        let live = txid_set(wallet);
+        assert!(ids.iter().all(|id| !live.contains(id)));
+    }
+
+    /// Drops `wallet` and loads it again from the same database.
+    fn reload(mem_storage: &MemDbHandle, wallet: BMPWallet) -> anyhow::Result<BMPWallet> {
+        drop(wallet);
+        Ok(BMPWallet::load_wallet(
+            mem_storage.store.clone(),
+            Network::Regtest,
+            &test_password(),
+        )?)
+    }
+
+    async fn funded_wallet() -> anyhow::Result<(MemDbHandle, BMPWallet)> {
+        let mem_storage = MemDbHandle::new()?;
+        let mut wallet = BMPWallet::new(
+            mem_storage.store.clone(),
+            &test_password(),
+            Network::Regtest,
+        )?;
+        wallet.sync_all(&MockedBDKElectrum {}).await?;
+        Ok((mem_storage, wallet))
+    }
+
+    /// An unfunded wallet holding an unconfirmed parent, child and grandchild.
+    async fn chain_wallet() -> anyhow::Result<(MemDbHandle, BMPWallet, [Txid; 3])> {
+        let mem_storage = MemDbHandle::new()?;
+        let mut wallet = BMPWallet::new(
+            mem_storage.store.clone(),
+            &test_password(),
+            Network::Regtest,
+        )?;
+        let chain = spend_chain(&mut wallet).await?.map(|t| t.compute_txid());
+        Ok((mem_storage, wallet, chain))
+    }
+
+    /// A wallet whose imported key holds 1 BTC, next to the HD wallet's own 1 BTC.
+    async fn wallet_with_imported_key() -> anyhow::Result<(MemDbHandle, BMPWallet)> {
+        let mut mem_storage = MemDbHandle::new()?;
+        let mut wallet = BMPWallet::new(
+            mem_storage.store.clone(),
+            &test_password(),
+            Network::Regtest,
+        )?;
+        wallet.import_private_key(new_private_key(), None)?;
+        let key = wallet.imported_keys()[0].clone();
+        mem_storage.anchor_imported_key(&key)?;
+        wallet.sync_all(&MockedBDKElectrum {}).await?;
+        Ok((mem_storage, wallet))
+    }
+
+    /// The imported coin is spent by a parent; its descendants are paid from the HD wallet.
+    async fn imported_chain() -> anyhow::Result<(MemDbHandle, BMPWallet, [Transaction; 3])> {
+        let (mem_storage, mut wallet) = wallet_with_imported_key().await?;
+        let parent = wallet.send_to_address(&payee(), Amount::from_sat(60_000_000), FEE_RATE)?;
+        let child = wallet.send_to_address(&payee(), Amount::from_sat(101_000_000), FEE_RATE)?;
+        let grandchild =
+            wallet.send_to_address(&payee(), Amount::from_sat(10_000_000), FEE_RATE)?;
+        for (p, c) in [(&parent, &child), (&child, &grandchild)] {
+            assert!(
+                c.input
+                    .iter()
+                    .any(|i| i.previous_output.txid == p.compute_txid())
+            );
+        }
+        Ok((mem_storage, wallet, [parent, child, grandchild]))
+    }
+
+    /// The imported coin is spent with no change, so only the imported graph holds the tx.
+    async fn imported_only_spend() -> anyhow::Result<(MemDbHandle, BMPWallet, Txid)> {
+        let (mem_storage, mut wallet) = wallet_with_imported_key().await?;
+        // Leaves less than dust, so there is no change output.
+        let tx = wallet.send_to_address(&payee(), Amount::from_sat(99_999_600), FEE_RATE)?;
+        assert_eq!(tx.output.len(), 1, "expected no change output");
+        Ok((mem_storage, wallet, tx.compute_txid()))
+    }
+
+    fn imported_amounts(wallet: &BMPWallet) -> Vec<Amount> {
+        wallet
+            .list_utxos()
+            .iter()
+            .filter(|u| u.imported)
+            .map(|u| u.amount)
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn abandoning_an_imported_parent_evicts_its_hd_descendants_and_survives_reload()
+    -> anyhow::Result<()> {
+        let (mem_storage, mut wallet, txs) = imported_chain().await?;
+        let chain = txs.map(|t| t.compute_txid());
+
+        assert!(
+            imported_amounts(&wallet).is_empty(),
+            "imported coin is spent"
+        );
+
+        let abandoned = wallet.abandon_transaction(chain[0])?;
+        assert_eq!(
+            abandoned.into_iter().collect::<BTreeSet<_>>(),
+            BTreeSet::from(chain)
+        );
+        assert_gone(&wallet, &chain);
+        assert_eq!(imported_amounts(&wallet), vec![Amount::ONE_BTC]);
+
+        let wallet = reload(&mem_storage, wallet)?;
+        assert_gone(&wallet, &chain);
+        assert_eq!(imported_amounts(&wallet), vec![Amount::ONE_BTC]);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn abandoning_an_imported_only_spend_releases_the_imported_funds() -> anyhow::Result<()> {
+        let (mem_storage, mut wallet, txid) = imported_only_spend().await?;
+        assert_eq!(imported_amounts(&wallet), Vec::<Amount>::new());
+
+        assert_eq!(wallet.abandon_transaction(txid)?, vec![txid]);
+        assert_eq!(imported_amounts(&wallet), vec![Amount::ONE_BTC]);
+
+        let wallet = reload(&mem_storage, wallet)?;
+        assert_eq!(imported_amounts(&wallet), vec![Amount::ONE_BTC]);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn abandon_handles_a_last_seen_in_the_future() -> anyhow::Result<()> {
+        let (_mem_storage, mut wallet) = funded_wallet().await?;
+        let tx = wallet.send_to_address(&payee(), Amount::from_sat(60_000_000), FEE_RATE)?;
+        let txid = tx.compute_txid();
+        let last_seen = std::time::UNIX_EPOCH.elapsed()?.as_secs() + 86_400;
+        wallet
+            .sync_all(&MockedBDKElectrumWithSeenTx { tx, last_seen })
+            .await?;
+
+        assert_eq!(wallet.abandon_transaction(txid)?, vec![txid]);
+        assert_gone(&wallet, &[txid]);
+        assert_eq!(wallet.abandon_transaction(txid)?, Vec::<Txid>::new());
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn transactions_to_broadcast_orders_ancestors_first_and_skips_confirmed()
+    -> anyhow::Result<()> {
+        let mem_storage = MemDbHandle::new()?;
+        let mut wallet = BMPWallet::new(mem_storage.store, &test_password(), Network::Regtest)?;
+        let [parent, child, grandchild] = spend_chain(&mut wallet).await?;
+        let ids = [
+            parent.compute_txid(),
+            child.compute_txid(),
+            grandchild.compute_txid(),
+        ];
+        let ordered = |w: &BMPWallet, t| -> Vec<Txid> {
+            w.transactions_to_broadcast(t)
+                .unwrap()
+                .iter()
+                .map(Transaction::compute_txid)
+                .collect()
+        };
+
+        assert_eq!(ordered(&wallet, ids[2]), ids.to_vec());
+        assert_eq!(ordered(&wallet, ids[0]), vec![ids[0]]);
+        assert!(matches!(
+            wallet.transactions_to_broadcast(Txid::from_byte_array([7; 32])),
+            Err(WalletErrorKind::TransactionNotFound(_))
+        ));
+
+        wallet
+            .sync_all(&MockedBDKElectrumWithConfirmedTx { tx: parent })
+            .await?;
+        assert_eq!(ordered(&wallet, ids[2]), vec![ids[1], ids[2]]);
+        assert!(matches!(
+            wallet.transactions_to_broadcast(ids[0]),
+            Err(WalletErrorKind::TransactionConfirmed(_))
+        ));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn abandon_retry_after_a_failed_save_reports_nothing_but_persists() -> anyhow::Result<()>
+    {
+        let (mem_storage, mut wallet, txid) = imported_only_spend().await?;
+        let key = wallet.imported_keys()[0].clone();
+
+        let blocker = mem_storage.block_imported_db(&key)?;
+        assert!(wallet.abandon_transaction(txid).is_err());
+        assert_eq!(
+            imported_amounts(&wallet),
+            vec![Amount::ONE_BTC],
+            "evicted in memory despite the failed save"
+        );
+        drop(blocker);
+
+        assert_eq!(wallet.abandon_transaction(txid)?, Vec::<Txid>::new());
+        let wallet = reload(&mem_storage, wallet)?;
+        assert_eq!(imported_amounts(&wallet), vec![Amount::ONE_BTC]);
         Ok(())
     }
 }
