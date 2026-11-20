@@ -394,6 +394,47 @@ impl CountingChainSource {
     }
 }
 
+/// A chain data source that fails on one configured call and succeeds on all others.
+#[derive(Clone)]
+struct FailingChainSource {
+    calls: Arc<AtomicUsize>,
+    fail_on_call: usize,
+}
+
+impl FailingChainSource {
+    fn new(fail_on_call: usize) -> Self {
+        Self {
+            calls: Arc::new(AtomicUsize::new(0)),
+            fail_on_call,
+        }
+    }
+
+    fn syncs(&self) -> usize {
+        self.calls.load(Ordering::SeqCst)
+    }
+}
+
+impl ChainDataSource for FailingChainSource {
+    const RECOVERY_HEIGHT: usize = 0;
+    const BATCH_SIZE: usize = 1;
+    const STOP_GAP: usize = 1;
+
+    #[expect(
+        clippy::unused_async_trait_impl,
+        reason = "the ChainDataSource trait requires an async method"
+    )]
+    async fn sync(
+        &self,
+        _wallets: Vec<&mut PersistedWallet<impl BMPWalletPersister>>,
+    ) -> Result<(), ChainDataSourceError> {
+        let call = self.calls.fetch_add(1, Ordering::SeqCst) + 1;
+        if call == self.fail_on_call {
+            return Err(ChainDataSourceError::MissingWallet { index: call });
+        }
+        Ok(())
+    }
+}
+
 impl ChainDataSource for CountingChainSource {
     const RECOVERY_HEIGHT: usize = 0;
     const BATCH_SIZE: usize = 1;
@@ -452,6 +493,68 @@ async fn background_sync_needs_only_the_chain_data_source() -> anyhow::Result<()
         )
     })?;
     assert!(!connection.is_finished(), "the sync loop must keep running");
+    connection.abort();
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn background_sync_retries_an_initial_failure() -> anyhow::Result<()> {
+    let dir = tempfile::tempdir()?;
+    let source = FailingChainSource::new(1);
+    let service = Arc::new(
+        BMPWalletServiceImpl::new(dir.path(), Network::Regtest)
+            .with_chain_data_source(source.clone())
+            .with_poll_period(Duration::from_millis(10)),
+    );
+    let connection = Arc::clone(&service).spawn_connection();
+
+    service.open_or_create_wallet(PASSWORD).await?;
+
+    tokio::time::timeout(Duration::from_secs(10), async {
+        while !service.is_ready() {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .context("the wallet should become ready after the initial sync retry")?;
+
+    assert_eq!(source.syncs(), 2, "the first sync should fail, then retry");
+    assert!(
+        !connection.is_finished(),
+        "a transient sync error must not stop the loop"
+    );
+    connection.abort();
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn background_sync_retries_a_periodic_failure() -> anyhow::Result<()> {
+    let dir = tempfile::tempdir()?;
+    let source = FailingChainSource::new(2);
+    let service = Arc::new(
+        BMPWalletServiceImpl::new(dir.path(), Network::Regtest)
+            .with_chain_data_source(source.clone())
+            .with_poll_period(Duration::from_millis(10)),
+    );
+    let connection = Arc::clone(&service).spawn_connection();
+
+    service.open_or_create_wallet(PASSWORD).await?;
+
+    tokio::time::timeout(Duration::from_secs(10), async {
+        while source.syncs() < 3 {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .context("the wallet should continue syncing after a periodic failure")?;
+
+    assert!(service.is_ready());
+    assert!(
+        !connection.is_finished(),
+        "a transient sync error must not stop the loop"
+    );
     connection.abort();
 
     Ok(())
