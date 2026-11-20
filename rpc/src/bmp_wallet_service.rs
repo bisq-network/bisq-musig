@@ -22,8 +22,8 @@ use std::sync::{Arc, Mutex};
 // Leading `::` disambiguates the `wallet` *crate* from this crate's own `wallet` module.
 use ::wallet::bmp_wallet::{BMPWallet, WalletApi as _};
 use ::wallet::chain_data_source::ChainDataSource;
-use ::wallet::password::{InvalidPassword, Password, WeakPassword};
 use ::wallet::error::WalletErrorKind;
+use ::wallet::password::{InvalidPassword, Password, WeakPassword};
 use ::wallet::wallet_info::{PubAddressInfo, TxInfo, TxOutputInfo, UtxoInfo};
 use bdk_bitcoind_rpc::bitcoincore_rpc::{Client, RpcApi as _};
 use bdk_wallet::Balance;
@@ -37,7 +37,7 @@ use tokio::sync::Mutex as AsyncMutex;
 use tokio::task::{self, JoinHandle};
 use tokio::time::{self, Duration, MissedTickBehavior};
 use tonic::{Request, Response, Result, Status};
-use tracing::{debug, error, info, instrument, warn};
+use tracing::{error, info, instrument, warn};
 use zeroize::Zeroizing;
 
 use crate::observable::ObservableHashMap;
@@ -59,6 +59,12 @@ const DEFAULT_POLL_PERIOD: Duration = Duration::from_secs(30);
 /// How often the sync loop re-checks whether the wallet has been opened yet (the wallet is
 /// opened over RPC, so the loop may start before there is anything to sync).
 const WALLET_OPEN_POLL_PERIOD: Duration = Duration::from_millis(500);
+
+/// The smallest allowed configured polling period, ensuring retries never become a busy loop.
+const MIN_POLL_PERIOD: Duration = Duration::from_millis(1);
+
+/// Do not let repeated chain errors make the sync task retry in a tight loop forever.
+const MAX_SYNC_RETRY_PERIOD: Duration = Duration::from_secs(30);
 
 /// Fee rate used when the client doesn't specify one. 2 sat/vB == 500 sat/kwu.
 const DEFAULT_FEE_RATE: FeeRate = FeeRate::from_sat_per_kwu(500);
@@ -235,7 +241,7 @@ impl<S> BMPWalletServiceImpl<S> {
     #[must_use]
     pub fn with_poll_period(self, poll_period: Duration) -> Self {
         Self {
-            poll_period,
+            poll_period: poll_period.max(MIN_POLL_PERIOD),
             ..self
         }
     }
@@ -280,8 +286,9 @@ impl<S: ChainDataSource + Send + Sync + 'static> BMPWalletServiceImpl<S> {
     /// The wallet itself is opened by the `OpenOrCreateWallet` RPC, so syncing (and with it the
     /// ready flag) waits until that has happened.
     ///
-    /// # Errors
-    /// Will return `Err` if the initial or any subsequent sync fails.
+    /// Sync failures are logged and retried with bounded exponential backoff, so a transient
+    /// chain error cannot terminate the background task. The ready flag is set only after the
+    /// first successful sync.
     pub async fn connect(&self) -> WalletResult<Never> {
         let Some(chain_data_source) = self.chain_data_source.as_ref() else {
             info!("No chain data source configured; wallet will not sync.");
@@ -291,8 +298,26 @@ impl<S: ChainDataSource + Send + Sync + 'static> BMPWalletServiceImpl<S> {
         };
 
         info!("Waiting for the wallet to be opened, to perform the initial sync...");
-        while !self.sync_once(chain_data_source).await? {
-            time::sleep(WALLET_OPEN_POLL_PERIOD).await;
+        let mut retry_period = WALLET_OPEN_POLL_PERIOD;
+        loop {
+            match self.sync_once(chain_data_source).await {
+                Ok(true) => break,
+                Ok(false) => {
+                    retry_period = WALLET_OPEN_POLL_PERIOD;
+                    time::sleep(WALLET_OPEN_POLL_PERIOD).await;
+                }
+                Err(error) => {
+                    let next_retry_period =
+                        (retry_period + retry_period).min(MAX_SYNC_RETRY_PERIOD);
+                    warn!(
+                        %error,
+                        retry_in = ?next_retry_period,
+                        "Initial wallet sync failed; retrying"
+                    );
+                    time::sleep(next_retry_period).await;
+                    retry_period = next_retry_period;
+                }
+            }
         }
         self.ready.store(true, Ordering::Release);
         let total = self
@@ -307,9 +332,42 @@ impl<S: ChainDataSource + Send + Sync + 'static> BMPWalletServiceImpl<S> {
         let mut interval = time::interval(self.poll_period);
         interval.set_missed_tick_behavior(MissedTickBehavior::Delay);
         interval.tick().await;
+
+        let max_retry_period = self.poll_period.max(MAX_SYNC_RETRY_PERIOD);
+        retry_period = self.poll_period;
+        let mut retrying = false;
         loop {
-            interval.tick().await;
-            self.sync_once(chain_data_source).await?;
+            let was_retrying = retrying;
+            if was_retrying {
+                time::sleep(retry_period).await;
+                retrying = false;
+            } else {
+                interval.tick().await;
+            }
+
+            match self.sync_once(chain_data_source).await {
+                Ok(true) => {
+                    retry_period = self.poll_period;
+                    if was_retrying {
+                        interval.reset();
+                    }
+                }
+                Ok(false) => {
+                    warn!("Wallet is no longer open; retrying sync");
+                    retry_period = WALLET_OPEN_POLL_PERIOD;
+                    retrying = true;
+                }
+                Err(error) => {
+                    let next_retry_period = (retry_period + retry_period).min(max_retry_period);
+                    warn!(
+                        %error,
+                        retry_in = ?next_retry_period,
+                        "Wallet sync failed; retrying"
+                    );
+                    retry_period = next_retry_period;
+                    retrying = true;
+                }
+            }
         }
     }
 
@@ -939,6 +997,15 @@ mod tests {
         let (dir, service) = service();
         service.open_or_create_wallet(PASSWORD).await.unwrap();
         (dir, service)
+    }
+
+    #[test]
+    fn poll_period_has_a_positive_minimum() {
+        let (dir, service) = service();
+        let service = service.with_poll_period(Duration::ZERO);
+        let _dir = dir;
+
+        assert_eq!(service.poll_period, MIN_POLL_PERIOD);
     }
 
     #[tokio::test(flavor = "multi_thread")]
