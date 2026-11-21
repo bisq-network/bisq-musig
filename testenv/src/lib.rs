@@ -551,7 +551,12 @@ impl TestEnv {
 
     /// Wait for electrum to see a new block
     pub fn wait_for_block(&self) -> Result<()> {
-        self.electrsd.client.block_headers_subscribe()?;
+        // A server that indexed the block before this subscription answers it with that tip
+        // and has nothing left to notify, so a tip at the node's height counts as seen.
+        let tip = self.electrsd.client.block_headers_subscribe()?;
+        if tip.height as u64 >= self.block_count()? {
+            return Ok(());
+        }
         let start = std::time::Instant::now();
 
         while start.elapsed() < self.timeout {
